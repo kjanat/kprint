@@ -9,7 +9,7 @@
   "imports": {
     "compress": "https://deno.land/x/compress@v0.5.6/mod.ts",
     "lume/": "https://cdn.jsdelivr.net/gh/lumeland/lume@3.3.2/",
-    "markdown-it-anchor": "npm:markdown-it-anchor@10.0.0"
+    "markdown-it-anchor": "npm:markdown-it-anchor@10.1.0"
   },
   "lint": {
     "exclude": [
