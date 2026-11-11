@@ -209,7 +209,7 @@ where
 
   async fn get_npm_registry_plugin(&self, source_reference: &PluginSourceReference, npm_source: &crate::utils::NpmPathSource) -> Result<PluginCacheItem> {
     let (cache_key, hash, _setup_guard) = match self.lookup_or_lock(&source_reference.path_source).await? {
-      CacheLookup::Hit(item) => return Ok(item),
+      CacheLookup::Hit(item) => return Ok(*item),
       CacheLookup::Miss { cache_key, hash, guard } => (cache_key, hash, guard),
     };
 
@@ -371,7 +371,7 @@ where
       .clone();
 
     let (cache_key, hash, _setup_guard) = match self.lookup_or_lock(&source_reference.path_source).await? {
-      CacheLookup::Hit(item) => return Ok(item),
+      CacheLookup::Hit(item) => return Ok(*item),
       CacheLookup::Miss { cache_key, hash, guard } => (cache_key, hash, guard),
     };
 
@@ -411,7 +411,7 @@ where
 
   async fn get_plugin(&self, source_reference: &PluginSourceReference) -> Result<PluginCacheItem> {
     let (cache_key, hash, _setup_guard) = match self.lookup_or_lock(&source_reference.path_source).await? {
-      CacheLookup::Hit(item) => return Ok(item),
+      CacheLookup::Hit(item) => return Ok(*item),
       CacheLookup::Miss { cache_key, hash, guard } => (cache_key, hash, guard),
     };
 
@@ -509,12 +509,12 @@ where
     let cache_key = self.compute_cache_key(source)?;
     let hash = entry_hash(&cache_key, &self.environment);
     if let Some(item) = self.cached_item(source, &hash, &cache_key) {
-      return Ok(CacheLookup::Hit(item));
+      return Ok(CacheLookup::Hit(Box::new(item)));
     }
     let guard = self.fs_locks.lock(source).await;
     // re-check after acquiring the lock in case another process just set it up
     if let Some(item) = self.cached_item(source, &hash, &cache_key) {
-      return Ok(CacheLookup::Hit(item));
+      return Ok(CacheLookup::Hit(Box::new(item)));
     }
     // Fail before starting network work if the artifact directory cannot be
     // created. Share this check across all plugins in this cache instance.
@@ -752,7 +752,7 @@ where
 /// Result of [`PluginCache::lookup_or_lock`]: either a ready cache hit, or a
 /// miss carrying the key/hash plus the held setup lock so the caller can set up.
 enum CacheLookup<TEnvironment: Environment> {
-  Hit(PluginCacheItem),
+  Hit(Box<PluginCacheItem>),
   Miss {
     cache_key: String,
     hash: String,
@@ -788,6 +788,8 @@ mod test {
         update_url: None,
         config_files: None,
         config_schema_paths: Vec::new(),
+        config_reference_paths: Vec::new(),
+        config_relative_path_bases: Default::default(),
       },
       executable_sub_path: None,
       local_stamps: None,

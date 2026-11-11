@@ -47,19 +47,24 @@ fn get_plugin_config_map_inner(plugin: &PluginWrapper, config_map: &mut ConfigMa
 /// configuration was resolved, or that it didn't exist, so a long running
 /// process (ex. the language server) resolves it again when it changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginConfigFileState {
-  pub path: PathBuf,
-  pub text: Option<String>,
+pub enum PluginConfigFileState {
+  Local { path: PathBuf, text: Option<String> },
+  Remote { expires_at: u64 },
 }
 
 impl PluginConfigFileState {
   pub fn is_current(&self, environment: &impl HostEnvironment) -> bool {
-    let text = if environment.path_is_file(&self.path) {
-      environment.read_file(&self.path).ok()
-    } else {
-      None
-    };
-    text == self.text
+    match self {
+      Self::Remote { expires_at } => environment.get_time_secs() < *expires_at,
+      Self::Local { path, text } => {
+        let current = if environment.path_is_file(path) {
+          environment.read_file(path).ok()
+        } else {
+          None
+        };
+        current == *text
+      }
+    }
   }
 }
 
@@ -70,7 +75,7 @@ impl PluginConfigFileState {
 ///
 /// A plugin that declares no configuration files gets a `configFile` as a
 /// property, so one with a `configFile` option of its own keeps it.
-pub fn resolve_plugin_config_file(
+pub async fn resolve_plugin_config_file(
   plugin_info: &PluginInfo,
   config_file: Option<PluginConfigFile>,
   mut properties: ConfigKeyMap,
@@ -88,26 +93,10 @@ pub fn resolve_plugin_config_file(
     }
     return Ok(properties);
   };
-  let read = |reference: &ConfigFileReference, files_read: &mut Vec<PluginConfigFileState>| -> Result<Option<JsonValue>> {
-    let file_path = base_dir.join(&reference.path);
-    if !environment.path_is_file(&file_path) {
-      // one that's made later is passed then
-      files_read.push(PluginConfigFileState { path: file_path, text: None });
-      return Ok(None);
-    }
-    let text = environment
-      .read_file(&file_path)
-      .with_context(|| format!("Failed reading {}.", file_path.display()))?;
-    files_read.push(PluginConfigFileState {
-      path: file_path.clone(),
-      text: Some(text.clone()),
-    });
-    parse_config_file(&file_path, &text).map(Some)
-  };
   let found = match config_file {
     Some(PluginConfigFile::Path(text)) => {
       let reference = ConfigFileReference::parse(&text).with_context(|| format!("{}.{}", plugin_info.config_key, CONFIG_FILE_PROPERTY))?;
-      let Some(content) = read(&reference, files_read)? else {
+      let Some((content, source, text)) = read_plugin_config(&reference, base_dir, environment, files_read).await? else {
         bail!(
           "{}.{}: Could not find {}.",
           plugin_info.config_key,
@@ -116,7 +105,7 @@ pub fn resolve_plugin_config_file(
         );
       };
       let part = select(&content, &reference)?.clone();
-      Some((reference, part))
+      Some((reference, part, source, text))
     }
     Some(PluginConfigFile::Disabled) => None,
     None => {
@@ -140,30 +129,62 @@ pub fn resolve_plugin_config_file(
             reference.path
           );
         }
-        let Some(content) = read(&reference, files_read)? else {
+        let Some((content, source, text)) = read_plugin_config(&reference, base_dir, environment, files_read).await? else {
           continue;
         };
         // a file without the part isn't the plugin's (ex. a pyproject.toml
         // without its [tool.tombi])
         if let Ok(part) = select(&content, &reference) {
-          found = Some((reference, part.clone()));
+          found = Some((reference, part.clone(), source, text));
           break;
         }
       }
       found
     }
   };
-  let Some((reference, content)) = found else {
+  let Some((reference, content, source, text)) = found else {
     return Ok(properties);
   };
   let config_path = base_dir.join(&reference.path);
-  let schema_files = read_config_schemas(plugin_info, &content, &properties, &config_path, base_dir, environment, files_read)?;
+  let mut schema_files = read_config_schemas(plugin_info, &content, &properties, &source, base_dir, environment, files_read).await?;
+  let documents = read_config_references(plugin_info, &content, &source, base_dir, environment, files_read).await?;
+  for document in documents.values() {
+    let content = parse_config_file(Path::new(document.source.path()), &document.text)?;
+    schema_files.extend(read_config_schemas(plugin_info, &content, &ConfigKeyMap::new(), &document.source, base_dir, environment, files_read).await?);
+  }
   properties.insert(
     CONFIG_FILE_CONTENT_PROPERTY.to_string(),
     ConfigKeyValue::Object(ConfigKeyMap::from([
       ("path".to_string(), ConfigKeyValue::String(reference.path.clone())),
       ("content".to_string(), ConfigKeyValue::String(content.to_string())),
-      ("absolutePath".to_string(), ConfigKeyValue::String(config_path.to_string_lossy().into_owned())),
+      ("source".to_string(), ConfigKeyValue::String(source.to_string())),
+      ("baseDirectory".to_string(), ConfigKeyValue::String(base_dir.to_string_lossy().into_owned())),
+      (
+        "documents".to_string(),
+        ConfigKeyValue::Object(
+          documents
+            .into_iter()
+            .map(|(uri, document)| {
+              (
+                uri,
+                ConfigKeyValue::Object(ConfigKeyMap::from([
+                  ("source".into(), ConfigKeyValue::String(document.source.to_string())),
+                  ("text".into(), ConfigKeyValue::String(document.text)),
+                ])),
+              )
+            })
+            .collect(),
+        ),
+      ),
+      ("text".to_string(), ConfigKeyValue::String(text)),
+      (
+        "absolutePath".to_string(),
+        if source.scheme() == "file" {
+          ConfigKeyValue::String(config_path.to_string_lossy().into_owned())
+        } else {
+          ConfigKeyValue::Null
+        },
+      ),
       (
         "files".to_string(),
         ConfigKeyValue::Object(schema_files.into_iter().map(|(path, text)| (path, ConfigKeyValue::String(text))).collect()),
@@ -171,6 +192,123 @@ pub fn resolve_plugin_config_file(
     ])),
   );
   Ok(properties)
+}
+
+async fn read_plugin_config(
+  reference: &ConfigFileReference,
+  base_dir: &Path,
+  environment: &impl HostEnvironment,
+  files_read: &mut Vec<PluginConfigFileState>,
+) -> Result<Option<(JsonValue, url::Url, String)>> {
+  if let Ok(uri) = url::Url::parse(&reference.path)
+    && matches!(uri.scheme(), "http" | "https")
+  {
+    let resolved = kprint_platform::utils::resolve_path_source_to_file_with_cache(kprint_platform::utils::PathSource::new_remote(uri), environment)
+      .await?
+      .into_text()?;
+    let kprint_platform::utils::PathSource::Remote(remote) = resolved.source else {
+      unreachable!()
+    };
+    files_read.push(PluginConfigFileState::Remote {
+      expires_at: environment.get_time_secs() + kprint_platform::utils::REMOTE_FILE_MAX_AGE_SECS,
+    });
+    let content = parse_config_file(Path::new(remote.url.path()), &resolved.content)?;
+    return Ok(Some((content, remote.url, resolved.content)));
+  }
+  let path = base_dir.join(&reference.path);
+  if !environment.path_is_file(&path) {
+    files_read.push(PluginConfigFileState::Local { path, text: None });
+    return Ok(None);
+  }
+  let text = environment.read_file(&path).with_context(|| format!("Failed reading {}.", path.display()))?;
+  files_read.push(PluginConfigFileState::Local {
+    path: path.clone(),
+    text: Some(text.clone()),
+  });
+  let source = url::Url::from_file_path(&path)
+    .or_else(|()| {
+      if !path.has_root() {
+        return Err(());
+      }
+      let mut uri = url::Url::parse("file:///").expect("file URL is valid");
+      uri.set_path(&path.to_string_lossy().replace('\\', "/"));
+      Ok(uri)
+    })
+    .map_err(|()| anyhow::anyhow!("Invalid configuration path: {}", path.display()))?;
+  Ok(Some((parse_config_file(&path, &text)?, source, text)))
+}
+
+#[derive(Clone)]
+struct ConfigDocument {
+  source: url::Url,
+  text: String,
+}
+
+async fn read_config_references(
+  plugin: &PluginInfo,
+  content: &JsonValue,
+  source: &url::Url,
+  base_dir: &Path,
+  environment: &impl HostEnvironment,
+  files_read: &mut Vec<PluginConfigFileState>,
+) -> Result<std::collections::BTreeMap<String, ConfigDocument>> {
+  let mut documents = std::collections::BTreeMap::new();
+  let mut pending = vec![(source.clone(), content.clone(), 0)];
+  while let Some((base, content, depth)) = pending.pop() {
+    let mut paths = Vec::new();
+    for segments in &plugin.config_reference_paths {
+      schema_paths(&content, segments, &mut paths);
+    }
+    for path in paths {
+      let uri = config_reference_base(plugin, &base)?.join(path)?;
+      if documents.contains_key(uri.as_str()) {
+        continue;
+      }
+      if documents.len() >= 256 || depth >= 32 {
+        bail!("Plugin configuration references exceed 256 files or 32 levels at {uri}.");
+      }
+      let reference = match uri.scheme() {
+        "http" | "https" => ConfigFileReference::parse(uri.as_str())?,
+        "file" if base.scheme() == "file" => {
+          let path = uri.to_file_path().map_err(|()| anyhow::anyhow!("Invalid configuration URI: {uri}"))?;
+          if !path.starts_with(base_dir) || escapes_dir(base_dir, &path, environment) {
+            bail!("Referenced configuration {uri} is outside {}.", base_dir.display());
+          }
+          ConfigFileReference::parse(&path.to_string_lossy())?
+        }
+        _ => bail!("Configuration {base} cannot reference {uri}. Remote configurations may only reference HTTP(S) files."),
+      };
+      let Some((content, resolved, text)) = read_plugin_config(&reference, base_dir, environment, files_read).await? else {
+        bail!("Could not read referenced configuration {uri}.");
+      };
+      let document = ConfigDocument {
+        source: resolved.clone(),
+        text,
+      };
+      documents.insert(uri.to_string(), document.clone());
+      documents.insert(resolved.to_string(), document);
+      pending.push((resolved, content, depth + 1));
+    }
+  }
+  Ok(documents)
+}
+
+fn config_reference_base(plugin: &PluginInfo, source: &url::Url) -> Result<url::Url> {
+  if source.scheme() == "file" {
+    let path = source.to_file_path().map_err(|()| anyhow::anyhow!("Invalid configuration URI: {source}"))?;
+    if let Some((_, directory)) = plugin
+      .config_relative_path_bases
+      .iter()
+      .filter(|(suffix, _)| !suffix.is_empty() && path.ends_with(suffix))
+      .max_by_key(|(suffix, _)| suffix.len())
+    {
+      if directory.contains(':') || directory.contains('\\') || directory.starts_with('/') {
+        bail!("Plugin configuration path bases must be relative directories: {directory}");
+      }
+      return Ok(source.join(&format!("{}/", directory.trim_end_matches('/')))?);
+    }
+  }
+  Ok(source.clone())
 }
 
 fn schema_paths<'a>(value: &'a JsonValue, segments: &[String], paths: &mut Vec<&'a str>) {
@@ -243,11 +381,11 @@ fn schema_references(value: &JsonValue, base: &url::Url, references: &mut Vec<ur
   Ok(())
 }
 
-fn read_config_schemas(
+async fn read_config_schemas(
   plugin_info: &PluginInfo,
   content: &JsonValue,
   properties: &ConfigKeyMap,
-  config_path: &Path,
+  config_uri: &url::Url,
   base_dir: &Path,
   environment: &impl HostEnvironment,
   files_read: &mut Vec<PluginConfigFileState>,
@@ -262,24 +400,56 @@ fn read_config_schemas(
       object.insert(key.clone(), serde_json::to_value(value)?);
     }
   }
-  let config_uri = url::Url::from_file_path(config_path).map_err(|()| anyhow::anyhow!("Invalid configuration path: {}", config_path.display()))?;
   let mut paths = Vec::new();
   for segments in &plugin_info.config_schema_paths {
     schema_paths(&selected, segments, &mut paths);
   }
   let mut pending = paths
     .into_iter()
-    .map(|path| config_uri.join(path))
-    .collect::<std::result::Result<Vec<_>, _>>()?;
+    .map(|path| config_reference_base(plugin_info, config_uri)?.join(path).map_err(Into::into))
+    .collect::<Result<Vec<_>>>()?;
   while let Some(mut uri) = pending.pop() {
+    uri.set_fragment(None);
+    if matches!(uri.scheme(), "http" | "https") {
+      if files.contains_key(uri.as_str()) {
+        continue;
+      }
+      if files.len() >= 256 {
+        bail!("Schema references exceed 256 files at {uri}.");
+      }
+      let resolved = kprint_platform::utils::resolve_path_source_to_file_with_cache(kprint_platform::utils::PathSource::new_remote(uri.clone()), environment)
+        .await?
+        .into_text()?;
+      let kprint_platform::utils::PathSource::Remote(remote) = resolved.source else {
+        unreachable!()
+      };
+      let schema: JsonValue = serde_json::from_str(&resolved.content).with_context(|| format!("Invalid JSON Schema in {uri}."))?;
+      let mut references = Vec::new();
+      schema_references(&schema, &remote.url, &mut references)?;
+      if references.iter().any(|uri| !matches!(uri.scheme(), "http" | "https")) {
+        bail!("Remote schema {uri} may only reference HTTP(S) schemas.");
+      }
+      pending.extend(references);
+      files_read.push(PluginConfigFileState::Remote {
+        expires_at: environment.get_time_secs() + kprint_platform::utils::REMOTE_FILE_MAX_AGE_SECS,
+      });
+      files.insert(uri.to_string(), resolved.content.clone());
+      files.insert(remote.url.to_string(), resolved.content);
+      continue;
+    }
     if uri.scheme() != "file" {
       continue;
     }
-    uri.set_fragment(None);
+    if config_uri.scheme() != "file" {
+      bail!("Remote configuration {config_uri} cannot read local schema {uri}.");
+    }
     let path = uri.to_file_path().map_err(|()| anyhow::anyhow!("Invalid schema file URI: {uri}"))?;
     let key = path.to_string_lossy().into_owned();
     if files.contains_key(&key) {
       continue;
+    }
+    if files.len() >= 256 {
+      bail!("Schema references exceed 256 files at {uri}.");
     }
     if !path.starts_with(base_dir) || escapes_dir(base_dir, &path, environment) {
       bail!("Schema {} resolves outside {}.", path.display(), base_dir.display());
@@ -289,7 +459,7 @@ fn read_config_schemas(
       .with_context(|| format!("Failed reading schema {}.", path.display()))?;
     let schema: JsonValue = serde_json::from_str(&text).with_context(|| format!("Invalid JSON Schema in {}.", path.display()))?;
     schema_references(&schema, &uri, &mut pending)?;
-    files_read.push(PluginConfigFileState {
+    files_read.push(PluginConfigFileState::Local {
       path,
       text: Some(text.clone()),
     });
@@ -363,6 +533,17 @@ mod tests {
       result.err().unwrap().to_string(),
       format!("Error initializing from configuration file. {}", message)
     );
+  }
+
+  fn resolve_plugin_config_file(
+    info: &PluginInfo,
+    file: Option<PluginConfigFile>,
+    properties: ConfigKeyMap,
+    base: &Path,
+    environment: &crate::environment::TestEnvironment,
+    files: &mut Vec<PluginConfigFileState>,
+  ) -> Result<ConfigKeyMap> {
+    environment.run_in_runtime(super::resolve_plugin_config_file(info, file, properties, base, environment, files))
   }
 
   fn tombi_info(config_files: Option<Vec<&str>>) -> PluginInfo {
@@ -542,11 +723,11 @@ line-width = 100
     assert_eq!(
       files_read,
       vec![
-        PluginConfigFileState {
+        PluginConfigFileState::Local {
           path: Path::new("/project").join("tombi.toml"),
           text: None,
         },
-        PluginConfigFileState {
+        PluginConfigFileState::Local {
           path: Path::new("/project").join(".config/tombi.toml"),
           text: Some(
             "line-width = 1
@@ -633,6 +814,101 @@ line-width = 100
     assert_eq!(result, properties(&[(CONFIG_FILE_PROPERTY, ConfigKeyValue::from_str("own.json"))]));
     let result = resolve_plugin_config_file(&tombi_info(None), None, properties(&[]), Path::new("/project"), &environment, &mut Vec::new()).unwrap();
     assert_eq!(result, properties(&[]));
+  }
+
+  #[test]
+  fn downloads_remote_config_references_and_schemas_once() {
+    let environment = crate::environment::TestEnvironment::new();
+    environment.set_fs_time(1000);
+    environment.add_remote_file_redirect("https://example.com/tombi.toml", "https://cdn.example.com/team/tombi.toml");
+    environment.add_remote_file(
+      "https://cdn.example.com/team/tombi.toml",
+      b"extends = ['../base/tombi.toml']\n[[schemas]]\npath = 'schema.json'\ninclude = ['*.toml']",
+    );
+    environment.add_remote_file_redirect("https://cdn.example.com/base/tombi.toml", "https://cdn.example.com/final/tombi.toml");
+    environment.add_remote_file("https://cdn.example.com/final/tombi.toml", b"[format.rules]\nline-width = 120");
+    environment.add_remote_file("https://cdn.example.com/team/schema.json", br#"{"$ref":"parts/value.json"}"#);
+    environment.add_remote_file("https://cdn.example.com/team/parts/value.json", br#"{"type":"string"}"#);
+    let mut info = tombi_info(Some(vec!["tombi.toml"]));
+    info.config_reference_paths = vec![vec!["extends".into(), "*".into()]];
+    info.config_schema_paths = vec![vec!["schemas".into(), "*".into(), "path".into()]];
+    let mut states = Vec::new();
+    for _ in 0..2 {
+      let result = resolve_plugin_config_file(
+        &info,
+        Some(PluginConfigFile::Path("https://example.com/tombi.toml".into())),
+        ConfigKeyMap::new(),
+        Path::new("/project"),
+        &environment,
+        &mut states,
+      )
+      .unwrap();
+      let ConfigKeyValue::Object(config) = &result[CONFIG_FILE_CONTENT_PROPERTY] else {
+        panic!("missing config")
+      };
+      assert_eq!(config["source"].as_string().unwrap(), "https://cdn.example.com/team/tombi.toml");
+      assert_eq!(config["absolutePath"], ConfigKeyValue::Null);
+      let ConfigKeyValue::Object(documents) = &config["documents"] else {
+        panic!("missing documents")
+      };
+      assert!(documents.contains_key("https://cdn.example.com/base/tombi.toml"));
+      let ConfigKeyValue::Object(document) = &documents["https://cdn.example.com/base/tombi.toml"] else {
+        panic!("missing document source")
+      };
+      assert_eq!(document["source"].as_string().unwrap(), "https://cdn.example.com/final/tombi.toml");
+      let ConfigKeyValue::Object(files) = &config["files"] else {
+        panic!("missing schemas")
+      };
+      assert_eq!(files.len(), 2);
+    }
+    for url in [
+      "https://example.com/tombi.toml",
+      "https://cdn.example.com/base/tombi.toml",
+      "https://cdn.example.com/team/schema.json",
+    ] {
+      assert_eq!(environment.remote_file_download_count(url), 1, "{url}");
+    }
+    assert!(states.iter().all(|state| state.is_current(&environment)));
+    environment.set_fs_time(5000);
+    assert!(states.iter().all(|state| !state.is_current(&environment)));
+  }
+
+  #[test]
+  fn remote_config_cannot_read_local_dependencies() {
+    for text in ["extends = ['file:///secret/tombi.toml']", "[[schemas]]\npath = 'file:///secret/schema.json'"] {
+      let environment = crate::environment::TestEnvironment::new();
+      environment.add_remote_file_bytes("https://example.com/tombi.toml", text.as_bytes().to_vec());
+      let mut info = tombi_info(Some(vec!["tombi.toml"]));
+      info.config_reference_paths = vec![vec!["extends".into(), "*".into()]];
+      info.config_schema_paths = vec![vec!["schemas".into(), "*".into(), "path".into()]];
+      let error = resolve_plugin_config_file(
+        &info,
+        Some(PluginConfigFile::Path("https://example.com/tombi.toml".into())),
+        ConfigKeyMap::new(),
+        Path::new("/project"),
+        &environment,
+        &mut Vec::new(),
+      )
+      .unwrap_err();
+      assert!(format!("{error:#}").contains("Remote configuration"), "{error:#}");
+    }
+  }
+
+  #[test]
+  fn plugin_declares_base_for_local_references_without_changing_remote_urls() {
+    let mut info = tombi_info(Some(vec![".config/tombi.toml"]));
+    info.config_relative_path_bases.insert(".config/tombi.toml".into(), "..".into());
+    let file = url::Url::parse("file:///C:/project/.config/tombi.toml").unwrap();
+    assert_eq!(
+      config_reference_base(&info, &file).unwrap().join("base/tombi.toml").unwrap().as_str(),
+      "file:///C:/project/base/tombi.toml"
+    );
+    let remote = url::Url::parse("https://example.com/.config/tombi.toml").unwrap();
+    assert_eq!(config_reference_base(&info, &remote).unwrap(), remote);
+    info
+      .config_relative_path_bases
+      .insert(".config/tombi.toml".into(), "https://elsewhere.example/".into());
+    assert!(config_reference_base(&info, &file).is_err());
   }
 
   fn create_plugin() -> TestPlugin {

@@ -37,6 +37,28 @@ See [Setup](/setup).
 }
 ```
 
+## Remote plugin configuration
+
+A plugin that declares configuration-file support can use an HTTP(S) URL:
+
+```json
+{
+  "toml": {
+    "configFile": "https://example.com/formatting/tombi.toml"
+  }
+}
+```
+
+In a remote kprint configuration, `configFile = "./tombi.toml"` resolves beside
+that configuration's URL. Relative `extends` and plugin URLs work the same way.
+After a redirect, kprint uses the destination URL. `${configDir}` expands to that
+URL's directory, and `${originConfigDir}` refers to the main configuration's directory.
+
+Kprint caches downloaded configuration files. Plugins can declare references to
+other configuration files and schemas, which kprint also downloads and supplies
+to the plugin. The plugin applies its own inheritance rules. Remote files cannot
+request local files through these references.
+
 ## TOML
 
 The configuration file may also be TOML: `dprint.toml` or `.dprint.toml`. When a directory has both, the JSON one is used. The example above as TOML:

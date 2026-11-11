@@ -357,7 +357,7 @@ pub fn run_compile_worker(args: &[OsString]) -> i32 {
       write_failed |= write_message(&mut stdout, &WorkerMessage::Step(step)).is_err();
     });
     let message = match result {
-      Ok(result) => WorkerMessage::Done(result),
+      Ok(result) => WorkerMessage::Done(Box::new(result)),
       Err(err) => WorkerMessage::Error(format!("{:#}", err)),
     };
     if write_message(&mut stdout, &message).is_err() || write_failed {
@@ -392,7 +392,7 @@ enum WorkerMessage {
   Step(WasmSetupStep),
   /// The setup failed for a reason retrying won't fix (ex. not a dprint plugin).
   Error(String),
-  Done(CompilationResult),
+  Done(Box<CompilationResult>),
 }
 
 // What the worker may send is bounded, so a worker that goes wrong can't
@@ -446,7 +446,7 @@ fn read_message(reader: &mut impl Read) -> std::io::Result<Option<WorkerMessage>
     DONE_TAG => {
       let plugin_info: PluginInfo = serde_json::from_slice(&read_chunk(reader, MAX_PLUGIN_INFO_LEN)?).map_err(invalid_data)?;
       let bytes = read_chunk(reader, MAX_COMPILED_LEN)?;
-      WorkerMessage::Done(CompilationResult { bytes, plugin_info })
+      WorkerMessage::Done(Box::new(CompilationResult { bytes, plugin_info }))
     }
     tag => return Err(invalid_data(format!("unknown message tag {}", tag))),
   };
@@ -719,7 +719,7 @@ impl std::fmt::Display for AttemptFailure {
 
 enum AttemptOutcome {
   Done {
-    result: CompilationResult,
+    result: Box<CompilationResult>,
     step_times: Vec<(WasmSetupStep, Duration)>,
   },
   /// The plugin itself can't be set up, so retrying won't help.
@@ -837,7 +837,7 @@ fn run_attempts<TEnvironment: Environment>(
             plugin_display
           );
         }
-        return Ok(result);
+        return Ok(*result);
       }
       // the plugin fails the same way however often it's set up
       AttemptOutcome::PluginError(message) => return Err(NoRetrySetupError(message).into()),
@@ -1082,6 +1082,8 @@ mod test {
       update_url: None,
       config_files: None,
       config_schema_paths: Vec::new(),
+      config_reference_paths: Vec::new(),
+      config_relative_path_bases: Default::default(),
     }
   }
 
@@ -1098,7 +1100,7 @@ mod test {
     write_message(&mut bytes, &WorkerMessage::Step(WasmSetupStep::Compile)).unwrap();
     write_message(&mut bytes, &WorkerMessage::Step(WasmSetupStep::PluginInfo)).unwrap();
     write_message(&mut bytes, &WorkerMessage::Error("not a plugin".to_string())).unwrap();
-    write_message(&mut bytes, &WorkerMessage::Done(compilation_result())).unwrap();
+    write_message(&mut bytes, &WorkerMessage::Done(Box::new(compilation_result()))).unwrap();
 
     let mut reader = bytes.as_slice();
     assert!(matches!(read_message(&mut reader).unwrap(), Some(WorkerMessage::Step(WasmSetupStep::Compile))));
@@ -1108,7 +1110,7 @@ mod test {
     ));
     assert!(matches!(read_message(&mut reader).unwrap(), Some(WorkerMessage::Error(text)) if text == "not a plugin"));
     match read_message(&mut reader).unwrap() {
-      Some(WorkerMessage::Done(result)) => assert_eq!(result, compilation_result()),
+      Some(WorkerMessage::Done(result)) => assert_eq!(*result, compilation_result()),
       _ => unreachable!(),
     }
     assert!(read_message(&mut reader).unwrap().is_none());
@@ -1168,7 +1170,7 @@ mod test {
   #[test]
   fn protocol_errors_on_truncated_or_unknown_output() {
     let mut bytes = Vec::new();
-    write_message(&mut bytes, &WorkerMessage::Done(compilation_result())).unwrap();
+    write_message(&mut bytes, &WorkerMessage::Done(Box::new(compilation_result()))).unwrap();
     // the worker died part way through writing its result
     assert!(read_message(&mut &bytes[..bytes.len() - 1]).is_err());
     // something other than the worker protocol (ex. a test harness' output)
@@ -1323,7 +1325,7 @@ mod test {
 
   fn succeeds() -> Vec<WorkerEvent> {
     let mut events = steps_until(WasmSetupStep::PluginInfo);
-    events.push(WorkerEvent::Message(WorkerMessage::Done(compilation_result())));
+    events.push(WorkerEvent::Message(WorkerMessage::Done(Box::new(compilation_result()))));
     events
   }
 

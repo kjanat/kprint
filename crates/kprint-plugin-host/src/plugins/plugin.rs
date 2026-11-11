@@ -196,6 +196,8 @@ impl TestPlugin {
         update_url: None,
         config_files: None,
         config_schema_paths: Vec::new(),
+        config_reference_paths: Vec::new(),
+        config_relative_path_bases: Default::default(),
       },
       built_in: None,
       initialized_test_plugin: InitializedTestPlugin {

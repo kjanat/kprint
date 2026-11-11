@@ -146,6 +146,23 @@ impl ConfigDocument<'_> {
     }
     settings.plugins.config = config_map(&file.global, file.plugin_tables)?;
     templates.expand_config_map(&mut settings.plugins.config)?;
+    if source.is_remote() {
+      for value in settings.plugins.config.values_mut() {
+        if let ConfigMapValue::PluginConfig(config) = value
+          && let Some(PluginConfigFile::Path(path)) = &mut config.config_file
+        {
+          let PathSource::Remote(remote) = source else { unreachable!() };
+          if path.starts_with("~/") || path.contains('\\') {
+            bail!("Remote configurations may only select HTTP(S) plugin configuration files.");
+          }
+          let target = remote.url.join(path)?;
+          if !matches!(target.scheme(), "http" | "https") {
+            bail!("Remote configurations may only select HTTP(S) plugin configuration files.");
+          }
+          *path = target.to_string();
+        }
+      }
+    }
     Ok((directives, settings))
   }
 }
@@ -254,8 +271,11 @@ impl Templates<'_> {
             PathSource::Local(source) => {
               parts.push(Cow::Owned(source.path.parent().unwrap().to_string_lossy().to_string()));
             }
-            PathSource::Remote(_) | PathSource::Npm(_) => {
-              bail!("Cannot use ${{configDir}} template in remote configuration files. Maybe use ${{originConfigDir}} instead?");
+            PathSource::Remote(source) => {
+              parts.push(Cow::Owned(source.url.join(".")?.as_str().trim_end_matches('/').to_string()));
+            }
+            PathSource::Npm(_) => {
+              bail!("Cannot use ${{configDir}} template in npm configuration files.");
             }
           },
           "originConfigDir" => match self.origin {
@@ -263,10 +283,7 @@ impl Templates<'_> {
               parts.push(Cow::Owned(origin.path.parent().unwrap().to_string_lossy().to_string()));
             }
             PathSource::Remote(origin) => {
-              bail!(
-                "Cannot use ${{originConfigDir}} template when the origin configuration file ({}) is remote.",
-                origin.url,
-              );
+              parts.push(Cow::Owned(origin.url.join(".")?.as_str().trim_end_matches('/').to_string()));
             }
             PathSource::Npm(npm) => {
               bail!(

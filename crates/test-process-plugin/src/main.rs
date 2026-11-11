@@ -73,6 +73,8 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
       update_url: Some("https://plugins.dprint.dev/dprint/test-process-plugin/latest.json".to_string()),
       config_files: None,
       config_schema_paths: Vec::new(),
+      config_reference_paths: Vec::new(),
+      config_relative_path_bases: Default::default(),
     }
   }
 
