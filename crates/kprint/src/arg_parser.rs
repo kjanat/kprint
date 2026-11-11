@@ -397,7 +397,7 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
   let sub_command = match (sub_command_name, sub_command_matches) {
     ("fmt", matches) => {
       if let Some(file_name_path_or_extension) = matches.get_one::<String>("stdin").map(String::from) {
-        let file_name_or_path = if file_name_path_or_extension.contains('.') {
+        let file_name_or_path = if file_name_path_or_extension.contains('.') || file_name_path_or_extension.chars().any(std::path::is_separator) {
           file_name_path_or_extension
         } else {
           // convert extension to file path
@@ -1347,6 +1347,7 @@ impl ClapExtensions for clap::Command {
 #[cfg(test)]
 mod test {
   use crate::utils::TestStdInReader;
+  use kprint_host::ConfigOptions;
 
   use super::*;
   use crate::utils::MinimumDependencyAge;
@@ -1732,6 +1733,21 @@ mod test {
         );
       }
       _ => unreachable!(),
+    }
+  }
+
+  #[test]
+  fn stdin_accepts_extensionless_paths() {
+    for (path, expected) in [
+      ("scripts/build", "scripts/build"),
+      ("./scripts/build", "./scripts/build"),
+      ("/scripts/build", "/scripts/build"),
+      #[cfg(windows)]
+      ("scripts\\build", "scripts\\build"),
+      ("ts", "file.ts"),
+    ] {
+      let args = parse_args(to_string_args(vec!["fmt", "--stdin", path]), TestStdInReader::from("text")).unwrap();
+      assert_eq!(args.stdin_file_path(), Some(expected));
     }
   }
 
