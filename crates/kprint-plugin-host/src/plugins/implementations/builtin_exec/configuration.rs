@@ -259,7 +259,7 @@ fn resolve_command(
         };
         hasher.update(contents);
       }
-      Some(format!("{:x}", hasher.finalize()))
+      Some(kprint_platform::utils::encode_hex(&hasher.finalize()))
     }
     None => None,
   };
@@ -422,7 +422,7 @@ fn compute_cache_key_files_hash(cache_key_file_hashes: &[String]) -> Option<Stri
   for file_hash in cache_key_file_hashes {
     hasher.update(file_hash);
   }
-  Some(format!("{:x}", hasher.finalize()))
+  Some(kprint_platform::utils::encode_hex(&hasher.finalize()))
 }
 
 #[cfg(test)]
