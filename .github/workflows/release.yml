@@ -10,10 +10,6 @@ on:
           - patch
           - minor
         required: true
-      suffix:
-        description: Version suffix. Empty means the repository owner, unless that is dprint.
-        type: string
-        required: false
 permissions: {}
 jobs:
   rust:
@@ -31,7 +27,6 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ secrets.GH_DPRINTBOT_PAT }}"
           GH_WORKFLOW_ACTOR: "${{ github.actor }}"
-          RELEASE_SUFFIX: "${{ github.event.inputs.suffix || (github.repository_owner != 'dprint' && github.repository_owner || '') }}"
           RELEASE_KIND: "${{ github.event.inputs.releaseKind }}"
           f: crates/kprint/Cargo.toml
         run: git config user.email "${GITHUB_ACTOR}@users.noreply.github.com";
@@ -39,7 +34,7 @@ jobs:
           v=$(yq .package.version "${f}");
           IFS=.- read -r a b c _ <<<"${v}";
           [[ "${RELEASE_KIND}" = minor ]] && b=$((b+1)) c=0 || c=$((c+1));
-          v="${a}.${b}.${c}${RELEASE_SUFFIX:+-${RELEASE_SUFFIX}}";
+          v="${a}.${b}.${c}";
           sed -i -E "0,/^version( *)= *\"[^\"]*\"/s//version\1= \"${v}\"/" "${f}";
           [[ "$(yq .package.version "${f}")" = "${v}" ]];
           cargo update --workspace;

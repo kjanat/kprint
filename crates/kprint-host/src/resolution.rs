@@ -1580,39 +1580,43 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   let config_file_base = config.origin.config_file_base.clone();
 
   // create the scope
-  let plugins = plugins_with_config
-    .into_iter()
-    .map(|(plugin_config, plugin)| {
-      let global_config = global_config.clone();
-      let environment = environment.clone();
-      let property_origins = config.plugins.origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);
-      let overrides = resolve_plugin_config_overrides(
-        plugin_config.overrides,
-        &config_base_path,
-        &property_origins,
-        &config.origin.source,
-        plugin_resolver,
-      )?;
-      let properties = resolve_plugin_config_file(
-        plugin.info(),
-        plugin_config.config_file,
-        plugin_config.properties,
-        config_file_base.as_ref(),
-        &environment,
-        &mut plugin_config_files,
-      )?;
-      let next_config_id = plugin_resolver.next_config_id();
-      let base_dir = config_base_path.clone();
-      Ok(
-        async move {
-          let format_config = Arc::new(FormatConfig {
-            id: next_config_id,
-            global: global_config,
-            plugin: properties,
-            base_dir,
-          });
-          let resolution = resolve_plugin_config(&plugin, &format_config, &environment).await?;
-          Ok::<_, anyhow::Error>(Rc::new(PluginWithConfig::new(
+  let mut plugin_futures = Vec::new();
+  for (mut plugin_config, plugin) in plugins_with_config {
+    crate::get_plugin_config_map::resolve_remote_schema_paths(plugin.info(), &mut plugin_config.properties, &config.plugins.origins)?;
+    let global_config = global_config.clone();
+    let environment = environment.clone();
+    let property_origins = config.plugins.origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);
+    let overrides = resolve_plugin_config_overrides(
+      plugin_config.overrides,
+      &config_base_path,
+      &property_origins,
+      &config.origin.source,
+      plugin_resolver,
+    )?;
+    let config_file_base = config_file_base.clone();
+    let next_config_id = plugin_resolver.next_config_id();
+    let base_dir = config_base_path.clone();
+    plugin_futures.push(
+      async move {
+        let mut files_read = Vec::new();
+        let properties = resolve_plugin_config_file(
+          plugin.info(),
+          plugin_config.config_file,
+          plugin_config.properties,
+          config_file_base.as_ref(),
+          &environment,
+          &mut files_read,
+        )
+        .await?;
+        let format_config = Arc::new(FormatConfig {
+          id: next_config_id,
+          global: global_config,
+          plugin: properties,
+          base_dir,
+        });
+        let resolution = resolve_plugin_config(&plugin, &format_config, &environment).await?;
+        Ok::<_, anyhow::Error>((
+          Rc::new(PluginWithConfig::new(
             plugin,
             PluginWithConfigOptions {
               associations: plugin_config.associations,
@@ -1624,16 +1628,19 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
               property_origins,
               release_queue: plugin_resolver.config_release_queue(),
             },
-          )))
-        }
-        .boxed_local(),
-      )
-    })
-    .collect::<Result<Vec<_>>>()?;
-  let plugin_results = kprint_async_runtime::future::join_all(plugins).await;
+          )),
+          files_read,
+        ))
+      }
+      .boxed_local(),
+    );
+  }
+  let plugin_results = kprint_async_runtime::future::join_all(plugin_futures).await;
   let mut plugins = Vec::with_capacity(plugin_results.len());
   for result in plugin_results {
-    plugins.push(result?);
+    let (plugin, files_read) = result?;
+    plugins.push(plugin);
+    plugin_config_files.extend(files_read);
   }
   for plugin in &plugins {
     for (extension, embedded_key) in plugin.embedded_plugin_keys() {

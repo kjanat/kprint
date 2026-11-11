@@ -257,7 +257,7 @@ pub struct PluginTable {
   /// The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. "cs": ["exec"]), in order. An empty array leaves that code as it is.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub embedded: Option<Embedded>,
-  /// For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by "#" and the dotted path of the part to pass (ex. "pyproject.toml#tool.tombi"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.
+  /// The plugin's configuration file, as a local path or HTTP(S) URL. Paths in remote configurations resolve against that configuration's URL. Local paths resolve from the main kprint configuration's directory. Append a dotted section after # to select part of a file, such as pyproject.toml#tool.tombi. Omit this setting to use the first file the plugin declares that exists, or set it to false to disable discovery.
   #[serde(rename = "configFile", skip_serializing_if = "Option::is_none")]
   pub config_file: Option<PluginConfigFile>,
   /// The plugin's own configuration, which its schema describes.
@@ -271,6 +271,8 @@ pub struct PluginTable {
 pub enum PluginConfigFile {
   /// The file, ex. "tombi.toml" or "pyproject.toml#tool.tombi".
   Path(String),
+  /// A path from a remote kprint configuration, with its resolved URL.
+  RemotePath { path: String, url: String },
   /// None, rather than one the plugin looks for (`false`).
   Disabled,
 }
@@ -279,6 +281,7 @@ impl Serialize for PluginConfigFile {
   fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
     match self {
       PluginConfigFile::Path(path) => serializer.serialize_str(path),
+      PluginConfigFile::RemotePath { path, .. } => serializer.serialize_str(path),
       PluginConfigFile::Disabled => serializer.serialize_bool(false),
     }
   }

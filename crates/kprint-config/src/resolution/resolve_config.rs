@@ -351,7 +351,7 @@ impl CollectedLayer {
   /// diagnostics.
   fn record_property_origins(&mut self) {
     let plugins = &mut self.settings.plugins;
-    plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin.source);
+    plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin);
     for value in plugins.config.values_mut() {
       if let ConfigMapValue::PluginConfig(plugin_config) = value {
         for override_config in &mut plugin_config.overrides {
@@ -539,13 +539,12 @@ fn apply_remote_restrictions(layer: &mut CollectedLayer, resolved_config: &Confi
   // this is only for remote configuration.
   layer.settings.plugins.sources = filter_non_wasm_plugins(plugins, environment); // NEVER REMOVE THIS STATEMENT
 
-  // A plugin's configFile is a file dprint reads on this machine and passes
-  // to the plugin, which remote configuration doesn't choose (it can still
-  // say false, so none is passed).
+  // A local file extended by a remote config must not select local plugin files.
   let mut removed_config_file = false;
   for value in layer.settings.plugins.config.values_mut() {
     if let ConfigMapValue::PluginConfig(plugin) = value
-      && matches!(plugin.config_file, Some(PluginConfigFile::Path(_)))
+      && let Some(PluginConfigFile::Path(path)) = &plugin.config_file
+      && !url::Url::parse(path).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
     {
       plugin.config_file = None;
       removed_config_file = true;
@@ -1180,11 +1179,11 @@ lineWidth = 80
   }
 
   #[test]
-  fn ignores_a_plugins_config_file_in_remote_config() {
+  fn accepts_url_paths_and_disabled_plugin_files_in_remote_config() {
     let environment = TestEnvironment::new();
     environment.add_remote_file(
       "https://dprint.dev/base.json",
-      r#"{ "toml": { "configFile": "/etc/passwd", "lineWidth": 80 }, "json": { "configFile": false } }"#.as_bytes(),
+      r#"{ "toml": { "configFile": "/shared/tombi.toml", "lineWidth": 80 }, "json": { "configFile": false } }"#.as_bytes(),
     );
     environment
       .write_file(
@@ -1196,13 +1195,18 @@ lineWidth = 80
     environment.clone().run_in_runtime(async move {
       let result = get_result("/dprint.json", &environment).await.unwrap();
       let messages = environment.take_stderr_messages();
-      assert_eq!(messages.len(), 1);
-      assert!(messages[0].contains("The 'configFile' property of a plugin is ignored"), "{:?}", messages);
+      assert!(messages.is_empty(), "{messages:?}");
       let plugin = |key: &str| match &result.plugins.config[key] {
         ConfigMapValue::PluginConfig(plugin) => plugin.clone(),
         ConfigMapValue::KeyValue(_) => unreachable!(),
       };
-      assert_eq!(plugin("toml").config_file, None);
+      assert_eq!(
+        plugin("toml").config_file,
+        Some(PluginConfigFile::RemotePath {
+          path: "/shared/tombi.toml".into(),
+          url: "https://dprint.dev/shared/tombi.toml".into()
+        })
+      );
       assert_eq!(plugin("toml").properties.get("lineWidth"), Some(&ConfigKeyValue::from_i32(80)));
       // it can still pass none
       assert_eq!(plugin("json").config_file, Some(PluginConfigFile::Disabled));
@@ -4848,7 +4852,46 @@ lineWidth = 80
   }
 
   #[test]
-  fn should_error_remote_config_file_with_config_dir() {
+  fn remote_plugin_config_paths_follow_the_declaring_url_after_redirects() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file_redirect("https://example.com/config.json", "https://cdn.example.com/team/config.json");
+    environment.add_remote_file("https://cdn.example.com/team/config.json", br#"{"extends":"../shared/base.json"}"#);
+    environment.add_remote_file(
+      "https://cdn.example.com/shared/base.json",
+      br#"{"toml":{"configFile":"./tombi.toml#tool.tombi"}}"#,
+    );
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("https://example.com/config.json", &environment).await.unwrap();
+      let ConfigMapValue::PluginConfig(config) = &result.plugins.config["toml"] else {
+        panic!("missing plugin")
+      };
+      assert_eq!(
+        config.config_file,
+        Some(PluginConfigFile::RemotePath {
+          path: "./tombi.toml#tool.tombi".into(),
+          url: "https://cdn.example.com/shared/tombi.toml#tool.tombi".into()
+        })
+      );
+    });
+  }
+
+  #[test]
+  fn remote_plugin_config_cannot_select_local_files() {
+    for path in ["file:///secret.toml", "~/secret.toml"] {
+      let environment = TestEnvironment::new();
+      environment.add_remote_file_bytes(
+        "https://example.com/config.json",
+        serde_json::json!({"toml":{"configFile":path}}).to_string().into_bytes(),
+      );
+      environment.clone().run_in_runtime(async move {
+        let error = get_result("https://example.com/config.json", &environment).await.unwrap_err();
+        assert!(error.to_string().contains("HTTP(S)"), "{error:#}");
+      });
+    }
+  }
+
+  #[test]
+  fn should_expand_remote_config_dir() {
     let environment = TestEnvironment::new();
     environment.add_remote_file(
       "https://dprint.dev/test.json",
@@ -4861,16 +4904,16 @@ lineWidth = 80
     );
 
     environment.clone().run_in_runtime(async move {
-      let result = get_result("https://dprint.dev/test.json", &environment).await.err().unwrap();
-      assert_eq!(
-        result.to_string(),
-        "Cannot use ${configDir} template in remote configuration files. Maybe use ${originConfigDir} instead?\n    at https://dprint.dev/test.json"
-      );
+      let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
+      let ConfigMapValue::PluginConfig(config) = &result.plugins.config["plugin"] else {
+        panic!("missing plugin")
+      };
+      assert_eq!(config.properties["value"], ConfigKeyValue::from_str("https://dprint.dev/test"));
     });
   }
 
   #[test]
-  fn should_error_remote_origin_config_file_with_config_dir() {
+  fn should_expand_remote_origin_config_dir() {
     let environment = TestEnvironment::new();
     environment.add_remote_file(
       "https://dprint.dev/test.json",
@@ -4893,11 +4936,11 @@ lineWidth = 80
     );
 
     environment.clone().run_in_runtime(async move {
-      let result = get_result("https://dprint.dev/test.json", &environment).await.err().unwrap();
-      assert_eq!(
-        result.to_string(),
-        "Cannot use ${originConfigDir} template when the origin configuration file (https://dprint.dev/test.json) is remote.\n    at https://dprint.dev/next.json"
-      );
+      let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
+      let ConfigMapValue::PluginConfig(config) = &result.plugins.config["final"] else {
+        panic!("missing plugin")
+      };
+      assert_eq!(config.properties["value"], ConfigKeyValue::from_str("https://dprint.dev/final"));
     });
   }
 

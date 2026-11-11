@@ -688,6 +688,15 @@ impl kprint_platform::environment::EnvironmentVariables for TestEnvironment {
 }
 
 impl kprint_platform::environment::FileSystemEnvironment for TestEnvironment {
+  fn read_file_within(&self, directory: &Path, file_path: &Path) -> io::Result<String> {
+    if !self.canonicalize(file_path)?.starts_with(&self.canonicalize(directory)?) {
+      return Err(io::Error::new(io::ErrorKind::PermissionDenied, "File is outside the configuration directory"));
+    }
+    if !self.path_is_file(file_path) {
+      return Err(io::Error::new(io::ErrorKind::InvalidInput, "Not a regular file"));
+    }
+    self.read_file(file_path)
+  }
   fn atomic_write_file_bytes(&self, file_path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
     kprint_platform::utils::fs::atomic_write_file_with_retries(self, file_path.as_ref(), bytes, 0o644)
   }

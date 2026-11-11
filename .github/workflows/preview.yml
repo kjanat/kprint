@@ -45,7 +45,7 @@ jobs:
             # a tag can't have a slash, and the version only has [0-9A-Za-z-] identifiers
             name="branch-${GITHUB_REF_NAME//[^[:alnum:]-]/-}"
           fi
-          version="${base}.${name}.g${sha:0:7}"
+          version="${base}-${name}.g${sha:0:7}"
           # the platforms npm and Docker previews are for, without their tests,
           # which CI runs
           targets="$(jq -c 'map(select(.target | IN(

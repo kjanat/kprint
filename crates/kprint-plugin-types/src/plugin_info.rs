@@ -35,6 +35,28 @@ pub struct PluginInfo {
   /// crates can read one too.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub config_files: Option<Vec<String>>,
+  /// Paths through the plugin's configuration to JSON Schema filenames.
+  /// Each segment selects an object key; `*` selects every array element.
+  /// kprint supplies these schemas and their `$ref` dependencies in
+  /// `$configFile.files`. Local files use absolute paths as keys. Remote
+  /// files use URLs. Downloads use kprint's HTTP cache.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub config_schema_paths: Vec<Vec<String>>,
+  /// Resolve relative schema filenames in inherited local configs from the selected root config.
+  /// Remote config files always resolve relative schema URLs from their own URL.
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub config_local_schemas_use_root: bool,
+  /// Paths to referenced configuration files, using `*` for array elements.
+  /// kprint supplies these files recursively in `$configFile.documents`.
+  /// Each URL maps to an object with `text` and the final `source` URL after redirects.
+  /// The plugin decides how their settings combine.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub config_reference_paths: Vec<Vec<String>>,
+  /// Overrides the directory used for relative paths in local configuration files.
+  /// Keys match path suffixes, such as `.config/tombi.toml`. Values are directories
+  /// relative to the matched file's parent. HTTP(S) files always use their URL.
+  #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+  pub config_relative_path_bases: std::collections::BTreeMap<String, String>,
 }
 
 /// Message for when a plugin's [`FileMatchingInfo`] can't be deserialized. A

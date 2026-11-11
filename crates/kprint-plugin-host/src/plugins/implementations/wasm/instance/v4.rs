@@ -344,6 +344,28 @@ impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmP
       let json_bytes = self.receive_bytes(len)?;
       info.config_files = Some(serde_json::from_slice(&json_bytes).context("Failed reading the configuration files the plugin declares.")?);
     }
+    if info.config_schema_paths.is_empty()
+      && let Some(len) = self.wasm_functions.get_config_schema_paths()?
+    {
+      let json_bytes = self.receive_bytes(len)?;
+      info.config_schema_paths = serde_json::from_slice(&json_bytes).context("Failed reading the plugin's schema paths.")?;
+    }
+    if info.config_reference_paths.is_empty()
+      && let Some(len) = self.wasm_functions.get_config_reference_paths()?
+    {
+      let json_bytes = self.receive_bytes(len)?;
+      info.config_reference_paths = serde_json::from_slice(&json_bytes).context("Failed reading the plugin's configuration references.")?;
+    }
+    if self.wasm_functions.exports.has_function("get_config_local_schemas_use_root") {
+      let len = self.wasm_functions.call_len("get_config_local_schemas_use_root", &[])?;
+      let json_bytes = self.receive_bytes(len)?;
+      info.config_local_schemas_use_root = serde_json::from_slice(&json_bytes).context("Failed reading the plugin's schema path base.")?;
+    }
+    if info.config_relative_path_bases.is_empty() && self.wasm_functions.exports.has_function("get_config_relative_path_bases") {
+      let len = self.wasm_functions.call_len("get_config_relative_path_bases", &[])?;
+      let json_bytes = self.receive_bytes(len)?;
+      info.config_relative_path_bases = serde_json::from_slice(&json_bytes).context("Failed reading the plugin's relative path bases.")?;
+    }
     Ok(info)
   }
 
@@ -445,6 +467,20 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
       return Ok(None); // the plugin doesn't read a configuration file of its own
     }
     self.call_len("get_config_files", &[]).map(Some)
+  }
+
+  pub fn get_config_schema_paths(&mut self) -> Result<Option<usize>> {
+    if !self.exports.has_function("get_config_schema_paths") {
+      return Ok(None);
+    }
+    self.call_len("get_config_schema_paths", &[]).map(Some)
+  }
+
+  pub fn get_config_reference_paths(&mut self) -> Result<Option<usize>> {
+    if !self.exports.has_function("get_config_reference_paths") {
+      return Ok(None);
+    }
+    self.call_len("get_config_reference_paths", &[]).map(Some)
   }
 
   #[inline]

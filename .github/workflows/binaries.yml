@@ -92,6 +92,7 @@ jobs:
       targets: ${{ needs.plan.outputs.targets }}
       profile: release
       ref: ${{ needs.plan.outputs.ref }}
+      version: ${{ needs.plan.outputs.tag }}
 
   upload:
     name: Upload release assets

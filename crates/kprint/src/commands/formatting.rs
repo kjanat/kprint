@@ -72,7 +72,14 @@ pub async fn stdin_fmt<TEnvironment: Environment>(
       return Ok(());
     }
   }
-  output_stdin_format(PathBuf::from(&cmd.file_name_or_path), &cmd.file_bytes, plugins_scope, environment).await
+  let file_path = PathBuf::from(&cmd.file_name_or_path);
+  // An extension such as `.txt` selects a plugin without naming a source file.
+  let file_path = if file_path.extension().is_none() && crate::utils::get_lowercase_file_extension(&file_path).is_some() {
+    file_path
+  } else {
+    environment.cwd().join(file_path)
+  };
+  output_stdin_format(file_path, &cmd.file_bytes, plugins_scope, environment).await
 }
 
 async fn output_stdin_format<TEnvironment: Environment>(

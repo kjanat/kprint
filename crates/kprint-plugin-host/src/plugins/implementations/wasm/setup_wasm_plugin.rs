@@ -59,7 +59,7 @@ pub async fn setup_wasm_plugin<TEnvironment: Environment>(
   })
 }
 
-fn interpreted_plugin_info(environment: &impl Environment, plugin_display: &str, wasm_bytes: &[u8]) -> Result<PluginInfo> {
+pub(crate) fn interpreted_plugin_info(environment: &impl Environment, plugin_display: &str, wasm_bytes: &[u8]) -> Result<PluginInfo> {
   let module = InterpretedModule::new(wasm_bytes)?;
   let log = {
     let environment = environment.clone();
