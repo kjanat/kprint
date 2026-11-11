@@ -1,0 +1,110 @@
+{
+  "$schema": "https://beepboop.kjanat.dev/schema/v1.json",
+  "streams": {
+    "main": {
+      "packages": [],
+      "versionScope": "one-for-stream",
+      "mustPublish": [],
+      "versionSource": {
+        "kind": "tags",
+        "prefix": ""
+      },
+      "workflows": {
+        "binaries": {
+          "file": "binaries.yml",
+          "mode": "observe",
+          "ref": "refs/tags/*",
+          "publications": ["pkg:github/kjanat/kprint"]
+        },
+        "publish": {
+          "file": "publish.yml",
+          "mode": "observe",
+          "ref": "refs/tags/*",
+          "publications": []
+        },
+        "preview": {
+          "file": "preview.yml",
+          "mode": "observe",
+          "ref": "refs/heads/*",
+          "publications": []
+        }
+      }
+    },
+    "crates": {
+      "packages": [
+        "pkg:cargo/kprint-async-runtime",
+        "pkg:cargo/kprint-configuration",
+        "pkg:cargo/kprint-core-macros",
+        "pkg:cargo/kprint-development",
+        "pkg:cargo/kprint-formatting",
+        "pkg:cargo/kprint-git",
+        "pkg:cargo/kprint-owned-child",
+        "pkg:cargo/kprint-communication",
+        "pkg:cargo/kprint-plugin-types",
+        "pkg:cargo/kprint-host-api",
+        "pkg:cargo/kprint-process-plugin",
+        "pkg:cargo/kprint-wasm-plugin",
+        "pkg:cargo/kprint-core",
+        "pkg:cargo/kprint-platform",
+        "pkg:cargo/test-process-plugin",
+        "pkg:cargo/kprint-discovery",
+        "pkg:cargo/kprint-plugin-host",
+        "pkg:cargo/kprint-host",
+        "pkg:cargo/kprint-lsp",
+        "pkg:cargo/kprint"
+      ],
+      "versionScope": "per-package",
+      "mustPublish": [
+        "pkg:cargo/kprint-async-runtime",
+        "pkg:cargo/kprint-configuration",
+        "pkg:cargo/kprint-core-macros",
+        "pkg:cargo/kprint-development",
+        "pkg:cargo/kprint-formatting",
+        "pkg:cargo/kprint-git",
+        "pkg:cargo/kprint-owned-child",
+        "pkg:cargo/kprint-communication",
+        "pkg:cargo/kprint-plugin-types",
+        "pkg:cargo/kprint-host-api",
+        "pkg:cargo/kprint-process-plugin",
+        "pkg:cargo/kprint-wasm-plugin",
+        "pkg:cargo/kprint-core",
+        "pkg:cargo/kprint-platform",
+        "pkg:cargo/test-process-plugin",
+        "pkg:cargo/kprint-discovery",
+        "pkg:cargo/kprint-plugin-host",
+        "pkg:cargo/kprint-host",
+        "pkg:cargo/kprint-lsp",
+        "pkg:cargo/kprint"
+      ],
+      "workflows": {
+        "publish-crates": {
+          "file": "publish-crates.yml",
+          "mode": "observe",
+          "publications": [
+            "pkg:cargo/kprint-async-runtime",
+            "pkg:cargo/kprint-configuration",
+            "pkg:cargo/kprint-core-macros",
+            "pkg:cargo/kprint-development",
+            "pkg:cargo/kprint-formatting",
+            "pkg:cargo/kprint-git",
+            "pkg:cargo/kprint-owned-child",
+            "pkg:cargo/kprint-communication",
+            "pkg:cargo/kprint-plugin-types",
+            "pkg:cargo/kprint-host-api",
+            "pkg:cargo/kprint-process-plugin",
+            "pkg:cargo/kprint-wasm-plugin",
+            "pkg:cargo/kprint-core",
+            "pkg:cargo/kprint-platform",
+            "pkg:cargo/test-process-plugin",
+            "pkg:cargo/kprint-discovery",
+            "pkg:cargo/kprint-plugin-host",
+            "pkg:cargo/kprint-host",
+            "pkg:cargo/kprint-lsp",
+            "pkg:cargo/kprint"
+          ]
+        }
+      }
+    }
+  },
+  "managers": ["cargo", "workflow"]
+}
