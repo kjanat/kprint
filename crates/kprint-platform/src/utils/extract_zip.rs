@@ -19,7 +19,7 @@ pub fn extract_zip(message: &str, zip_bytes: &[u8], dir_path: &Path, environment
       // todo: consider parallelizing this
       for i in 0..zip.len() {
         update_size(i);
-        let mut file = zip.by_index(i).unwrap();
+        let mut file = zip.by_index(i)?;
         if let Some(file_name) = file.enclosed_name() {
           let file_path = dir_path.join(file_name);
 
@@ -48,7 +48,7 @@ pub fn extract_zip(message: &str, zip_bytes: &[u8], dir_path: &Path, environment
             }
           }
         } else {
-          log_warn!(environment, "Ignoring path in zip because it was not enclosed: {}", file.name());
+          log_warn!(environment, "Ignoring path in zip because it was not enclosed: {}", file.name()?);
         }
       }
 
