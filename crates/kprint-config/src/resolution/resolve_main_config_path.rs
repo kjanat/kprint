@@ -58,7 +58,7 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
         is_global_config: false,
       }))
     } else {
-      get_default_config_file_in_ancestor_directories(environment, environment.cwd().as_ref())
+      get_default_config_file_in_ancestor_directories(environment, start_search_dir.as_ref())
     }
   }
 
@@ -420,6 +420,26 @@ mod tests {
   use super::*;
   use crate::environment::TestEnvironment;
   use kprint_platform::environment::*;
+
+  #[test]
+  fn stdin_uses_configuration_from_its_parent_directories() {
+    let environment = TestEnvironment::new();
+    environment.mk_dir_all("/project/nested").unwrap();
+    environment.write_file("/project/dprint.json", "{}").unwrap();
+    environment.write_file("/dprint.json", "{\"lineWidth\": 1}").unwrap();
+    let options = crate::options::SessionOptions {
+      file_path: Some("/project/nested/file.toml".into()),
+      ..Default::default()
+    };
+    let resolved = environment
+      .run_in_runtime(resolve_main_config_path_and_bytes(&options, &environment))
+      .unwrap()
+      .unwrap();
+    assert_eq!(
+      resolved.source,
+      PathSource::new_local(environment.canonicalize("/project/dprint.json").unwrap())
+    );
+  }
 
   #[test]
   fn test_resolve_system_config_dir_macos_with_xdg_config_home() {
