@@ -35,6 +35,12 @@ pub struct PluginInfo {
   /// crates can read one too.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub config_files: Option<Vec<String>>,
+  /// Paths through the plugin's configuration to JSON Schema filenames.
+  /// Each segment selects an object key; `*` selects every array element.
+  /// The host supplies local schemas and their local `$ref` dependencies in
+  /// `$configFile.files`, and watches them for changes.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub config_schema_paths: Vec<Vec<String>>,
 }
 
 /// Message for when a plugin's [`FileMatchingInfo`] can't be deserialized. A

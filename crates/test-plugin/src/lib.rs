@@ -91,6 +91,7 @@ impl SyncPluginHandler<Configuration> for TestWasmPlugin {
       config_schema_url: "https://plugins.dprint.dev/test/schema.json".to_string(),
       update_url: Some("https://plugins.dprint.dev/dprint/test-plugin/latest.json".to_string()),
       config_files: None,
+      config_schema_paths: Vec::new(),
     }
   }
 

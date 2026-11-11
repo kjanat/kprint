@@ -1081,6 +1081,7 @@ mod test {
       config_schema_url: String::new(),
       update_url: None,
       config_files: None,
+      config_schema_paths: Vec::new(),
     }
   }
 

@@ -86,6 +86,7 @@ impl InProcessHandler for ExecHandler {
       // it's updated by upgrading dprint
       update_url: None,
       config_files: None,
+      config_schema_paths: Vec::new(),
     }
   }
 

@@ -195,6 +195,7 @@ impl TestPlugin {
         config_schema_url: "https://plugins.dprint.dev/schemas/test.json".to_string(),
         update_url: None,
         config_files: None,
+        config_schema_paths: Vec::new(),
       },
       built_in: None,
       initialized_test_plugin: InitializedTestPlugin {

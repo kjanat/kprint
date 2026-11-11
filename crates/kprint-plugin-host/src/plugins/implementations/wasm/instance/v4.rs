@@ -344,6 +344,12 @@ impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmP
       let json_bytes = self.receive_bytes(len)?;
       info.config_files = Some(serde_json::from_slice(&json_bytes).context("Failed reading the configuration files the plugin declares.")?);
     }
+    if info.config_schema_paths.is_empty()
+      && let Some(len) = self.wasm_functions.get_config_schema_paths()?
+    {
+      let json_bytes = self.receive_bytes(len)?;
+      info.config_schema_paths = serde_json::from_slice(&json_bytes).context("Failed reading the plugin's schema paths.")?;
+    }
     Ok(info)
   }
 
@@ -445,6 +451,13 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
       return Ok(None); // the plugin doesn't read a configuration file of its own
     }
     self.call_len("get_config_files", &[]).map(Some)
+  }
+
+  pub fn get_config_schema_paths(&mut self) -> Result<Option<usize>> {
+    if !self.exports.has_function("get_config_schema_paths") {
+      return Ok(None);
+    }
+    self.call_len("get_config_schema_paths", &[]).map(Some)
   }
 
   #[inline]

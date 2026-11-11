@@ -24,6 +24,7 @@ sys_traits  = { workspace = true, features = ["real"] }
 thiserror   = { workspace = true }
 tokio       = { workspace = true, features = ["io-std"] }
 tokio-util  = { workspace = true }
+url         = { workspace = true }
 
 [dev-dependencies]
 kprint-plugin-host  = { workspace = true, features = ["test-support"] }

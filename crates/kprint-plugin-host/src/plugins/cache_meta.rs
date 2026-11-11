@@ -304,6 +304,7 @@ mod test {
         config_schema_url: "schema".to_string(),
         update_url: None,
         config_files: None,
+        config_schema_paths: Vec::new(),
       },
       executable_sub_path: None,
       local_stamps: None,
