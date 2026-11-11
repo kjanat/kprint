@@ -18,7 +18,10 @@ use std::hash::Hasher;
 /// should invalidate existing entries. Folded into each entry's signature so a
 /// bump simply orphans old entries (they stay on disk until `clear-cache`)
 /// rather than busting the whole cache.
-const PLUGIN_CACHE_SCHEMA_VERSION: usize = 13;
+const PLUGIN_CACHE_SCHEMA_VERSION: usize = 12;
+
+/// Increment when cached plugin metadata needs to be read from the plugin again.
+pub const PLUGIN_INFO_VERSION: u32 = 1;
 
 /// Size + modification time of a local file, captured at setup. A cache hit
 /// requires every stamp to still match (cheap stat, no read/hash).
@@ -53,6 +56,8 @@ pub struct PluginCacheMeta {
   /// wants an age signal).
   pub created_time: u64,
   pub info: PluginInfo,
+  #[serde(default)]
+  pub info_version: u32,
   /// Executable path relative to the plugin's extract dir. Process plugins only.
   #[serde(skip_serializing_if = "Option::is_none", default)]
   pub executable_sub_path: Option<String>,
@@ -293,6 +298,7 @@ mod test {
   fn make_meta(signature: &str) -> PluginCacheMeta {
     PluginCacheMeta {
       source: "remote:https://example.com/test.wasm".to_string(),
+      info_version: PLUGIN_INFO_VERSION,
       signature: signature.to_string(),
       plugin_kind: PluginKind::Wasm,
       created_time: 123,
@@ -325,7 +331,7 @@ mod test {
     assert_ne!(plugins_dir(&environment), first);
     // by component, as the separator is the OS's
     let has_component = |name: &str| first.components().any(|component| component.as_os_str() == name);
-    assert!(has_component("v13"));
+    assert!(has_component("v12"));
     assert!(has_component("wasmtime-43.0.2"));
     let mut meta = make_meta("signature");
     meta.info.name = "../../escape".to_string();
@@ -343,6 +349,17 @@ mod test {
     let meta = make_meta(&current_signature(&environment));
     write_meta("abc123", &meta, &environment).unwrap();
     assert_eq!(read_meta("abc123", &environment), Some(meta));
+  }
+
+  #[test]
+  fn reads_metadata_written_before_info_version_was_added() {
+    let environment = TestEnvironment::new();
+    let meta = make_meta(&current_signature(&environment));
+    let mut json = serde_json::to_value(&meta).unwrap();
+    json.as_object_mut().unwrap().remove("infoVersion");
+    let decoded: PluginCacheMeta = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded.info_version, 0);
+    assert_eq!(decoded.artifact_file_path("test", &environment), meta.artifact_file_path("test", &environment));
   }
 
   #[test]

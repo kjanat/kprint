@@ -70,6 +70,35 @@ pub async fn setup_plugin<TEnvironment: Environment>(options: SetupPluginOptions
   }
 }
 
+pub(crate) async fn read_cached_plugin_info<TEnvironment: Environment>(
+  path: &Path,
+  meta: &crate::plugins::cache_meta::PluginCacheMeta,
+  environment: &TEnvironment,
+) -> Result<PluginInfo> {
+  match meta.plugin_kind {
+    PluginKind::Wasm => {
+      let bytes = environment.read_file_bytes(path)?;
+      if let Some(checksum) = &meta.source_checksum {
+        crate::utils::verify_sha256_checksum(&bytes, checksum)?;
+      }
+      let environment = environment.clone();
+      let name = meta.info.name.clone();
+      kprint_async_runtime::spawn_blocking(move || wasm::interpreted_plugin_info(&environment, &name, &bytes)).await?
+    }
+    PluginKind::Process => Ok(
+      process::start_communicator_and_collect_info(
+        path.to_owned(),
+        meta.executable_sub_path.clone().unwrap_or_default(),
+        meta.info.version.clone(),
+        meta.info.name.clone(),
+        environment,
+      )
+      .await?
+      .plugin_info,
+    ),
+  }
+}
+
 pub async fn create_plugin<TEnvironment: Environment>(
   plugin_cache: &Rc<PluginCache<TEnvironment>>,
   environment: TEnvironment,

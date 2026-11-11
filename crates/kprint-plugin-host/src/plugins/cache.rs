@@ -14,6 +14,7 @@ use super::PluginResolutionCache;
 use super::cache_fs_locks::CacheFsLockGuard;
 use super::cache_fs_locks::CacheFsLockPool;
 use super::cache_meta::LocalStamp;
+use super::cache_meta::PLUGIN_INFO_VERSION;
 use super::cache_meta::PluginCacheMeta;
 use super::cache_meta::artifact_id;
 use super::cache_meta::build_id;
@@ -519,6 +520,20 @@ where
     // Fail before starting network work if the artifact directory cannot be
     // created. Share this check across all plugins in this cache instance.
     self.ensure_cache_dir()?;
+    if let Some(mut meta) = read_meta(&hash, &self.environment)
+      && meta.source == cache_key
+      && meta.signature == current_signature(&self.environment)
+      && meta.info_version < PLUGIN_INFO_VERSION
+      && (!source.is_local() || self.local_stamps_match(&meta))
+      && self.environment.path_is_file(meta.artifact_file_path(&hash, &self.environment))
+    {
+      meta.info = super::implementations::read_cached_plugin_info(&meta.artifact_file_path(&hash, &self.environment), &meta, &self.environment).await?;
+      meta.info_version = PLUGIN_INFO_VERSION;
+      write_meta(&hash, &meta, &self.environment)?;
+      if let Some(item) = self.cached_item(source, &hash, &cache_key) {
+        return Ok(CacheLookup::Hit(Box::new(item)));
+      }
+    }
     Ok(CacheLookup::Miss { cache_key, hash, guard })
   }
 
@@ -571,6 +586,7 @@ where
     }
 
     let mut meta = PluginCacheMeta {
+      info_version: PLUGIN_INFO_VERSION,
       source: cache_key.to_string(),
       signature: current_signature(&self.environment),
       plugin_kind,
@@ -622,9 +638,7 @@ where
   /// are unchanged. Returns `None` on any miss.
   fn cached_item(&self, source: &PathSource, hash: &str, cache_key: &str) -> Option<PluginCacheItem> {
     let meta = read_meta(hash, &self.environment)?;
-    if meta.source != cache_key {
-      // different source hashed to the same filename — treat as a miss and let
-      // the caller overwrite it
+    if meta.source != cache_key || meta.signature != current_signature(&self.environment) || meta.info_version != PLUGIN_INFO_VERSION {
       return None;
     }
     if source.is_local() && !self.local_stamps_match(&meta) {
@@ -775,6 +789,7 @@ mod test {
 
   fn make_wasm_meta(cache_key: &str, name: &str, version: &str, environment: &TestEnvironment) -> PluginCacheMeta {
     PluginCacheMeta {
+      info_version: PLUGIN_INFO_VERSION,
       source: cache_key.to_string(),
       signature: current_signature(environment),
       plugin_kind: PluginKind::Wasm,
@@ -797,6 +812,50 @@ mod test {
       source_checksum: None,
       previous_module_file_name: None,
     }
+  }
+
+  #[tokio::test]
+  async fn refreshes_cached_wasm_metadata_offline() -> Result<()> {
+    let environment = TestEnvironment::new();
+    let url = "https://plugins.example.com/test.wasm";
+    environment.add_remote_file(url, WASM_PLUGIN_BYTES);
+    let cache = PluginCache::new(environment.clone());
+    let source = PluginSourceReference::new_remote_from_str(url);
+    let original = cache.get_plugin_cache_item(&source).await?;
+    let hash = entry_hash(&cache.compute_cache_key(&source.path_source)?, &environment);
+    let mut meta = read_meta(&hash, &environment).unwrap();
+    meta.info_version = 0;
+    meta.info.config_key = "outdated".into();
+    write_meta(&hash, &meta, &environment)?;
+    environment.remove_remote_file(url);
+
+    let refreshed = cache.get_plugin_cache_item(&source).await?;
+    assert_eq!(refreshed.file_path, original.file_path);
+    assert_eq!(refreshed.info, original.info);
+    assert_ne!(refreshed.build_id, build_id(&meta));
+    assert_eq!(read_meta(&hash, &environment).unwrap().info_version, PLUGIN_INFO_VERSION);
+    assert_eq!(cache.get_plugin_cache_item(&source).await?.build_id, refreshed.build_id);
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn rejects_modified_wasm_during_offline_metadata_refresh() -> Result<()> {
+    let environment = TestEnvironment::new();
+    let url = "https://plugins.example.com/test.wasm";
+    environment.add_remote_file(url, WASM_PLUGIN_BYTES);
+    let cache = PluginCache::new(environment.clone());
+    let source = PluginSourceReference::new_remote_from_str(url);
+    let item = cache.get_plugin_cache_item(&source).await?;
+    let hash = entry_hash(&cache.compute_cache_key(&source.path_source)?, &environment);
+    let mut meta = read_meta(&hash, &environment).unwrap();
+    meta.info_version = 0;
+    write_meta(&hash, &meta, &environment)?;
+    environment.write_file(&item.file_path, "modified")?;
+    environment.remove_remote_file(url);
+    let error = cache.get_plugin_cache_item(&source).await.err().unwrap();
+    assert!(error.to_string().to_lowercase().contains("checksum"), "{error:#}");
+    assert_eq!(read_meta(&hash, &environment).unwrap().info_version, 0);
+    Ok(())
   }
 
   #[tokio::test]
@@ -1404,6 +1463,17 @@ mod test {
     let cache_item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
     assert_eq!(cache_item.info.name, "test-process-plugin");
     assert_eq!(cache_item.info.version, "0.1.0");
+
+    let hash = entry_hash(&plugin_cache.compute_cache_key(&plugin_source.path_source)?, &environment);
+    let mut meta = read_meta(&hash, &environment).unwrap();
+    meta.info_version = 0;
+    write_meta(&hash, &meta, &environment)?;
+    environment.remove_remote_file(cdn_plugin_url);
+    environment.remove_remote_file("https://cdn.example.com/plugins/v1/test-process-plugin.zip");
+    let refreshed = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
+    assert_eq!(refreshed.file_path, cache_item.file_path);
+    assert_eq!(refreshed.info, cache_item.info);
+    assert_eq!(read_meta(&hash, &environment).unwrap().info_version, PLUGIN_INFO_VERSION);
 
     Ok(())
   }

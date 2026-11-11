@@ -160,7 +160,7 @@ async fn setup_from_tarball<TEnvironment: Environment>(
 const PLUGIN_INFO_TIMEOUT: Duration = Duration::from_secs(20);
 const PLUGIN_INFO_ATTEMPTS: usize = 2;
 
-async fn start_communicator_and_collect_info<TEnvironment: Environment>(
+pub(crate) async fn start_communicator_and_collect_info<TEnvironment: Environment>(
   plugin_executable_file_path: PathBuf,
   executable_sub_path: String,
   plugin_version: String,
