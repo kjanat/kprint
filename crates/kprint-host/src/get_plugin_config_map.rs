@@ -230,6 +230,58 @@ enum ConfigFileAccess {
   Confined,
 }
 
+pub fn resolve_remote_schema_paths(plugin: &PluginInfo, properties: &mut ConfigKeyMap, origins: &kprint_config::resolution::PropertyOrigins) -> Result<()> {
+  for segments in &plugin.config_schema_paths {
+    let Some((key, rest)) = segments.split_first() else { continue };
+    let Some(origin) = origins.plugin_property(&plugin.config_key, key) else {
+      continue;
+    };
+    if origin.local_files_allowed {
+      continue;
+    }
+    if let Some(value) = properties.get_mut(key) {
+      resolve_remote_schema_path(value, rest, &origin.source)?;
+    }
+  }
+  Ok(())
+}
+
+fn resolve_remote_schema_path(value: &mut ConfigKeyValue, segments: &[String], source: &kprint_platform::utils::PathSource) -> Result<()> {
+  if let Some((key, rest)) = segments.split_first() {
+    match value {
+      ConfigKeyValue::Array(values) if key == "*" => {
+        for value in values {
+          resolve_remote_schema_path(value, rest, source)?;
+        }
+      }
+      ConfigKeyValue::Object(properties) => {
+        if let Some(value) = properties.get_mut(key) {
+          resolve_remote_schema_path(value, rest, source)?;
+        }
+      }
+      _ => {}
+    }
+  } else if let ConfigKeyValue::String(path) = value {
+    let url = match source {
+      kprint_platform::utils::PathSource::Remote(remote) => remote.url.join(path)?,
+      kprint_platform::utils::PathSource::Local(_) => url::Url::parse(path).with_context(|| {
+        format!(
+          "Configuration {} was selected by a remote configuration and may only reference HTTP(S) schemas: {path}",
+          source.display()
+        )
+      })?,
+      kprint_platform::utils::PathSource::Npm(_) => {
+        url::Url::parse(path).with_context(|| format!("Configuration {} requires an HTTP(S) schema URL: {path}", source.display()))?
+      }
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+      bail!("Configuration {} may only reference HTTP(S) schemas: {path}", source.display());
+    }
+    *path = url.to_string();
+  }
+  Ok(())
+}
+
 async fn read_plugin_config(
   reference: &ConfigFileReference,
   base_dir: &Path,
@@ -1147,6 +1199,118 @@ line-width = 100
         write(&environment, &path, r#"{"type":"object"}"#);
       }
     }
+  }
+
+  fn resolve_inline_config(
+    environment: &crate::environment::TestEnvironment,
+    config: &str,
+    info: &PluginInfo,
+  ) -> Result<(ConfigKeyMap, Vec<PluginConfigFileState>)> {
+    environment.run_in_runtime(async {
+      let args = kprint_config::options::SessionOptions {
+        config: Some(kprint_config::options::ConfigArg::PathOrUrl(config.to_string())),
+        ..Default::default()
+      };
+      let mut config = kprint_config::resolution::resolve_config_from_args(&args, environment).await?;
+      let Some(ConfigMapValue::PluginConfig(mut plugin)) = config.plugins.config.shift_remove(&info.config_key) else {
+        panic!("missing plugin configuration")
+      };
+      resolve_remote_schema_paths(info, &mut plugin.properties, &config.plugins.origins)?;
+      let mut states = Vec::new();
+      let properties = super::resolve_plugin_config_file(
+        info,
+        plugin.config_file,
+        plugin.properties,
+        config.origin.config_file_base.as_ref(),
+        environment,
+        &mut states,
+      )
+      .await?;
+      Ok((properties, states))
+    })
+  }
+
+  #[test]
+  fn remote_inline_schemas_use_the_declaring_url() {
+    for config_files in [None, Some(vec![]), Some(vec!["tombi.toml"])] {
+      let environment = crate::environment::TestEnvironment::new();
+      let root = if cfg!(windows) { "C:/project" } else { "/project" };
+      write(&environment, &format!("{root}/credentials.json"), r#"{"secret":"local value"}"#);
+      environment.set_cwd(root);
+      environment.add_remote_file_redirect("https://example.com/config.json", "https://cdn.example.com/team/config.json");
+      environment.add_remote_file(
+        "https://cdn.example.com/team/config.json",
+        br#"{"toml":{"configFile":false,"schema":"credentials.json"}}"#,
+      );
+      environment.add_remote_file("https://cdn.example.com/team/credentials.json", br#"{"type":"object"}"#);
+      write(
+        &environment,
+        &format!("{root}/dprint.json"),
+        r#"{"extends":"https://example.com/config.json","toml":{"overrides":[{"files":"*.toml","schema":"local.json"}]}}"#,
+      );
+      let mut info = tombi_info(config_files);
+      info.config_schema_paths = vec![vec!["schema".into()]];
+      for entry in ["https://example.com/config.json".to_string(), format!("{root}/dprint.json")] {
+        let (properties, states) = resolve_inline_config(&environment, &entry, &info).unwrap();
+        assert_eq!(properties["schema"].as_string().unwrap(), "https://cdn.example.com/team/credentials.json");
+        let ConfigKeyValue::Object(config) = &properties[CONFIG_FILE_CONTENT_PROPERTY] else {
+          panic!("missing resources")
+        };
+        let ConfigKeyValue::Object(files) = &config["files"] else {
+          panic!("missing schemas")
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+          files["https://cdn.example.com/team/credentials.json"].as_string().unwrap(),
+          r#"{"type":"object"}"#
+        );
+        assert!(states.iter().all(|state| matches!(state, PluginConfigFileState::Remote { .. })));
+      }
+    }
+  }
+
+  #[test]
+  fn remote_inline_schemas_cannot_select_local_files() {
+    let environment = crate::environment::TestEnvironment::new();
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    let schema_path = format!("{root}/credentials.json");
+    write(&environment, &schema_path, r#"{"secret":"local value"}"#);
+    environment.set_cwd(root);
+    let mut info = tombi_info(Some(vec![]));
+    info.config_schema_paths = vec![vec!["schemas".into(), "*".into(), "path".into()]];
+    for (index, path) in [file_url(Path::new(&schema_path)).unwrap().to_string(), "data:application/json,{}".to_string()]
+      .into_iter()
+      .enumerate()
+    {
+      let url = format!("https://example.com/config{index}.json");
+      environment.add_remote_file_bytes(&url, serde_json::json!({"toml":{"schemas":[{"path":path}]}}).to_string().into_bytes());
+      let error = resolve_inline_config(&environment, &url, &info).unwrap_err();
+      assert!(error.to_string().contains("may only reference HTTP(S) schemas"), "{error:#}");
+    }
+  }
+
+  #[test]
+  fn remote_extends_cannot_authorize_local_schema_reads() {
+    let environment = crate::environment::TestEnvironment::new();
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    let local_config = format!("{root}/base.json");
+    write(&environment, &local_config, r#"{"toml":{"schema":"credentials.json"}}"#);
+    environment.set_cwd(root);
+    write(&environment, &format!("{root}/credentials.json"), r#"{"secret":"local value"}"#);
+    environment.add_remote_file_bytes(
+      "https://example.com/config.json",
+      serde_json::json!({"extends":file_url(Path::new(&local_config)).unwrap().as_str()})
+        .to_string()
+        .into_bytes(),
+    );
+    let mut info = tombi_info(Some(vec![]));
+    info.config_schema_paths = vec![vec!["schema".into()]];
+    let error = resolve_inline_config(&environment, "https://example.com/config.json", &info).unwrap_err();
+    assert!(error.to_string().contains("was selected by a remote configuration"), "{error:#}");
+
+    let (properties, states) = resolve_inline_config(&environment, &local_config, &info).unwrap();
+    assert!(properties.contains_key(CONFIG_FILE_CONTENT_PROPERTY));
+    assert!(states.iter().any(|state| matches!(state, PluginConfigFileState::Confined { .. })));
   }
 
   #[test]

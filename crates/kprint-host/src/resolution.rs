@@ -1581,7 +1581,8 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
 
   // create the scope
   let mut plugin_futures = Vec::new();
-  for (plugin_config, plugin) in plugins_with_config {
+  for (mut plugin_config, plugin) in plugins_with_config {
+    crate::get_plugin_config_map::resolve_remote_schema_paths(plugin.info(), &mut plugin_config.properties, &config.plugins.origins)?;
     let global_config = global_config.clone();
     let environment = environment.clone();
     let property_origins = config.plugins.origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);

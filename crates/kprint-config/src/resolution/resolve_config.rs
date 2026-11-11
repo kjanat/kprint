@@ -351,7 +351,7 @@ impl CollectedLayer {
   /// diagnostics.
   fn record_property_origins(&mut self) {
     let plugins = &mut self.settings.plugins;
-    plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin.source);
+    plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin);
     for value in plugins.config.values_mut() {
       if let ConfigMapValue::PluginConfig(plugin_config) = value {
         for override_config in &mut plugin_config.overrides {

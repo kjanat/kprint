@@ -68,34 +68,52 @@ pub struct PluginConfiguration {
   pub remote_exec: RemoteExecProvenance,
 }
 
-/// The configuration file each property of a configuration is from, so a
-/// diagnostic about a property can say which file to change.
+/// Records each property's source for diagnostics and file access checks.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PropertyOrigins {
   /// By root property: the global configuration's and each plugin's key.
   root: IndexMap<String, PathSource>,
-  /// By plugin key, then by property of the plugin's configuration or its
-  /// overrides.
-  plugins: IndexMap<String, IndexMap<String, PathSource>>,
+  /// By plugin key, then by property. Overrides record their own source.
+  plugins: IndexMap<String, IndexMap<String, PluginPropertyOrigin>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginPropertyOrigin {
+  pub source: PathSource,
+  /// False for remote configurations and local files selected by remote extends.
+  pub local_files_allowed: bool,
 }
 
 impl PropertyOrigins {
-  /// Every property of a configuration file's `config`, from `source`.
-  pub(super) fn of(config: &ConfigMap, source: &PathSource) -> Self {
+  pub(super) fn of(config: &ConfigMap, origin: &super::config_layer::LayerOrigin) -> Self {
+    let source = &origin.source;
     let mut origins = PropertyOrigins::default();
     for (key, value) in config {
       origins.root.insert(key.clone(), source.clone());
       if let ConfigMapValue::PluginConfig(plugin_config) = value {
-        let properties = plugin_config
-          .properties
-          .keys()
-          .chain(plugin_config.overrides.iter().flat_map(|override_config| override_config.properties.keys()));
-        for property in properties {
-          origins.add_plugin_property(key, property, source);
-        }
+        origins.plugins.insert(
+          key.clone(),
+          plugin_config
+            .properties
+            .keys()
+            .map(|property| {
+              (
+                property.clone(),
+                PluginPropertyOrigin {
+                  source: source.clone(),
+                  local_files_allowed: origin.is_trusted(),
+                },
+              )
+            })
+            .collect(),
+        );
       }
     }
     origins
+  }
+
+  pub fn plugin_property(&self, plugin_key: &str, property: &str) -> Option<&PluginPropertyOrigin> {
+    self.plugins.get(plugin_key)?.get(property)
   }
 
   /// Sets where a root property is from, unless it's already from
@@ -106,11 +124,13 @@ impl PropertyOrigins {
 
   /// Sets where a plugin property is from, replacing where it was from.
   pub(super) fn set_plugin_property(&mut self, plugin_key: &str, property: &str, source: &PathSource) {
-    self
-      .plugins
-      .entry(plugin_key.to_string())
-      .or_default()
-      .insert(property.to_string(), source.clone());
+    self.plugins.entry(plugin_key.to_string()).or_default().insert(
+      property.to_string(),
+      PluginPropertyOrigin {
+        source: source.clone(),
+        local_files_allowed: source.is_local(),
+      },
+    );
   }
 
   /// Sets where a plugin property is from, unless it's already from
@@ -121,7 +141,10 @@ impl PropertyOrigins {
       .entry(plugin_key.to_string())
       .or_default()
       .entry(property.to_string())
-      .or_insert_with(|| source.clone());
+      .or_insert_with(|| PluginPropertyOrigin {
+        source: source.clone(),
+        local_files_allowed: source.is_local(),
+      });
   }
 
   fn add_lower_precedence(&mut self, other: PropertyOrigins) {
@@ -146,7 +169,7 @@ impl PropertyOrigins {
   /// `config_source`.
   pub fn plugin_elsewhere(&self, plugin_key: &str, config_source: &PathSource) -> IndexMap<String, PathSource> {
     let mut result = IndexMap::new();
-    let plugin = self.plugins.get(plugin_key).into_iter().flatten();
+    let plugin = self.plugins.get(plugin_key).into_iter().flatten().map(|(key, origin)| (key, &origin.source));
     for (property, source) in plugin.chain(&self.root) {
       result.entry(property.clone()).or_insert_with(|| source.clone());
     }
