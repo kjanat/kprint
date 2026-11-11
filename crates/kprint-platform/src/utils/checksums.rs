@@ -6,7 +6,7 @@ pub fn get_sha256_checksum(bytes: &[u8]) -> String {
   use sha2::Sha256;
   let mut hasher = Sha256::new();
   hasher.update(bytes);
-  format!("{:x}", hasher.finalize())
+  hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub fn verify_sha256_checksum(bytes: &[u8], checksum: &str) -> Result<()> {
