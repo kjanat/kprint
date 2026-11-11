@@ -1676,8 +1676,8 @@ name = "kprint-git"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "sha1 0.10.7",
- "sha2 0.10.9",
+ "sha1",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1776,7 +1776,7 @@ dependencies = [
  "rand 0.9.3",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "similar",
  "sys_traits",
  "sysinfo",
@@ -1818,7 +1818,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sys_traits",
  "sysinfo",
  "tar",
@@ -2793,17 +2793,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
-]
-
-[[package]]
-name = "sha1"
-version = "0.10.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -4296,7 +4285,7 @@ dependencies = [
  "nix",
  "pbkdf2",
  "ppmd-rust",
- "sha1 0.11.0",
+ "sha1",
  "time",
  "typed-path",
  "windows-sys 0.61.2",

@@ -238,12 +238,7 @@ pub fn base_url_to_filename_parts<'a>(url: &'a Url, port_separator: &str) -> Opt
 }
 
 pub fn checksum(v: &[u8]) -> String {
-  use sha2::Digest;
-  use sha2::Sha256;
-
-  let mut hasher = Sha256::new();
-  hasher.update(v);
-  format!("{:x}", hasher.finalize())
+  crate::utils::get_sha256_checksum(v)
 }
 
 #[cfg(test)]
