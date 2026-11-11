@@ -159,7 +159,10 @@ impl ConfigDocument<'_> {
           if !matches!(target.scheme(), "http" | "https") {
             bail!("Remote configurations may only select HTTP(S) plugin configuration files.");
           }
-          *path = target.to_string();
+          config.config_file = Some(PluginConfigFile::RemotePath {
+            path: path.clone(),
+            url: target.to_string(),
+          });
         }
       }
     }

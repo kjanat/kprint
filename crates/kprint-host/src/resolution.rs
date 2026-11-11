@@ -1592,19 +1592,21 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
       &config.origin.source,
       plugin_resolver,
     )?;
-    let properties = resolve_plugin_config_file(
-      plugin.info(),
-      plugin_config.config_file,
-      plugin_config.properties,
-      config_file_base.as_ref(),
-      &environment,
-      &mut plugin_config_files,
-    )
-    .await?;
+    let config_file_base = config_file_base.clone();
     let next_config_id = plugin_resolver.next_config_id();
     let base_dir = config_base_path.clone();
     plugin_futures.push(
       async move {
+        let mut files_read = Vec::new();
+        let properties = resolve_plugin_config_file(
+          plugin.info(),
+          plugin_config.config_file,
+          plugin_config.properties,
+          config_file_base.as_ref(),
+          &environment,
+          &mut files_read,
+        )
+        .await?;
         let format_config = Arc::new(FormatConfig {
           id: next_config_id,
           global: global_config,
@@ -1612,19 +1614,22 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
           base_dir,
         });
         let resolution = resolve_plugin_config(&plugin, &format_config, &environment).await?;
-        Ok::<_, anyhow::Error>(Rc::new(PluginWithConfig::new(
-          plugin,
-          PluginWithConfigOptions {
-            associations: plugin_config.associations,
-            embedded: plugin_config.embedded,
-            format_config,
-            file_matching: resolution.file_matching,
-            overrides,
-            serialized_resolved_config: resolution.resolved_config,
-            property_origins,
-            release_queue: plugin_resolver.config_release_queue(),
-          },
-        )))
+        Ok::<_, anyhow::Error>((
+          Rc::new(PluginWithConfig::new(
+            plugin,
+            PluginWithConfigOptions {
+              associations: plugin_config.associations,
+              embedded: plugin_config.embedded,
+              format_config,
+              file_matching: resolution.file_matching,
+              overrides,
+              serialized_resolved_config: resolution.resolved_config,
+              property_origins,
+              release_queue: plugin_resolver.config_release_queue(),
+            },
+          )),
+          files_read,
+        ))
       }
       .boxed_local(),
     );
@@ -1632,7 +1637,9 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   let plugin_results = kprint_async_runtime::future::join_all(plugin_futures).await;
   let mut plugins = Vec::with_capacity(plugin_results.len());
   for result in plugin_results {
-    plugins.push(result?);
+    let (plugin, files_read) = result?;
+    plugins.push(plugin);
+    plugin_config_files.extend(files_read);
   }
   for plugin in &plugins {
     for (extension, embedded_key) in plugin.embedded_plugin_keys() {

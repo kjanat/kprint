@@ -49,12 +49,14 @@ fn get_plugin_config_map_inner(plugin: &PluginWrapper, config_map: &mut ConfigMa
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginConfigFileState {
   Local { path: PathBuf, text: Option<String> },
+  Confined { directory: PathBuf, path: PathBuf, text: String },
   Remote { expires_at: u64 },
 }
 
 impl PluginConfigFileState {
   pub fn is_current(&self, environment: &impl HostEnvironment) -> bool {
     match self {
+      Self::Confined { directory, path, text } => environment.read_file_within(directory, path).is_ok_and(|current| current == *text),
       Self::Remote { expires_at } => environment.get_time_secs() < *expires_at,
       Self::Local { path, text } => {
         let current = if environment.path_is_file(path) {
@@ -87,6 +89,7 @@ pub async fn resolve_plugin_config_file(
     if let Some(config_file) = config_file {
       let value = match config_file {
         PluginConfigFile::Path(path) => ConfigKeyValue::String(path),
+        PluginConfigFile::RemotePath { path, .. } => ConfigKeyValue::String(path),
         PluginConfigFile::Disabled => ConfigKeyValue::Bool(false),
       };
       properties.insert(CONFIG_FILE_PROPERTY.to_string(), value);
@@ -94,7 +97,7 @@ pub async fn resolve_plugin_config_file(
     return Ok(properties);
   };
   let found = match config_file {
-    Some(PluginConfigFile::Path(text)) => {
+    Some(PluginConfigFile::Path(text) | PluginConfigFile::RemotePath { url: text, .. }) => {
       let reference = ConfigFileReference::parse(&text).with_context(|| format!("{}.{}", plugin_info.config_key, CONFIG_FILE_PROPERTY))?;
       let Some((content, source, text)) = read_plugin_config(&reference, base_dir, environment, files_read).await? else {
         bail!(
@@ -142,15 +145,41 @@ pub async fn resolve_plugin_config_file(
       found
     }
   };
-  let Some((reference, content, source, text)) = found else {
-    return Ok(properties);
+  let (reference, content, source, text) = match found {
+    Some(found) => found,
+    None => {
+      let content = serde_json::json!({});
+      let path = base_dir.join("config.json");
+      let source = file_url(&path)?;
+      let mut paths = Vec::new();
+      let inline = serde_json::to_value(&properties)?;
+      for segments in &plugin_info.config_schema_paths {
+        schema_paths(&inline, segments, &mut paths);
+      }
+      if paths.is_empty() {
+        return Ok(properties);
+      }
+      (ConfigFileReference::parse("config.json")?, content, source, String::new())
+    }
   };
   let config_path = base_dir.join(&reference.path);
-  let mut schema_files = read_config_schemas(plugin_info, &content, &properties, &source, base_dir, environment, files_read).await?;
+  let mut schemas = SchemaResources::default();
+  let mut schema_content = content.clone();
+  if let Some(object) = schema_content.as_object_mut() {
+    for (key, value) in &properties {
+      object.insert(key.clone(), serde_json::to_value(value)?);
+    }
+  }
+  read_config_schemas(plugin_info, &schema_content, &source, base_dir, environment, files_read, &mut schemas).await?;
   let documents = read_config_references(plugin_info, &content, &source, base_dir, environment, files_read).await?;
   for document in documents.values() {
     let content = parse_config_file(Path::new(document.source.path()), &document.text)?;
-    schema_files.extend(read_config_schemas(plugin_info, &content, &ConfigKeyMap::new(), &document.source, base_dir, environment, files_read).await?);
+    let schema_base = if plugin_info.config_local_schemas_use_root && document.source.scheme() == "file" {
+      &source
+    } else {
+      &document.source
+    };
+    read_config_schemas(plugin_info, &content, schema_base, base_dir, environment, files_read, &mut schemas).await?;
   }
   properties.insert(
     CONFIG_FILE_CONTENT_PROPERTY.to_string(),
@@ -178,6 +207,10 @@ pub async fn resolve_plugin_config_file(
       ),
       ("text".to_string(), ConfigKeyValue::String(text)),
       (
+        "fileSources".to_string(),
+        ConfigKeyValue::Object(schemas.sources.into_iter().map(|(url, source)| (url, ConfigKeyValue::String(source))).collect()),
+      ),
+      (
         "absolutePath".to_string(),
         if source.scheme() == "file" {
           ConfigKeyValue::String(config_path.to_string_lossy().into_owned())
@@ -187,7 +220,7 @@ pub async fn resolve_plugin_config_file(
       ),
       (
         "files".to_string(),
-        ConfigKeyValue::Object(schema_files.into_iter().map(|(path, text)| (path, ConfigKeyValue::String(text))).collect()),
+        ConfigKeyValue::Object(schemas.files.into_iter().map(|(path, text)| (path, ConfigKeyValue::String(text))).collect()),
       ),
     ])),
   );
@@ -225,7 +258,12 @@ async fn read_plugin_config(
     path: path.clone(),
     text: Some(text.clone()),
   });
-  let source = url::Url::from_file_path(&path)
+  let source = file_url(&path)?;
+  Ok(Some((parse_config_file(&path, &text)?, source, text)))
+}
+
+fn file_url(path: &Path) -> Result<url::Url> {
+  url::Url::from_file_path(path)
     .or_else(|()| {
       if !path.has_root() {
         return Err(());
@@ -234,8 +272,7 @@ async fn read_plugin_config(
       uri.set_path(&path.to_string_lossy().replace('\\', "/"));
       Ok(uri)
     })
-    .map_err(|()| anyhow::anyhow!("Invalid configuration path: {}", path.display()))?;
-  Ok(Some((parse_config_file(&path, &text)?, source, text)))
+    .map_err(|()| anyhow::anyhow!("Invalid configuration path: {}", path.display()))
 }
 
 #[derive(Clone)]
@@ -329,13 +366,18 @@ fn schema_paths<'a>(value: &'a JsonValue, segments: &[String], paths: &mut Vec<&
   }
 }
 
-fn schema_references(value: &JsonValue, base: &url::Url, references: &mut Vec<url::Url>) -> Result<()> {
+fn schema_references(value: &JsonValue, base: &url::Url, references: &mut Vec<url::Url>, resources: &mut std::collections::BTreeSet<String>) -> Result<()> {
   match value {
     JsonValue::Object(properties) => {
       let base = match properties.get("$id").and_then(JsonValue::as_str) {
         Some(id) => base.join(id)?,
         None => base.clone(),
       };
+      if properties.contains_key("$id") {
+        let mut resource = base.clone();
+        resource.set_fragment(None);
+        resources.insert(resource.to_string());
+      }
       for keyword in ["$ref", "$dynamicRef", "$recursiveRef"] {
         if let Some(reference) = properties.get(keyword).and_then(JsonValue::as_str) {
           references.push(base.join(reference)?);
@@ -344,7 +386,7 @@ fn schema_references(value: &JsonValue, base: &url::Url, references: &mut Vec<ur
       for keyword in ["$defs", "definitions", "properties", "patternProperties", "dependentSchemas", "dependencies"] {
         if let Some(children) = properties.get(keyword).and_then(JsonValue::as_object) {
           for child in children.values().filter(|child| child.is_object()) {
-            schema_references(child, &base, references)?;
+            schema_references(child, &base, references, resources)?;
           }
         }
       }
@@ -367,13 +409,13 @@ fn schema_references(value: &JsonValue, base: &url::Url, references: &mut Vec<ur
         "contentSchema",
       ] {
         if let Some(child) = properties.get(keyword) {
-          schema_references(child, &base, references)?;
+          schema_references(child, &base, references, resources)?;
         }
       }
     }
     JsonValue::Array(values) => {
       for child in values {
-        schema_references(child, base, references)?;
+        schema_references(child, base, references, resources)?;
       }
     }
     _ => {}
@@ -381,40 +423,50 @@ fn schema_references(value: &JsonValue, base: &url::Url, references: &mut Vec<ur
   Ok(())
 }
 
+#[derive(Default)]
+struct SchemaResources {
+  files: std::collections::BTreeMap<String, String>,
+  sources: std::collections::BTreeMap<String, String>,
+  identifiers: std::collections::BTreeSet<String>,
+  count: usize,
+}
+
 async fn read_config_schemas(
   plugin_info: &PluginInfo,
   content: &JsonValue,
-  properties: &ConfigKeyMap,
   config_uri: &url::Url,
   base_dir: &Path,
   environment: &impl HostEnvironment,
   files_read: &mut Vec<PluginConfigFileState>,
-) -> Result<std::collections::BTreeMap<String, String>> {
-  let mut files = std::collections::BTreeMap::new();
+  schemas: &mut SchemaResources,
+) -> Result<()> {
   if plugin_info.config_schema_paths.is_empty() {
-    return Ok(files);
-  }
-  let mut selected = content.clone();
-  if let Some(object) = selected.as_object_mut() {
-    for (key, value) in properties {
-      object.insert(key.clone(), serde_json::to_value(value)?);
-    }
+    return Ok(());
   }
   let mut paths = Vec::new();
   for segments in &plugin_info.config_schema_paths {
-    schema_paths(&selected, segments, &mut paths);
+    schema_paths(content, segments, &mut paths);
   }
   let mut pending = paths
     .into_iter()
-    .map(|path| config_reference_base(plugin_info, config_uri)?.join(path).map_err(Into::into))
+    .map(|path| {
+      if config_uri.scheme() == "file" && Path::new(path).is_absolute() {
+        file_url(Path::new(path))
+      } else {
+        config_reference_base(plugin_info, config_uri)?.join(path).map_err(Into::into)
+      }
+    })
     .collect::<Result<Vec<_>>>()?;
   while let Some(mut uri) = pending.pop() {
     uri.set_fragment(None);
+    if schemas.identifiers.contains(uri.as_str()) {
+      continue;
+    }
     if matches!(uri.scheme(), "http" | "https") {
-      if files.contains_key(uri.as_str()) {
+      if schemas.files.contains_key(uri.as_str()) {
         continue;
       }
-      if files.len() >= 256 {
+      if schemas.count >= 256 {
         bail!("Schema references exceed 256 files at {uri}.");
       }
       let resolved = kprint_platform::utils::resolve_path_source_to_file_with_cache(kprint_platform::utils::PathSource::new_remote(uri.clone()), environment)
@@ -425,7 +477,7 @@ async fn read_config_schemas(
       };
       let schema: JsonValue = serde_json::from_str(&resolved.content).with_context(|| format!("Invalid JSON Schema in {uri}."))?;
       let mut references = Vec::new();
-      schema_references(&schema, &remote.url, &mut references)?;
+      schema_references(&schema, &remote.url, &mut references, &mut schemas.identifiers)?;
       if references.iter().any(|uri| !matches!(uri.scheme(), "http" | "https")) {
         bail!("Remote schema {uri} may only reference HTTP(S) schemas.");
       }
@@ -433,47 +485,56 @@ async fn read_config_schemas(
       files_read.push(PluginConfigFileState::Remote {
         expires_at: environment.get_time_secs() + kprint_platform::utils::REMOTE_FILE_MAX_AGE_SECS,
       });
-      files.insert(uri.to_string(), resolved.content.clone());
-      files.insert(remote.url.to_string(), resolved.content);
+      schemas.count += 1;
+      schemas.sources.insert(uri.to_string(), remote.url.to_string());
+      schemas.files.insert(uri.to_string(), resolved.content.clone());
+      schemas.files.insert(remote.url.to_string(), resolved.content);
       continue;
     }
     if uri.scheme() != "file" {
-      continue;
+      bail!("Unsupported schema URL: {uri}");
     }
     if config_uri.scheme() != "file" {
       bail!("Remote configuration {config_uri} cannot read local schema {uri}.");
     }
     let path = uri.to_file_path().map_err(|()| anyhow::anyhow!("Invalid schema file URI: {uri}"))?;
     let key = path.to_string_lossy().into_owned();
-    if files.contains_key(&key) {
+    if schemas.files.contains_key(&key) {
       continue;
     }
-    if files.len() >= 256 {
+    if schemas.count >= 256 {
       bail!("Schema references exceed 256 files at {uri}.");
     }
     if !path.starts_with(base_dir) || escapes_dir(base_dir, &path, environment) {
       bail!("Schema {} resolves outside {}.", path.display(), base_dir.display());
     }
+    if !environment.path_is_file(&path) {
+      bail!("Failed reading schema {}: not a regular file.", path.display());
+    }
     let text = environment
-      .read_file(&path)
+      .read_file_within(base_dir, &path)
       .with_context(|| format!("Failed reading schema {}.", path.display()))?;
     let schema: JsonValue = serde_json::from_str(&text).with_context(|| format!("Invalid JSON Schema in {}.", path.display()))?;
-    schema_references(&schema, &uri, &mut pending)?;
-    files_read.push(PluginConfigFileState::Local {
+    schema_references(&schema, &uri, &mut pending, &mut schemas.identifiers)?;
+    files_read.push(PluginConfigFileState::Confined {
+      directory: base_dir.to_owned(),
       path,
-      text: Some(text.clone()),
+      text: text.clone(),
     });
-    files.insert(key, text);
+    schemas.count += 1;
+    schemas.files.insert(key, text);
   }
-  Ok(files)
+  Ok(())
 }
 
 /// Whether a path only names directories and a file below where it's
 /// joined to: not absolute, and without a `..`.
 fn is_plain_relative(path: &str) -> bool {
-  Path::new(path)
-    .components()
-    .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+  !path.contains(':')
+    && !path.contains('\\')
+    && Path::new(path)
+      .components()
+      .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
 }
 
 /// Whether an existing file is outside a directory once symlinks are
@@ -760,7 +821,13 @@ line-width = 100
     let environment = crate::environment::TestEnvironment::new();
     write(&environment, "/secret.json", "{ \"token\": \"x\" }");
     write(&environment, "/project/tombi.toml", "");
-    for path in ["../secret.json", "/secret.json", "sub/../../secret.json"] {
+    for path in [
+      "../secret.json",
+      "/secret.json",
+      "sub/../../secret.json",
+      "https://127.0.0.1/tokens.json",
+      "http://localhost/tokens.json",
+    ] {
       let mut files_read = Vec::new();
       let error = resolve_plugin_config_file(
         &tombi_info(Some(vec![path])),
@@ -805,6 +872,19 @@ line-width = 100
     let result = resolve_plugin_config_file(
       &tombi_info(None),
       Some(PluginConfigFile::Path("own.json".to_string())),
+      properties(&[]),
+      Path::new("/project"),
+      &environment,
+      &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(result, properties(&[(CONFIG_FILE_PROPERTY, ConfigKeyValue::from_str("own.json"))]));
+    let result = resolve_plugin_config_file(
+      &tombi_info(None),
+      Some(PluginConfigFile::RemotePath {
+        path: "own.json".into(),
+        url: "https://example.com/own.json".into(),
+      }),
       properties(&[]),
       Path::new("/project"),
       &environment,
@@ -982,9 +1062,126 @@ line-width = 100
     });
     let base = url::Url::parse("file:///project/schema.json").unwrap();
     let mut references = Vec::new();
-    schema_references(&schema, &base, &mut references).unwrap();
+    schema_references(&schema, &base, &mut references, &mut Default::default()).unwrap();
     let mut references = references.iter().map(url::Url::as_str).collect::<Vec<_>>();
     references.sort_unstable();
     assert_eq!(references, ["file:///project/nested/entry.json", "file:///project/nested/setting.json"]);
+  }
+
+  #[test]
+  fn loads_inline_schemas_without_a_plugin_config_file() {
+    let environment = crate::environment::TestEnvironment::new();
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    let path = format!("{root}/schema.json");
+    write(&environment, &path, r#"{"type":"object"}"#);
+    let mut info = tombi_info(Some(vec!["tombi.toml"]));
+    info.config_schema_paths = vec![vec!["schema".into()]];
+    for selected in ["schema.json", path.as_str()] {
+      let mut states = Vec::new();
+      let result = resolve_plugin_config_file(
+        &info,
+        None,
+        properties(&[("schema", ConfigKeyValue::from_str(selected))]),
+        Path::new(root),
+        &environment,
+        &mut states,
+      )
+      .unwrap();
+      let ConfigKeyValue::Object(config) = &result[CONFIG_FILE_CONTENT_PROPERTY] else {
+        panic!("missing resources")
+      };
+      let ConfigKeyValue::Object(files) = &config["files"] else {
+        panic!("missing schemas")
+      };
+      assert_eq!(files.len(), 1);
+      assert!(states.iter().all(|state| state.is_current(&environment)));
+      write(&environment, &path, "{}");
+      assert!(!states.iter().all(|state| state.is_current(&environment)));
+      write(&environment, &path, r#"{"type":"object"}"#);
+    }
+  }
+
+  #[test]
+  fn schema_ids_resolve_inside_the_loaded_document() {
+    let environment = crate::environment::TestEnvironment::new();
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    write(
+      &environment,
+      &format!("{root}/schema.json"),
+      r##"{
+      "$id":"logical.json",
+      "$defs":{"child":{"$id":"nested/child.json","type":"string","$ref":"#"}},
+      "allOf":[{"$ref":"#/$defs/child"},{"$ref":"nested/child.json"}]
+    }"##,
+    );
+    let mut info = tombi_info(Some(vec![]));
+    info.config_schema_paths = vec![vec!["schema".into()]];
+    let mut states = Vec::new();
+    resolve_plugin_config_file(
+      &info,
+      None,
+      properties(&[("schema", ConfigKeyValue::from_str("schema.json"))]),
+      Path::new(root),
+      &environment,
+      &mut states,
+    )
+    .unwrap();
+    assert_eq!(states.len(), 1);
+  }
+
+  #[test]
+  fn plugin_can_resolve_local_inherited_schemas_from_the_root_config() {
+    let environment = crate::environment::TestEnvironment::new();
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    write(&environment, &format!("{root}/tombi.toml"), "extends = ['base/tombi.toml']");
+    write(&environment, &format!("{root}/base/tombi.toml"), "schema = 'schema.json'");
+    write(&environment, &format!("{root}/schema.json"), r#"{"type":"object"}"#);
+    write(&environment, &format!("{root}/base/schema.json"), r#"{"type":"string"}"#);
+    let mut info = tombi_info(Some(vec!["tombi.toml"]));
+    info.config_schema_paths = vec![vec!["schema".into()]];
+    info.config_reference_paths = vec![vec!["extends".into(), "*".into()]];
+    for (use_root, expected) in [(true, r#"{"type":"object"}"#), (false, r#"{"type":"string"}"#)] {
+      info.config_local_schemas_use_root = use_root;
+      let result = resolve_plugin_config_file(&info, None, properties(&[]), Path::new(root), &environment, &mut Vec::new()).unwrap();
+      let ConfigKeyValue::Object(config) = &result[CONFIG_FILE_CONTENT_PROPERTY] else {
+        panic!("missing config")
+      };
+      let ConfigKeyValue::Object(files) = &config["files"] else {
+        panic!("missing schemas")
+      };
+      assert_eq!(files.values().next().unwrap().as_string().unwrap(), expected);
+      assert_eq!(files.len(), 1);
+    }
+  }
+
+  #[test]
+  fn schema_limit_is_shared_across_inherited_configs() {
+    let environment = crate::environment::TestEnvironment::new();
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    let mut info = tombi_info(Some(vec!["tombi.toml"]));
+    info.config_schema_paths = vec![vec!["schemas".into(), "*".into()]];
+    info.config_reference_paths = vec![vec!["extends".into(), "*".into()]];
+    let schemas = (0..256).map(|i| format!("'s{i}.json'")).collect::<Vec<_>>().join(",");
+    write(
+      &environment,
+      &format!("{root}/tombi.toml"),
+      &format!("extends = ['base.toml']\nschemas = [{schemas}]"),
+    );
+    for i in 0..257 {
+      write(&environment, &format!("{root}/s{i}.json"), "{}");
+    }
+    write(&environment, &format!("{root}/base.toml"), "schemas = ['s0.json']");
+    let mut states = Vec::new();
+    resolve_plugin_config_file(&info, None, properties(&[]), Path::new(root), &environment, &mut states).unwrap();
+    assert_eq!(
+      states
+        .iter()
+        .filter(|state| matches!(state, PluginConfigFileState::Confined {path, ..} if path.extension().is_some_and(|extension| extension == "json")))
+        .count(),
+      256
+    );
+    write(&environment, &format!("{root}/base.toml"), "schemas = ['s256.json']");
+    let error = resolve_plugin_config_file(&info, None, properties(&[]), Path::new(root), &environment, &mut Vec::new()).unwrap_err();
+    assert!(error.to_string().contains("exceed 256 files"), "{error:#}");
   }
 }

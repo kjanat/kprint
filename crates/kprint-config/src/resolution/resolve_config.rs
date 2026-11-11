@@ -1202,7 +1202,10 @@ lineWidth = 80
       };
       assert_eq!(
         plugin("toml").config_file,
-        Some(PluginConfigFile::Path("https://dprint.dev/shared/tombi.toml".into()))
+        Some(PluginConfigFile::RemotePath {
+          path: "/shared/tombi.toml".into(),
+          url: "https://dprint.dev/shared/tombi.toml".into()
+        })
       );
       assert_eq!(plugin("toml").properties.get("lineWidth"), Some(&ConfigKeyValue::from_i32(80)));
       // it can still pass none
@@ -4864,7 +4867,10 @@ lineWidth = 80
       };
       assert_eq!(
         config.config_file,
-        Some(PluginConfigFile::Path("https://cdn.example.com/shared/tombi.toml#tool.tombi".into()))
+        Some(PluginConfigFile::RemotePath {
+          path: "./tombi.toml#tool.tombi".into(),
+          url: "https://cdn.example.com/shared/tombi.toml#tool.tombi".into()
+        })
       );
     });
   }

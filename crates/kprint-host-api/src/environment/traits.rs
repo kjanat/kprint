@@ -216,6 +216,8 @@ pub trait EnvironmentVariables {
 }
 
 pub trait FileSystemEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
+  /// Reads a regular file beneath `directory`, rejecting paths and symlinks that escape it during the read.
+  fn read_file_within(&self, directory: &Path, file_path: &Path) -> io::Result<String>;
   fn read_file(&self, file_path: impl AsRef<Path>) -> io::Result<String>;
   fn maybe_read_file(&self, file_path: impl AsRef<Path>) -> io::Result<Option<String>> {
     match self.read_file(file_path) {

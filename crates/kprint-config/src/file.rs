@@ -271,6 +271,8 @@ pub struct PluginTable {
 pub enum PluginConfigFile {
   /// The file, ex. "tombi.toml" or "pyproject.toml#tool.tombi".
   Path(String),
+  /// A path from a remote kprint configuration, with its resolved URL.
+  RemotePath { path: String, url: String },
   /// None, rather than one the plugin looks for (`false`).
   Disabled,
 }
@@ -279,6 +281,7 @@ impl Serialize for PluginConfigFile {
   fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
     match self {
       PluginConfigFile::Path(path) => serializer.serialize_str(path),
+      PluginConfigFile::RemotePath { path, .. } => serializer.serialize_str(path),
       PluginConfigFile::Disabled => serializer.serialize_bool(false),
     }
   }

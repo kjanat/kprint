@@ -14,6 +14,8 @@ kprint-owned-child   = { workspace = true }
 tree-fucker = { workspace = true }
 
 anyhow        = { workspace = true }
+cap-fs-ext    = { workspace = true }
+cap-std       = { workspace = true }
 deno_terminal = { workspace = true }
 fs3           = { workspace = true }
 ipnet         = { workspace = true }

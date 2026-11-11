@@ -37,6 +37,7 @@ impl api::SyncPluginHandler<Configuration> for Plugin {
       update_url: None,
       config_files: None,
       config_schema_paths: Vec::new(),
+      config_local_schemas_use_root: false,
       config_reference_paths: Vec::new(),
       config_relative_path_bases: Default::default(),
     }

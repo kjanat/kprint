@@ -42,6 +42,10 @@ pub struct PluginInfo {
   /// files use URLs. Downloads use kprint's HTTP cache.
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub config_schema_paths: Vec<Vec<String>>,
+  /// Resolve relative schema filenames in inherited local configs from the selected root config.
+  /// Remote config files always resolve relative schema URLs from their own URL.
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub config_local_schemas_use_root: bool,
   /// Paths to referenced configuration files, using `*` for array elements.
   /// kprint supplies these files recursively in `$configFile.documents`.
   /// Each URL maps to an object with `text` and the final `source` URL after redirects.

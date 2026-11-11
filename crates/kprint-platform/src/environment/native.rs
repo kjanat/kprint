@@ -207,6 +207,24 @@ impl<S: NativeServices> crate::environment::EnvironmentVariables for NativeEnvir
 }
 
 impl<S: NativeServices> crate::environment::FileSystemEnvironment for NativeEnvironment<S> {
+  fn read_file_within(&self, directory: &Path, file_path: &Path) -> io::Result<String> {
+    use cap_fs_ext::OpenOptionsSyncExt;
+    use std::io::Read;
+
+    let relative = file_path
+      .strip_prefix(directory)
+      .map_err(|_| io::Error::new(io::ErrorKind::PermissionDenied, "File is outside the configuration directory"))?;
+    let directory = cap_std::fs::Dir::open_ambient_dir(directory, cap_std::ambient_authority())?;
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true).nonblock(true);
+    let mut file = directory.open_with(relative, &options)?;
+    if !file.metadata()?.is_file() {
+      return Err(io::Error::new(io::ErrorKind::InvalidInput, "Not a regular file"));
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text)
+  }
   fn atomic_write_file_bytes(&self, file_path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
     crate::utils::fs::atomic_write_file_with_retries(self, file_path.as_ref(), bytes, 0o644)
   }
@@ -874,6 +892,36 @@ mod test {
       result.unwrap().to_string(),
       "The DPRINT_CACHE_DIR environment variable must specify an absolute path."
     );
+  }
+
+  #[test]
+  fn reads_only_regular_files_beneath_the_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = cap_std::fs::Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+    directory.create_dir("config").unwrap();
+    directory.write("config/schema.json", "{}").unwrap();
+    directory.write("secret.json", "secret").unwrap();
+    let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
+    let root = temp.path().join("config");
+    assert_eq!(environment.read_file_within(&root, &root.join("schema.json")).unwrap(), "{}");
+    assert!(environment.read_file_within(&root, &root.join("../secret.json")).is_err());
+    assert!(environment.read_file_within(&root, &root).is_err());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn confined_reads_reject_symlink_escapes_and_fifos() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = cap_std::fs::Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+    directory.create_dir("config").unwrap();
+    directory.write("secret.json", "secret").unwrap();
+    directory.symlink("../secret.json", "config/schema.json").unwrap();
+    let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
+    let root = temp.path().join("config");
+    assert!(environment.read_file_within(&root, &root.join("schema.json")).is_err());
+    let fifo = root.join("fifo.json");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    assert!(environment.read_file_within(&root, &fifo).is_err());
   }
 
   #[cfg(unix)]
