@@ -18,14 +18,14 @@ source=("${pkgname}-${pkgver}.tar.gz::https://github.com/kjanat/kprint/archive/r
 sha256sums=('2ca93c954ffbf410e5428653a7c18288a319d98790c5b2563b7a8174695b4db2')
 
 prepare() {
-	cd "dprint-${_tag}" || exit
+	cd "kprint-${_tag}" || exit
 	export RUSTUP_TOOLCHAIN=stable
 	_host="$(rustc --print host-tuple)"
 	cargo fetch --locked --target "${_host}"
 }
 
 build() {
-	cd "dprint-${_tag}" || exit
+	cd "kprint-${_tag}" || exit
 	RUSTUP_TOOLCHAIN=stable
 	CARGO_TARGET_DIR=target
 	export RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
@@ -35,7 +35,7 @@ build() {
 }
 
 package() {
-	cd "dprint-${_tag}" || exit
+	cd "kprint-${_tag}" || exit
 	install -Dm0755 target/release/kprint "${pkgdir}/usr/bin/kprint"
 	# for what calls dprint
 	ln -s kprint "${pkgdir}/usr/bin/dprint"

@@ -68,8 +68,7 @@ jobs:
             echo "Nightly ${version} (last: ${last:-none}, publish: ${publish})"
           else
             [[ -n "${RELEASE_TAG}" ]] || { echo 'No release version.' >&2; exit 1; }
-            # the release tag is 0.60.6-kjanat; the image is tagged 0.60.6 and
-            # 0.60 (and latest), like npm's plain versions
+            # Older release tags include the fork suffix, unlike image tags.
             semver="${RELEASE_TAG%-kjanat}"
             docker_tags="${semver}"
             if [[ "${PRERELEASE}" != true ]]; then
@@ -157,11 +156,11 @@ jobs:
         with: { persist-credentials: false }
       - name: Set the release version
         run: |
-          if [[ ! "${TAG}" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-kjanat$ ]]; then
-            echo "Expected a MAJOR.MINOR.PATCH-kjanat tag, got ${TAG}" >&2
+          if [[ ! "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a MAJOR.MINOR.PATCH tag, got ${TAG}" >&2
             exit 1
           fi
-          sed -i -e "s/^pkgver=.*/pkgver=${BASH_REMATCH[1]}/" -e 's/^pkgrel=.*/pkgrel=1/' "${PKGBUILD}"
+          sed -i -e "s/^pkgver=.*/pkgver=${TAG}/" -e 's/^pkgrel=.*/pkgrel=1/' -e "s/^_tag=.*/_tag=\"\${pkgver}\"/" "${PKGBUILD}"
           cat "${PKGBUILD}"
       - name: Publish to the AUR
         if: "!(inputs.dry_run || false)"
