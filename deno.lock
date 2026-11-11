@@ -65,7 +65,7 @@
     "npm:json5@2.2.3": "2.2.3",
     "npm:lightningcss-wasm@1.33.0": "1.33.0",
     "npm:lz-string@1.5.0": "1.5.0",
-    "npm:markdown-it-anchor@10.0.0": "10.0.0_@types+markdown-it@14.2.0_markdown-it@15.0.2",
+    "npm:markdown-it-anchor@10.1.0": "10.1.0_markdown-it@15.0.2",
     "npm:markdown-it-attrs@5.0.1": "5.0.1_markdown-it@15.0.2",
     "npm:markdown-it-deflist@4.0.0": "4.0.0",
     "npm:markdown-it@15.0.2": "15.0.2",
@@ -643,19 +643,6 @@
     "@types/geojson@7946.0.16": {
       "integrity": "sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg=="
     },
-    "@types/linkify-it@5.0.0": {
-      "integrity": "sha512-sVDA58zAw4eWAffKOaQH5/5j3XeayukzDk+ewSsnv3p4yJEZHCCzMDiZM8e0OUrRvmpGZ85jf4yDHkHsgBNr9Q=="
-    },
-    "@types/markdown-it@14.2.0": {
-      "integrity": "sha512-NoQ2yGlLWj4wpxMs+TYmRKk3thDrQ97agr7sFqfLsAlvoS8SNQuTrlObhFqG9iugdTtgOE9jpJ6FNM4ZGsa5xQ==",
-      "dependencies": [
-        "@types/linkify-it",
-        "@types/mdurl"
-      ]
-    },
-    "@types/mdurl@2.0.0": {
-      "integrity": "sha512-RGdgjQUZba5p6QEFAVx2OGb8rQDL/cPRG7GiedRzMcJ1tYnUANBncjbSB1NRGwbvjcPeikRABz2nshyPk1bhWg=="
-    },
     "@types/node@24.19.1": {
       "integrity": "sha512-aS3/DG0oM05K0RIXXP+hKjinGG5IgSSVGzswZxW3O0sS3pH4/fycXundUC9XsszgKCk4gHXylTEK6hyFxVxnoQ==",
       "dependencies": [
@@ -1038,10 +1025,9 @@
         "pify@3.0.0"
       ]
     },
-    "markdown-it-anchor@10.0.0_@types+markdown-it@14.2.0_markdown-it@15.0.2": {
-      "integrity": "sha512-Q8g7Z6OBdH3eXF0lujFqukIxUvgCDZcjzCrJxmD6QiEzU1HWR9fVN+Bf6gxmM+0yrPFs+jUw8gNjLmUQqt6Eew==",
+    "markdown-it-anchor@10.1.0_markdown-it@15.0.2": {
+      "integrity": "sha512-htMTOUnoGqoWguddWO+NBrOEdh3dt9k1RIhTlr2CQTJOPiLZglDDGADu+Ch+47roTO6nxl2aJfSYykmOhdJCew==",
       "dependencies": [
-        "@types/markdown-it",
         "markdown-it"
       ]
     },
@@ -1497,7 +1483,7 @@
       },
       "website": {
         "dependencies": [
-          "npm:markdown-it-anchor@10.0.0"
+          "npm:markdown-it-anchor@10.1.0"
         ]
       },
       "website/playground": {
