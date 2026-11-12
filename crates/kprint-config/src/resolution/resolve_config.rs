@@ -698,7 +698,8 @@ mod tests {
   #[test]
   fn checksum_pins_require_pinned_descendants_including_local_files() {
     TestEnvironment::new().run_in_runtime(async {
-      for child in ["https://example.com/child.json", "file:///child.json"] {
+      let local_file_url = if cfg!(windows) { "file:///C:/child.json" } else { "file:///child.json" };
+      for child in ["https://example.com/child.json", local_file_url] {
         let environment = TestEnvironment::new();
         let body = format!(r#"{{"extends":"{child}"}}"#);
         let hash = crate::utils::get_sha256_checksum(body.as_bytes());
