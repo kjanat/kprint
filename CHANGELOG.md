@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Revalidate local plugin contents on cache hits, including process archives, so same-size replacements with preserved timestamps cannot reuse a stale formatting identity.
+
 - Match exec extensions and filenames case-insensitively. Preserve real paths for shebang-matched files, add `{{file_path_with_ext}}` and `{{ext}}`, and explicitly report that exec does not support range formatting. Invalidate the built-in exec formatting cache for the changed behavior.
 
 - Always use built-in exec for recognized references. Remove the external-exec switch and version-specific trust exceptions; reject local or self-hosted external exec manifests.
