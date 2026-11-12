@@ -22,6 +22,7 @@ The workflow requires all declared targets. Removing a supported target requires
 ## Local validation
 
 ```sh
+deno install --frozen --entrypoint deployment/npm/build.ts deployment/npm/release_test.ts deployment/npm/publish_test.ts deployment/npm/workflow_test.ts
 deno task --cwd deployment/npm check
 deno task --cwd deployment/npm test
 actionlint .github/workflows/release.yml .github/workflows/binaries.yml .github/workflows/publish.yml .github/workflows/ci.yml
