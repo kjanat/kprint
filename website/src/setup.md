@@ -80,6 +80,14 @@ Automatically selected cache directories must be real directories. Their parent
 may be relocated through a symlink, but the final `cache` or `.kprint` directory
 may not itself be a symlink.
 
+This check runs when an environment is created. Later cache reads, writes, and
+`clear-cache` use the selected path and require its directory hierarchy to stay
+in place for the lifetime of that environment. Renaming or replacing an ancestor
+can redirect those operations to a different directory. Keep the cache and its
+ancestors under trusted control; stop running kprint processes before relocating
+them. Per-environment selection preserves the chosen path, not ownership of the
+directory after filesystem changes.
+
 ### Cloudflare builds
 
 When `WORKERS_CI=1` or `CF_PAGES=1`, kprint places its cache in a dedicated

@@ -476,6 +476,45 @@ mod test {
   }
 
   #[test]
+  fn rejects_an_exec_identity_reported_after_startup() {
+    use crate::environment::FileSystemEnvironment;
+    use crate::environment::RealEnvironment;
+    RealEnvironment::run_test_with_real_env(|environment| {
+      Box::pin(async move {
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join(if cfg!(windows) { "test-reports-exec.exe" } else { "test-reports-exec" });
+        let source = &*kprint_test_support::test_helpers::TEST_PROCESS_PLUGIN_PATH;
+        // Only a child opens the copied executable for writing on Unix, so
+        // concurrent test process spawns cannot inherit a writable descriptor.
+        #[cfg(unix)]
+        assert!(
+          std::process::Command::new("cp")
+            .arg("--")
+            .arg(source)
+            .arg(&executable)
+            .status()
+            .unwrap()
+            .success()
+        );
+        #[cfg(windows)]
+        {
+          use sys_traits::FsCopy;
+          sys_traits::impls::RealSys.fs_copy(source, &executable).unwrap();
+        }
+        let marker = executable.with_extension("started");
+        assert!(!environment.path_exists(&marker));
+        let error = start_communicator_and_collect_info(executable, "test-reports-exec".into(), "0.1.0".into(), "another-plugin".into(), &environment)
+          .await
+          .err()
+          .unwrap();
+        assert!(error.downcast_ref::<NoRetrySetupError>().is_some(), "{error:#}");
+        assert!(error.to_string().contains("External exec plugins are no longer supported"));
+        assert_eq!(environment.read_file_bytes(marker).unwrap(), b"started");
+      })
+    });
+  }
+
+  #[test]
   fn selects_freebsd_process_plugin() {
     let environment = crate::environment::TestEnvironment::new();
     environment.set_os("freebsd");

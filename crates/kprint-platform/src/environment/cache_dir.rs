@@ -23,7 +23,8 @@ impl CacheLocation {
     let parent = self.path.parent().ok_or_else(|| io::Error::other("Cache directory has no parent"))?;
     std::fs::create_dir_all(parent)?;
     // Resolve relocated package-manager directories, while retaining the leaf
-    // name so clear-cache never adopts a symlink's target as its own directory.
+    // name so initialization rejects a linked leaf. The returned path requires
+    // stable ancestors for the environment's lifetime; no directory handle is retained.
     let parent_path = dunce::canonicalize(parent)?;
     let parent = cap_std::fs::Dir::open_ambient_dir(&parent_path, cap_std::ambient_authority())?;
     let name = self.path.file_name().ok_or_else(|| io::Error::other("Cache directory has no name"))?;
@@ -298,6 +299,29 @@ mod tests {
     std::fs::remove_dir_all(cache.as_ref()).unwrap();
     assert_eq!(std::fs::read_to_string(manager.join("keep")).unwrap(), "package-manager data");
     assert!(target.join("keep").is_file());
+  }
+
+  #[test]
+  fn a_prepared_cache_path_requires_unchanged_ancestors() {
+    let root = tempfile::tempdir().unwrap();
+    let ancestor = root.path().join("manager");
+    let moved = root.path().join("original-manager");
+    let cache = CacheLocation {
+      path: ancestor.join(".kprint"),
+      explicit: false,
+    }
+    .prepare()
+    .unwrap();
+    std::fs::write(cache.join("original"), b"original cache").unwrap();
+    std::fs::rename(&ancestor, &moved).unwrap();
+    std::fs::create_dir_all(ancestor.join(".kprint")).unwrap();
+    std::fs::write(ancestor.join(".kprint/sentinel"), b"unrelated replacement").unwrap();
+
+    // Selection is stable, but a path follows the replacement hierarchy.
+    // Demonstrate that boundary without deleting the unrelated fixture.
+    assert_eq!(std::fs::read(cache.join("sentinel")).unwrap(), b"unrelated replacement");
+    assert_eq!(std::fs::read(moved.join(".kprint/original")).unwrap(), b"original cache");
+    assert!(!cache.join("original").exists());
   }
 
   #[test]
