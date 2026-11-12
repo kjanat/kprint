@@ -127,6 +127,9 @@ pub async fn create_plugin<TEnvironment: Environment>(
     }
   };
 
+  if cache_item.plugin_kind == PluginKind::Process {
+    process::reject_external_exec(&cache_item.info.name)?;
+  }
   match cache_item.plugin_kind {
     PluginKind::Wasm => {
       // the modules are loaded once the plugin is used, so a plugin that has
@@ -612,6 +615,7 @@ mod test {
   async fn format_with(plugin: &Rc<dyn crate::plugins::InitializedPlugin>) -> kprint_plugin_types::FormatResult {
     plugin
       .format_text(crate::plugins::InitializedPluginFormatRequest {
+        real_file_path: PathBuf::from("/file.txt"),
         file_path: PathBuf::from("/file.txt"),
         file_text: b"text".to_vec(),
         range: None,

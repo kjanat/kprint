@@ -38,6 +38,7 @@ fn formats_with_built_in_exec_for_any_release_or_checksum() {
       })
       .write_file("/file.txt", "text\n")
       .build();
+    environment.set_env_var("DPRINT_BUILTIN_EXEC", Some("0"));
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n", "{}", reference);
     assert_eq!(environment.take_stdout_messages(), vec![crate::test_helpers::get_singular_formatted_text()]);
@@ -72,7 +73,7 @@ fn builtin_exec_has_resolved_config_and_schema_without_a_plugin_reference() {
       config.add_config_section("exec", r#"{"commands":[{"command":"formatter","exts":["txt"]}]}"#);
     })
     .build();
-  // Direct host configuration does not depend on the legacy substitution switch.
+  // The retired switch cannot disable the host formatter.
   environment.set_env_var("DPRINT_BUILTIN_EXEC", Some("0"));
   run_test_cli(vec!["output-resolved-config"], &environment).unwrap();
   let resolved: serde_json::Value = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
@@ -298,4 +299,62 @@ fn reports_an_unknown_plugin_for_embedded_code() {
     "{}",
     error
   );
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_matches_configured_names_and_extensions_case_insensitively() {
+  for (path, selector) in [
+    ("/script.ps1", r#""exts":["PS1"]"#),
+    ("/script.PS1", r#""exts":["ps1"]"#),
+    ("/Makefile", r#""fileNames":["MAKEFILE"]"#),
+    ("/ÉTÉ", r#""fileNames":["été"]"#),
+    ("/file.ÉTÉ", r#""exts":["été"]"#),
+  ] {
+    let environment = TestEnvironmentBuilder::new()
+      .with_default_config(|config| {
+        config.add_config_section("exec", &format!(r#"{{"commands":[{{"command":"tr a-z A-Z",{selector}}}]}}"#));
+      })
+      .write_file(path, "text\n")
+      .build();
+    run_test_cli(vec!["fmt", path], &environment).unwrap();
+    assert_eq!(environment.read_file(path).unwrap(), "TEXT\n", "{path}");
+    environment.take_stdout_messages();
+  }
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_retains_real_and_parser_paths_from_the_host() {
+  for (path, parser_path, ext) in [
+    ("/scripts/build", "/scripts/build.dprint-ext-added.sh", "sh"),
+    ("/scripts/real.dprint-ext-added.sh", "/scripts/real.dprint-ext-added.sh", "sh"),
+    ("/scripts/script.sh", "/scripts/script.sh", "sh"),
+  ] {
+    for stdin in [false, true] {
+      let environment = TestEnvironmentBuilder::new()
+        .with_default_config(|config| {
+          config.add_config_section("shebangs", r##"{"#!/bin/sh":"sh"}"##).add_config_section(
+            "exec",
+            r#"{"commands":[{"command":{"executable":"printf","args":["%s|%s|%s", "{{file_path}}", "{{file_path_with_ext}}", "{{ext}}"]},"exts":["SH"]}]}"#,
+          );
+        })
+        .write_file(path, "#!/bin/sh\ntext\n")
+        .build();
+      let expected = format!("{path}|{parser_path}|{ext}");
+      if stdin {
+        crate::test_helpers::run_test_cli_with_stdin(
+          vec!["fmt", "--stdin", path, "--skip-stable-format"],
+          &environment,
+          crate::utils::TestStdInReader::from("#!/bin/sh\ntext\n"),
+        )
+        .unwrap();
+        assert_eq!(environment.take_stdout_messages(), vec![expected], "{path}");
+      } else {
+        run_test_cli(vec!["fmt", path, "--skip-stable-format"], &environment).unwrap();
+        assert_eq!(environment.read_file(path).unwrap(), expected, "{path}");
+        environment.take_stdout_messages();
+      }
+    }
+  }
 }

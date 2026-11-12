@@ -245,6 +245,7 @@ mod test {
         {
           let formatted_text = communicator
             .format_text(InitializedPluginFormatRequest {
+              real_file_path: PathBuf::from("test.txt"),
               file_path: PathBuf::from("test.txt"),
               file_text: "testing".to_string().into_bytes(),
               range: None,
@@ -266,6 +267,7 @@ mod test {
           futures.push(kprint_async_runtime::spawn(async move {
             communicator
               .format_text(InitializedPluginFormatRequest {
+                real_file_path: PathBuf::from("test.txt"),
                 file_path: PathBuf::from("test.txt"),
                 // special text that makes it wait for cancellation
                 file_text: "wait_cancellation".to_string().into_bytes(),
@@ -299,6 +301,7 @@ mod test {
         {
           let formatted_text = communicator
             .format_text(InitializedPluginFormatRequest {
+              real_file_path: PathBuf::from("test.txt"),
               file_path: PathBuf::from("test.txt"),
               file_text: "testing".to_string().into_bytes(),
               range: None,
@@ -336,6 +339,7 @@ mod test {
         // start up a format that will wait for cancellation
         let token = Arc::new(CancellationToken::new());
         let future = communicator.format_text(InitializedPluginFormatRequest {
+          real_file_path: PathBuf::from("test.txt"),
           file_path: PathBuf::from("test.txt"),
           // special text that makes it wait for cancellation
           file_text: "wait_cancellation".to_string().into_bytes(),
@@ -462,6 +466,7 @@ mod test {
             async move {
               communicator
                 .format_text(InitializedPluginFormatRequest {
+                  real_file_path: PathBuf::from("test.txt"),
                   file_path: PathBuf::from("test.txt"),
                   // special text that makes it wait for cancellation
                   file_text: b"wait_cancellation".to_vec(),

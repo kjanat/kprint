@@ -21,6 +21,15 @@ use crate::utils::fs::get_atomic_path;
 use crate::utils::resolve_url_or_file_path_to_path_source;
 use crate::utils::verify_sha256_checksum;
 
+pub(crate) fn reject_external_exec(name: &str) -> Result<()> {
+  if name == kprint_config::exec::legacy::PLUGIN_NAME {
+    return Err(
+      NoRetrySetupError("External exec plugins are no longer supported. Configure the built-in exec formatter or use \"exec\" in plugins.".into()).into(),
+    );
+  }
+  Ok(())
+}
+
 fn get_plugin_executable_file_name(plugin_name: &str) -> String {
   if cfg!(target_os = "windows") {
     format!("{}.exe", plugin_name)
@@ -45,6 +54,7 @@ pub async fn setup_process_plugin<TEnvironment: Environment>(
   environment: &TEnvironment,
 ) -> Result<SetupPluginResult> {
   if let Some(tarball) = pre_resolved_tarball {
+    reject_external_exec(&tarball.name)?;
     let result = setup_from_tarball(
       dest_dir_path,
       tarball.name,
@@ -172,6 +182,7 @@ pub(crate) async fn start_communicator_and_collect_info<TEnvironment: Environmen
   plugin_name: String,
   environment: &TEnvironment,
 ) -> Result<SetupPluginResult> {
+  reject_external_exec(&plugin_name)?;
   let executable_path = super::get_test_safe_executable_path(&plugin_version, plugin_executable_file_path.clone(), environment);
   let mut failures: Vec<String> = Vec::new();
   for attempt in 1..=PLUGIN_INFO_ATTEMPTS {
@@ -179,6 +190,7 @@ pub(crate) async fn start_communicator_and_collect_info<TEnvironment: Environmen
     // process doesn't outlive the attempt
     let failure = match tokio::time::timeout(PLUGIN_INFO_TIMEOUT, collect_plugin_info(&executable_path, &plugin_name, environment)).await {
       Ok(Ok(plugin_info)) => {
+        reject_external_exec(&plugin_info.name)?;
         return Ok(SetupPluginResult {
           plugin_info,
           file_path: plugin_executable_file_path,
@@ -299,6 +311,7 @@ async fn get_plugin_zip_bytes<TEnvironment: Environment>(
   environment: &TEnvironment,
 ) -> Result<ProcessPluginZipBytes> {
   let plugin_file = parse_process_plugin_file(plugin_file_bytes)?;
+  reject_external_exec(&plugin_file.name)?;
   let plugin_path = get_os_path(&plugin_file, environment)?;
   let plugin_zip_path = resolve_url_or_file_path_to_path_source(&plugin_path.reference, &url_or_file_path.parent(), environment)?;
   let plugin_zip_bytes = fetch_file_or_url_bytes(&plugin_zip_path, environment).await?;
@@ -409,6 +422,58 @@ pub fn get_os_path<'a>(plugin_file: &'a ProcessPluginFile, environment: &impl En
 #[cfg(test)]
 mod test {
   use super::*;
+
+  #[tokio::test]
+  async fn rejects_external_exec_before_downloading_its_archive() {
+    let environment = crate::environment::TestEnvironment::new();
+    let manifest = crate::test_helpers::TestProcessPluginFileBuilder::default().name("dprint-plugin-exec").build();
+    for source in [
+      PathSource::new_remote("https://self-hosted.example.com/exec.json".parse().unwrap()),
+      PathSource::new_local(crate::environment::CanonicalizedPathBuf::new_for_testing("/exec.json")),
+    ] {
+      let error = setup_process_plugin(&source, manifest.text().as_bytes(), None, Path::new("/cache/external-exec"), &environment)
+        .await
+        .err()
+        .unwrap();
+      assert!(error.downcast_ref::<NoRetrySetupError>().is_some());
+      assert!(error.to_string().contains("External exec plugins are no longer supported"));
+    }
+    assert!(environment.take_stderr_messages().is_empty());
+  }
+
+  #[tokio::test]
+  async fn rejects_external_exec_tarballs_and_cached_executables_before_starting() {
+    let environment = crate::environment::TestEnvironment::new();
+    let source = PathSource::new_remote("https://self-hosted.example.com/exec.json".parse().unwrap());
+    let error = setup_process_plugin(
+      &source,
+      b"",
+      Some(crate::plugins::npm_resolution::PreResolvedProcessPluginTarball {
+        name: "dprint-plugin-exec".into(),
+        version: "0.8.0".into(),
+        tarball_bytes: vec![],
+        executable_sub_path: "exec".into(),
+      }),
+      Path::new("/cache/external-exec"),
+      &environment,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(error.downcast_ref::<NoRetrySetupError>().is_some());
+    let error = start_communicator_and_collect_info(
+      PathBuf::from("/missing-exec"),
+      "exec".into(),
+      "0.8.0".into(),
+      "dprint-plugin-exec".into(),
+      &environment,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(error.downcast_ref::<NoRetrySetupError>().is_some());
+    assert!(environment.take_stderr_messages().is_empty());
+  }
 
   #[test]
   fn selects_freebsd_process_plugin() {

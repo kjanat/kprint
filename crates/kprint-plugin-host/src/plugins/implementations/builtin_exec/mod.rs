@@ -21,9 +21,7 @@ pub use kprint_config::exec::input;
 use kprint_config::exec::legacy;
 mod template;
 
-pub use legacy::COMMANDS_RELEASE as EXEC_COMMANDS_RELEASE;
 pub use legacy::is_exec_plugin_reference;
-pub use legacy::knows_exec_plugin_commands;
 
 use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::BuiltInFormatter;
@@ -38,7 +36,7 @@ use super::in_process::InProcessPlugin;
 /// commands for a file, or what it does with their output.
 /// `handler::test::a_change_in_formatting_bumps_the_cache_revision` fails when
 /// what it makes of a set of files changes.
-const CACHE_REVISION: u32 = 2;
+const CACHE_REVISION: u32 = 3;
 
 pub static BUILT_IN: BuiltInFormatter = BuiltInFormatter {
   name: "exec",
@@ -47,21 +45,10 @@ pub static BUILT_IN: BuiltInFormatter = BuiltInFormatter {
   refers_to_served_plugin: is_exec_plugin_reference,
 };
 
-/// Set to `0` to download and run the exec process plugin instead.
-const BUILTIN_EXEC_ENV_VAR: &str = "DPRINT_BUILTIN_EXEC";
-
 /// Creates the built-in exec when the reference is to the exec plugin, in any
 /// release.
 pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvironment, reference: &PluginSourceReference) -> Option<Box<dyn Plugin>> {
-  if !is_builtin_exec_reference(environment, reference) {
-    if is_exec_plugin_reference(reference) {
-      log_debug!(
-        environment,
-        "Using the exec process plugin for {}: {}=0",
-        reference.display(),
-        BUILTIN_EXEC_ENV_VAR
-      );
-    }
+  if !is_exec_plugin_reference(reference) {
     return None;
   }
   log_debug!(environment, "Using the built-in exec for {}", reference.display());
@@ -78,10 +65,6 @@ impl Default for ExecFormatter {
   }
 }
 
-/// Whether dprint serves the reference with the built-in exec rather than
-/// running the exec process plugin it refers to.
-pub use kprint_config::exec::is_builtin_exec_reference;
-
 #[cfg(test)]
 mod test {
   use super::*;
@@ -91,6 +74,11 @@ mod test {
   fn parse_reference(text: &str, environment: &TestEnvironment) -> PluginSourceReference {
     let base = PathSource::new_local(crate::environment::CanonicalizedPathBuf::new_for_testing("/"));
     crate::plugins::parse_plugin_source_reference(text, &base, environment).unwrap()
+  }
+
+  #[test]
+  fn explicitly_declares_no_range_formatting() {
+    assert_eq!(super::ExecFormatter::default().info().supports_range_formatting, Some(false));
   }
 
   #[test]
@@ -338,7 +326,6 @@ mod test {
     for text in EXEC_REFERENCES {
       let reference = parse_reference(text, &environment);
       assert!(is_exec_plugin_reference(&reference), "{}", text);
-      assert!(is_builtin_exec_reference(&environment, &reference), "{}", text);
       assert!(create_builtin_exec_plugin(&environment, &reference).is_some(), "{}", text);
     }
   }
@@ -364,27 +351,12 @@ mod test {
   }
 
   #[test]
-  fn knows_the_commands_of_the_release_it_reads() {
+  fn retired_switch_cannot_enable_external_exec() {
     let environment = TestEnvironment::new();
-    let knows = |text: &str| knows_exec_plugin_commands(&parse_reference(text, &environment));
-    assert_eq!(legacy::COMMANDS_RELEASE, "0.7.3");
-    assert!(knows("npm:@dprint/exec@0.7.3/plugin.json"));
-    assert!(knows("https://plugins.dprint.dev/exec-0.7.3.json@abc"));
-    // as the process plugin, another release can read commands differently
-    assert!(!knows("npm:@dprint/exec@0.8.0/plugin.json"));
-    assert!(!knows("https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json"));
-  }
-
-  #[test]
-  fn uses_the_process_plugin_when_disabled() {
-    let environment = TestEnvironment::new();
-    environment.set_env_var(BUILTIN_EXEC_ENV_VAR, Some("0"));
+    environment.set_env_var("DPRINT_BUILTIN_EXEC", Some("0"));
     for text in EXEC_REFERENCES {
       let reference = parse_reference(text, &environment);
-      assert!(create_builtin_exec_plugin(&environment, &reference).is_none(), "{}", text);
+      assert!(create_builtin_exec_plugin(&environment, &reference).is_some(), "{}", text);
     }
-    environment.set_env_var(BUILTIN_EXEC_ENV_VAR, None);
-    let reference = parse_reference("npm:@dprint/exec@0.7.3/plugin.json", &environment);
-    assert!(create_builtin_exec_plugin(&environment, &reference).is_some());
   }
 }

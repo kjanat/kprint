@@ -11,30 +11,17 @@
 //! decides what a command with a relative path runs, local commands included,
 //! so it's only used with `"playWithFire": true`.
 //!
-//! This follows the configuration of exec plugin release
-//! `EXEC_COMMANDS_RELEASE` (0.7.3), as the built-in exec reads it. Its
-//! properties are spelled in `ExecConfigInput`. It fails closed: of the other remote exec properties, at the root or in an override,
-//! only the ones that release has that don't decide what runs are used without
-//! `"playWithFire": true` (any others might, ex. ones a later release adds),
-//! and a remote command that isn't one that release reads (ex. with a property
-//! it doesn't have) only runs with it.
-//! Nor does remote configuration set how long a command may run (`timeout`,
-//! `setupTimeout`) without it: a remote command runs within the local
-//! configuration's limits.
+//! Commands and properties use the host's `ExecConfigInput` contract. Program
+//! allowlists accept command lines whose executable can be checked. Unknown
+//! properties, structured invocations, and persistent commands require
+//! `"playWithFire": true`. Remote time limits require it too, so an allowlisted
+//! command stays within the local configuration's limits.
 //!
-//! Which program a command runs is read the way that release reads it. So a
-//! list of programs is only checked when the exec plugin that runs the
-//! commands is that release, and otherwise remote commands only run with
-//! `"playWithFire": true`. A command's own `cwd` decides what a program it
-//! runs by a relative path (ex. `./formatter`) is, so a remote command that
-//! sets both only runs with `"playWithFire": true` as well. So does one that
-//! sets it and runs a program by name while the PATH has a relative entry
-//! (ex. `.`), which is searched in that directory. On Windows, so does one
-//! whose program is a batch file (`.cmd`, `.bat`, ex. an npm shim), which runs
-//! through `cmd.exe`, which arguments can't be passed to safely. So does one with
-//! `cacheKeyFiles`: the exec plugin reads those files on this machine (in its
-//! `cwd`) to key its cache, and a list of programs allows running them, not
-//! reading files.
+//! A command's own `cwd` decides what a relative program path runs. Such a
+//! command requires `"playWithFire": true`, as does a named program when PATH
+//! contains a relative entry. On Windows, batch files require it because they
+//! run through `cmd.exe`. `cacheKeyFiles` also requires it: permission to run a
+//! program alone does not grant permission to read arbitrary local files.
 //!
 //! A nested configuration that inherits its ancestor's configuration and
 //! specifies `"playWithFire"` itself only runs the remote commands it inherits
@@ -62,7 +49,6 @@ use super::RawPluginConfigOverride;
 use super::ValueOrigin;
 use super::config_settings::merge_config_map_into;
 use crate::environment::ConfigEnvironment as Environment;
-use crate::plugins::EXEC_COMMANDS_RELEASE;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::exec_input::ExecCommandInput;
 use crate::plugins::exec_input::ExecCommandPropertyNames;
@@ -70,21 +56,17 @@ use crate::plugins::exec_input::ExecConfigInput;
 use crate::plugins::exec_input::ExecPropertyNames;
 use crate::plugins::exec_input::InvocationInput;
 use crate::plugins::exec_input::PlayWithFire;
-use crate::plugins::is_builtin_exec_reference;
 use crate::plugins::is_exec_plugin_reference;
-use crate::plugins::knows_exec_plugin_commands;
 use crate::utils::PathSource;
 
 const EXEC_CONFIG_KEY: &str = "exec";
 
-/// The exec plugin 0.7.3's properties, as a configuration spells them: the
-/// type the built-in exec reads its configuration as is where they're
-/// spelled, and this policy goes by them.
+/// Property names shared with the host's exec input contract.
 fn names() -> &'static ExecPropertyNames {
   ExecConfigInput::property_names()
 }
 
-/// The properties of an exec plugin 0.7.3 command, likewise.
+/// Command property names from the same host contract.
 fn command_names() -> &'static ExecCommandPropertyNames {
   ExecCommandInput::property_names()
 }
@@ -108,7 +90,7 @@ pub struct RemoteExec {
   /// The other properties that may decide what runs, by name, each taken like
   /// `commands`: the working directory of the commands (`cwd`), which decides
   /// what a command with a relative path runs, including local commands, and
-  /// any property the exec plugin 0.7.3 doesn't have.
+  /// any property outside the unrestricted host contract.
   restricted: IndexMap<String, RemoteValue<ConfigKeyValue>>,
   /// The overrides of each remote configuration, which can have commands and
   /// a working directory too.
@@ -182,8 +164,7 @@ struct IgnoredSourceCommands {
 struct IgnoredReasons {
   /// The programs they run that aren't allowed.
   programs: Vec<String>,
-  /// Why they aren't commands the exec plugin 0.7.3 reads (ex. a property it
-  /// doesn't have), as reading them as its command type says.
+  /// Why their executable cannot be checked against a program allowlist.
   not_commands: Vec<String>,
   /// The programs they run by a relative path in a `cwd` of their own.
   relative_programs: Vec<String>,
@@ -310,7 +291,7 @@ impl RemoteExec {
         });
       }
     }
-    let (exec_plugins, other_plugins) = plugins.into_iter().partition(|plugin| is_builtin_exec_reference(environment, plugin));
+    let (exec_plugins, other_plugins) = plugins.into_iter().partition(is_exec_plugin_reference);
     self.plugins.extend::<Vec<_>>(exec_plugins);
     other_plugins
   }
@@ -333,7 +314,7 @@ impl RemoteExec {
       remote: self,
       policy,
     }];
-    let plugin = make_exec_config(&scopes, config, sources, origins, environment, Notes::All)?;
+    let plugin = make_exec_config(&scopes, config, sources, origins, environment, true)?;
     *remote_exec = RemoteExecProvenance { scopes, plugin };
     Ok(())
   }
@@ -425,15 +406,6 @@ impl RemoteExec {
   }
 }
 
-/// What to note about what's ignored.
-#[derive(Clone, Copy, PartialEq)]
-enum Notes {
-  All,
-  /// Only that a list of programs can't be checked, which a nested
-  /// configuration can find out about what it inherits.
-  UncheckablePrograms,
-}
-
 /// Makes the exec configuration in `config_map` from the scopes, replacing
 /// any that's there, and adds the remote exec plugin to `plugins` when it's
 /// used. Gives that plugin.
@@ -443,61 +415,29 @@ fn make_exec_config(
   plugins: &mut Vec<PluginSourceReference>,
   origins: &mut PropertyOrigins,
   environment: &impl Environment,
-  notes: Notes,
+  notes: bool,
 ) -> Result<Option<PluginSourceReference>> {
-  let exec_plugins = plugins.iter().filter(|plugin| is_exec_plugin_reference(plugin)).collect::<Vec<_>>();
-  let uses_exec = !exec_plugins.is_empty();
-  // a list of programs is checked the way the built-in exec (and the exec
-  // plugin 0.7.3) reads its commands, so a process plugin of another release
-  // can't be checked
-  let uncheckable_exec_plugin = exec_plugins
-    .into_iter()
-    .find(|plugin| !is_builtin_exec_reference(environment, plugin) && !knows_exec_plugin_commands(plugin))
-    .cloned();
+  let uses_exec = plugins.iter().any(is_exec_plugin_reference);
   let mut exec_config = ConfigMap::new();
   let mut remote_plugin = None;
   let mut any_allowed = false;
   // a nested configuration's "playWithFire" applies to what it inherits, so
   // each scope goes by the closest one that specifies it
   let mut closest_policy: Option<&Policy> = None;
-  let mut noted_uncheckable = false;
   for (index, scope) in scopes.iter().enumerate() {
     closest_policy = closest_policy.or(scope.policy.as_ref());
-    let mut policy = closest_policy.cloned().unwrap_or(Policy::None);
-    let mut uncheckable = false;
-    if let (Policy::Programs(_), Some(exec_plugin)) = (&policy, &uncheckable_exec_plugin) {
-      uncheckable = true;
-      if !noted_uncheckable && scope_has_commands(scope) {
-        noted_uncheckable = true;
-        log_warn!(
-          environment,
-          concat!(
-            "Note: The exec commands in remote configuration are ignored for security reasons, as the programs they run are only ",
-            "checked against \"{}\" for the exec plugin {}, and this configuration uses {}. ",
-            "To run them, specify \"{}\": true in the exec configuration of a local configuration file."
-          ),
-          names().play_with_fire,
-          EXEC_COMMANDS_RELEASE,
-          exec_plugin.display(),
-          names().play_with_fire,
-        );
-      }
-      policy = Policy::None;
-    }
+    let policy = closest_policy.cloned().unwrap_or(Policy::None);
     any_allowed |= policy != Policy::None;
     let mut scope_config = ConfigMap::new();
     if let Some(base) = &scope.base {
       scope_config.insert(EXEC_CONFIG_KEY.to_string(), base.clone());
     }
     // what's ignored of what's inherited was noted for the configuration it's
-    // from, and the commands that can't be checked were noted above
-    let plugin = scope.remote.clone().apply_policy(
-      &mut scope_config,
-      &policy,
-      origins,
-      environment,
-      notes == Notes::All && index == 0 && !uncheckable,
-    );
+    // from.
+    let plugin = scope
+      .remote
+      .clone()
+      .apply_policy(&mut scope_config, &policy, origins, environment, notes && index == 0);
     remote_plugin = remote_plugin.or(plugin);
     merge_config_map_into(&mut exec_config, scope_config)?;
   }
@@ -513,7 +453,6 @@ fn make_exec_config(
   if !has_remote_plugin || uses_exec {
     return Ok(None);
   }
-  let notes = notes == Notes::All;
   if !any_allowed {
     if notes {
       log_warn!(
@@ -547,17 +486,6 @@ fn make_exec_config(
   }
 }
 
-/// Whether remote configuration specified commands in the scope.
-fn scope_has_commands(scope: &RemoteExecScope) -> bool {
-  scope.remote.commands.is_some()
-    || scope.remote.overrides.iter().any(|remote| {
-      remote
-        .overrides
-        .iter()
-        .any(|override_config| override_config.properties.contains_key(&names().commands))
-    })
-}
-
 /// Notes the remote commands and properties a policy ignored.
 fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_properties: IgnoredProperties, environment: &impl Environment) {
   for ignored in ignored_commands.0 {
@@ -571,8 +499,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
         }
         if !why.not_commands.is_empty() {
           reasons.push(format!(
-            "aren't commands the exec plugin {} reads, which only run with \"{}\": true: {}",
-            EXEC_COMMANDS_RELEASE,
+            "can't be checked against the program allowlist, which only run with \"{}\": true: {}",
             play_with_fire,
             why.not_commands.join(", ")
           ));
@@ -629,7 +556,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
     }
   }
   for (source, key) in ignored_properties.0 {
-    let unknown = format!("the exec plugin {} doesn't have it, so kprint can't tell what it does", EXEC_COMMANDS_RELEASE);
+    let unknown = "kprint does not recognize the property";
     log_warn!(
       environment,
       concat!(
@@ -645,7 +572,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
       } else if names().contains(&key) {
         "kprint doesn't know whether it decides what runs"
       } else {
-        &unknown
+        unknown
       },
       names().play_with_fire,
     );
@@ -705,7 +632,7 @@ impl RemoteExecProvenance {
     origins: &mut PropertyOrigins,
     environment: &impl Environment,
   ) -> Result<()> {
-    self.plugin = make_exec_config(&self.scopes, config_map, plugins, origins, environment, Notes::UncheckablePrograms)?;
+    self.plugin = make_exec_config(&self.scopes, config_map, plugins, origins, environment, false)?;
     Ok(())
   }
 }
@@ -744,7 +671,7 @@ fn allowed_override(
 }
 
 /// Whether remote configuration may specify an exec property without
-/// `"playWithFire": true`: the exec plugin 0.7.3 properties that neither
+/// `"playWithFire": true`: host properties that neither
 /// decide what runs nor for how long. `commands` is checked on its own. Any
 /// other property (ex. one a later version adds) is restricted.
 fn is_unrestricted(key: &str) -> bool {
@@ -794,9 +721,7 @@ fn allowed_commands(
     }
     Policy::AnyProgram => commands,
     Policy::Programs(programs) => {
-      // a command is checked as the exec plugin 0.7.3 reads it, so one it
-      // doesn't read that way (ex. with a property it doesn't have, which
-      // might change what runs) isn't allowed
+      // Only invocations whose executable can be checked are allowlisted.
       let (allowed, not_allowed): (Vec<_>, Vec<_>) = commands
         .into_iter()
         .partition(|command| read_command(command).is_ok_and(|command| command_allowed(&command, programs, lookup)));
@@ -823,14 +748,14 @@ fn allowed_commands(
   }
 }
 
-/// Reads a remote command the way the exec plugin 0.7.3 does.
+/// Reads a remote command whose executable can be checked against an allowlist.
 fn read_command(command: &ConfigKeyValue) -> Result<ExecCommandInput, ValueError> {
-  let not_in_release = || format!("the exec plugin {} doesn't have it", EXEC_COMMANDS_RELEASE);
+  let unknown_property = || "the built-in exec does not recognize this property".to_string();
   let command: ExecCommandInput = from_value(command.clone()).map_err(|err| {
     if err.message.starts_with("unknown field") {
       ValueError {
         path: err.path,
-        message: not_in_release(),
+        message: unknown_property(),
       }
     } else {
       err
@@ -845,14 +770,14 @@ fn read_command(command: &ConfigKeyValue) -> Result<ExecCommandInput, ValueError
   if let Some((name, _)) = not_lines.into_iter().find(|(_, not_line)| *not_line) {
     return Err(ValueError {
       path: name.clone(),
-      message: format!("the exec plugin {} only reads a command line", EXEC_COMMANDS_RELEASE),
+      message: "program allowlists require a command line".to_string(),
     });
   }
   let served = [(&names.serve, command.serve.is_some()), (&names.workers, command.workers.is_some())];
   match served.into_iter().find(|(_, specified)| *specified) {
     Some((name, _)) => Err(ValueError {
       path: name.clone(),
-      message: not_in_release(),
+      message: "program allowlists do not support persistent commands".to_string(),
     }),
     None => Ok(command),
   }

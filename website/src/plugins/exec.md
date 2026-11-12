@@ -14,7 +14,7 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
   </div>
 </div>
 
-The CLI has exec built in, and formats every reference to this plugin with it rather than downloading anything: any release, the latest one or none in particular, with any checksum, written any way (ex. `npm:@dprint/exec@0.7.3/plugin.json`, `npm:@dprint/exec`, `https://plugins.dprint.dev/exec-0.5.0.json`, `https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json`, its GitHub releases or the npm package on jsDelivr or unpkg). So it works on every platform the CLI does (ex. FreeBSD), and `dprint config update` leaves such references alone. The built-in reads the configuration of release 0.7.3. To run the separate plugin process a reference names instead, set `DPRINT_BUILTIN_EXEC=0`.
+The CLI has exec built in, and formats every reference to this plugin with it rather than downloading anything: any release, the latest one or none in particular, with any checksum, written any way (ex. `npm:@dprint/exec@0.7.3/plugin.json`, `npm:@dprint/exec`, `https://plugins.dprint.dev/exec-0.5.0.json`, `https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json`, its GitHub releases or the npm package on jsDelivr or unpkg). So it works on every platform the CLI does (ex. FreeBSD), and `dprint config update` leaves such references alone. Exec always uses the built-in formatter and its host-owned configuration contract.
 
 An `exec` section in your local configuration activates the built-in formatter directly. No entry in `plugins` or download is required. To place it among the plugins, list it as `"exec"`:
 
@@ -27,7 +27,7 @@ command = "gofmt -s"
 exts    = ["go"]
 ```
 
-An explicit exec plugin reference still selects that plugin and its position in the formatter chain. Without a reference, built-in exec runs after the listed plugins. `DPRINT_BUILTIN_EXEC=0` only disables substitution of legacy plugin references; it does not disable a directly configured built-in formatter. Commands inherited from remote configurations still require local `playWithFire` permission as described below.
+An explicit exec plugin reference selects the built-in formatter at that position in the formatter chain. Without a reference, built-in exec runs after the listed plugins. Commands inherited from remote configurations still require local `playWithFire` permission as described below.
 
 Compared to the downloaded plugin, the built-in one:
 
@@ -36,7 +36,7 @@ Compared to the downloaded plugin, the built-in one:
 - Supports a `"setupTimeout"` option (default: `300` seconds): how long a file waits for its `setupCommand`, which is killed once no file waits for it.
 - Runs a `setupCommand` once for the files that need it, also when formatting them in parallel. Each file waits for it until its own `"setupTimeout"` or until its formatting is cancelled, while it keeps running for the files that still wait. Its success applies to every file after it. A failure (it couldn't start, it exited unsuccessfully, or the last file waiting for it timed out) applies to every file for 10 seconds rather than being retried for each one, after which the next file runs it again, waiting twice as long after each failure in a row. So a long running process such as an editor's language server recovers from a failure that was transient. After 5 failures in a row (about two and a half minutes), the failure is final until the plugin restarts. A file whose formatting is cancelled doesn't count as a failure.
 - On Windows, finds commands through the `PATHEXT` extensions like the Windows shell does, so `.cmd` and `.bat` commands (ex. ones installed with `npm install -g`) work.
-- Passes `{{file_path}}`, `{{line_width}}`, `{{use_tabs}}`, `{{indent_width}}`, `{{cwd}}` and `{{timeout}}` to commands as they are, where the plugin escaped them for HTML (ex. a `&` in a file path became `&amp;`). They may also be written `{{ file_path }}` or `{{{file_path}}}`, and `\{{` is a literal `{{`. Anything else in `{{` and `}}` (ex. `{{filePath}}`) is reported as a configuration error, rather than failing each file.
+- Passes `{{file_path}}`, `{{file_path_with_ext}}`, `{{ext}}`, `{{line_width}}`, `{{use_tabs}}`, `{{indent_width}}`, `{{cwd}}` and `{{timeout}}` to commands as they are, without HTML escaping. They may also be written `{{ file_path }}` or `{{{file_path}}}`, and `\{{` is a literal `{{`. Anything else in `{{` and `}}` (ex. `{{filePath}}`) is reported as a configuration error, rather than failing each file.
 - Has its configuration schema built in, so [`dprint schema`](/config#schema) and the language server describe all of the options above without downloading it.
 - Takes a `"command"` and `"setupCommand"` as an array or an object too (see [Command forms](#command-forms)).
 - Formats the files a command's `"associations"` glob matches, relative to the configuration file's directory like dprint's own `"associations"`, after the formatter that owns them (ex. markdown for `.md`), or alone when none does. The plugin also needed the glob in its own `"associations"`, which takes the files from their formatter.
@@ -94,7 +94,7 @@ The command answers each line with one line on stdout:
 The rest of how it runs:
 
 - `"workers"` (default: `1`) sets how many processes of the command format files at once.
-- Its arguments and `"env"` values can't use `{{file_path}}`, as one process formats every file. Each request carries the file's path and settings, and the other variables are available.
+- Its arguments and `"env"` values can't use `{{file_path}}`, `{{file_path_with_ext}}`, or `{{ext}}`, as one process formats every file. Each request carries the file's path and settings, and the other variables are available.
 - `"timeout"` applies to each answer. A process that exits, answers with something else, or takes longer fails the file it was formatting and is killed. The next file starts a new process.
 - A process that formats no file for 5 minutes ends, and every process ends with dprint.
 - Files travel as JSON text, so a file that isn't UTF-8 fails.
@@ -117,16 +117,46 @@ Commands run programs, so like process plugins and `"includes"`, the exec comman
 
 This includes the commands in its `"overrides"`. Its `"cwd"` (the directory commands run in, which decides what a command with a relative path runs, including your local commands) is only used with `"playWithFire": true`. A remote configuration can't allow itself. When none of its commands are allowed, its exec plugin is ignored too.
 
-This goes by what version 0.7.3 of the plugin has, so of a remote configuration's other exec properties, at the root or in an override, only `"lineWidth"`, `"indentWidth"`, `"useTabs"` and `"cacheKey"` are used without `"playWithFire": true`. `"timeout"` and `"setupTimeout"` set how long a command may run on your machine, so a remote command runs within what your local configuration allows unless it specifies `"playWithFire": true`. Any other property might decide what runs (ex. one a later version adds), and so might a property of a command that 0.7.3 doesn't have (ex. `"serve"`) or a `"command"` or `"setupCommand"` given as an array or object, so such a command only runs with `"playWithFire": true` too. Likewise, the program a command runs is read the way 0.7.3 reads it, so a list of programs only applies when the exec plugin that runs the commands is 0.7.3 (or the remote configuration's): with another version, or one installed in `node_modules` without a version, remote commands only run with `"playWithFire": true`. A command's own `"cwd"` decides what a program it runs by a relative path (ex. `./formatter`) is, so a remote command that sets both only runs with `"playWithFire": true` too; one that runs a program by name (ex. `cargo fmt`, found on the PATH) or by an absolute path may set its `"cwd"`, unless the PATH has a relative entry (ex. `.`), which is searched in that directory: then a command that sets its `"cwd"` and runs a program by name only runs with `"playWithFire": true` too. On Windows, a remote command whose program is a batch file (`.cmd` or `.bat`, ex. a shim `npm install -g` makes) runs through `cmd.exe`, which arguments can't be passed to safely, so it only runs with `"playWithFire": true` as well. A remote command with `"cacheKeyFiles"` has the plugin read those files on this machine to key its cache, which isn't running a program, so it only runs with `"playWithFire": true` as well.
+Remote command checks follow the built-in formatter's host-owned contract for
+every exec alias, including versioned and unversioned references. A program
+allowlist permits only command-line invocations whose executables can be checked.
+Structured invocations (arrays or objects), persistent commands such as `serve`,
+and unrecognized command properties require `"playWithFire": true`.
+
+Of the other remote exec properties, only `"lineWidth"`, `"indentWidth"`,
+`"useTabs"`, and `"cacheKey"` are accepted without `"playWithFire": true`.
+`"timeout"` and `"setupTimeout"` require it so remote commands stay within local
+execution limits. Other properties can affect what runs and also require it.
+
+A remote command that sets its own `"cwd"` requires `"playWithFire": true` when
+its executable is a relative path, or when a named executable is resolved using
+a relative PATH entry. On Windows, batch files (`.cmd` or `.bat`, including npm
+shims) require it because they execute through `cmd.exe`. Commands using
+`"cacheKeyFiles"` require it because they read local files beyond the permission
+to run an allowlisted program.
 
 A nested configuration file with `"inherit": true` inherits the remote commands its ancestor allowed, unless it specifies `"playWithFire"` itself: then it only inherits the ones that allows, and what its ancestor's local configuration files specified in their place (ex. their own `"commands"` or `"cwd"`).
+
+The former `DPRINT_BUILTIN_EXEC` switch has been removed. Setting it to `0` has no
+effect. Local or self-hosted manifests identifying the external exec plugin are
+rejected; replace those entries with `"exec"` and keep the `exec` configuration.
 
 ## Install, Setup, and Configuration
 
 ```shellsession
 dprint add exec
-# or install from npm
+# legacy alias, also handled by the built-in formatter
 dprint add npm:@dprint/exec
 ```
 
-See further setup and configuration instructions at [https://github.com/dprint/dprint-plugin-exec/](https://github.com/dprint/dprint-plugin-exec/).
+Configure commands under the `exec` key. The configuration schema describes the host formatter's supported options.
+
+### File paths and matching
+
+`exts` and `fileNames` match case-insensitively, including Unicode letters. Command associations match the real path relative to the configuration directory.
+
+- `{{file_path}}` is the real file path. A shebang-derived extension never changes this value.
+- `{{file_path_with_ext}}` is the path passed to parsers. For an extensionless `build` script mapped to `sh`, it ends in `build.dprint-ext-added.sh`.
+- `{{ext}}` is the parser-facing extension without its dot, or an empty string when there is no extension. Its case is preserved.
+
+For ordinary files both path variables have the same value. A real filename containing `.dprint-ext-added.` is preserved. Served commands receive the real path in each request. Exec formats whole files and reports that range formatting is unsupported.

@@ -164,7 +164,10 @@ pub struct FormatConfig {
 }
 
 pub struct InitializedPluginFormatRequest {
+  /// Parser-facing path, including any extension inferred from a shebang.
   pub file_path: PathBuf,
+  /// Original path supplied by the host, without a synthetic extension.
+  pub real_file_path: PathBuf,
   pub file_text: Vec<u8>,
   pub range: FormatRange,
   pub config: Arc<FormatConfig>,

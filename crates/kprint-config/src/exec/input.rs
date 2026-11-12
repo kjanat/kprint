@@ -116,12 +116,12 @@ impl Default for PlayWithFire {
   )
 )]
 pub struct ExecCommandInput {
-  /// The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments and environment values may use {{file_path}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.
+  /// The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments and environment values may use {{file_path}}, {{file_path_with_ext}}, {{ext}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.
   pub command: InvocationInput,
-  /// File extensions to format with this command.
+  /// File extensions to format with this command, matched case-insensitively.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub exts: Option<StringOrStrings>,
-  /// File names to format with this command, ex. for files without an extension.
+  /// File names to format with this command, matched case-insensitively, ex. for files without an extension.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub file_names: Option<StringOrStrings>,
   /// A glob of the file paths to format with this command. Prefer "exts" when possible.
@@ -140,7 +140,7 @@ pub struct ExecCommandInput {
   /// A command to run once before this command formats its first file, ex. to install it. It's killed after "setupTimeout" seconds.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub setup_command: Option<InvocationInput>,
-  /// Keeps the command running and sends it every file on stdin, one JSON line each: {"path", "text", "lineWidth", "indentWidth", "useTabs"}. It answers each with one line on stdout: {"text"} with the formatted text, or {"error"} with why the file can't be formatted. Its arguments and environment values can't use {{file_path}}.
+  /// Keeps the command running and sends it every file on stdin, one JSON line each: {"path", "text", "lineWidth", "indentWidth", "useTabs"}. It answers each with one line on stdout: {"text"} with the formatted text, or {"error"} with why the file can't be formatted. Its arguments and environment values can't use {{file_path}}, {{file_path_with_ext}}, or {{ext}}.
   #[serde(skip_serializing_if = "Option::is_none")]
   #[schemars(default = "schema_default_serve")]
   pub serve: Option<bool>,

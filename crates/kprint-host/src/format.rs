@@ -705,6 +705,7 @@ where
       let format_text_result = initialized_plugin
         .format_text(InitializedPluginWithConfigFormatRequest {
           file_path: plugin_file_path.to_path_buf(),
+          real_file_path: file_path.clone(),
           file_bytes: file_text.to_vec(),
           range: range.clone(),
           override_config: plugin.get_config_file_overrides_for_path(&file_path),

@@ -9,6 +9,7 @@ use std::path::Path;
 /// What the variables are when a file is formatted.
 pub struct TemplateValues<'a> {
   pub file_path: &'a Path,
+  pub file_path_with_ext: &'a Path,
   pub line_width: u32,
   pub use_tabs: bool,
   pub indent_width: u8,
@@ -17,7 +18,16 @@ pub struct TemplateValues<'a> {
 }
 
 /// The variables, by name.
-const VARIABLES: [&str; 6] = ["file_path", "line_width", "use_tabs", "indent_width", "cwd", "timeout"];
+const VARIABLES: [&str; 8] = [
+  "file_path",
+  "file_path_with_ext",
+  "ext",
+  "line_width",
+  "use_tabs",
+  "indent_width",
+  "cwd",
+  "timeout",
+];
 
 /// Says what's wrong with the variables in an argument, if anything.
 pub fn validate_template(argument: &str) -> Result<(), String> {
@@ -37,6 +47,12 @@ pub fn uses_variable(argument: &str, variable: &str) -> bool {
 pub fn render_template(argument: &str, values: &TemplateValues) -> Result<String, String> {
   substitute(argument, |name| match name {
     "file_path" => values.file_path.to_string_lossy().into_owned(),
+    "file_path_with_ext" => values.file_path_with_ext.to_string_lossy().into_owned(),
+    "ext" => values
+      .file_path_with_ext
+      .extension()
+      .map(|ext| ext.to_string_lossy().into_owned())
+      .unwrap_or_default(),
     "line_width" => values.line_width.to_string(),
     "use_tabs" => values.use_tabs.to_string(),
     "indent_width" => values.indent_width.to_string(),
@@ -95,6 +111,7 @@ mod test {
       argument,
       &TemplateValues {
         file_path: Path::new(file_path),
+        file_path_with_ext: Path::new(file_path),
         line_width: 120,
         use_tabs: false,
         indent_width: 2,
@@ -118,6 +135,17 @@ mod test {
   }
 
   #[test]
+  fn renders_parser_path_and_extension_without_escaping_or_reinterpreting_names() {
+    assert_eq!(
+      render("{{file_path_with_ext}}|{{ext}}", "/a&b.dprint-ext-added.SH").unwrap(),
+      "/a&b.dprint-ext-added.SH|SH"
+    );
+    assert_eq!(render("{{file_path_with_ext}}|{{ext}}", "/build").unwrap(), "/build|");
+    assert_eq!(render("{{ext}}", "/.envrc").unwrap(), "");
+    assert_eq!(render("{{ext}}", "/file.ÉTÉ").unwrap(), "ÉTÉ");
+  }
+
+  #[test]
   fn uses_values_as_they_are() {
     // Handlebars escaped them for HTML
     let file_path = r#"/a&b <"c"> 'd' `e` =f.ts"#;
@@ -133,7 +161,7 @@ mod test {
 
   #[test]
   fn errors_for_what_isnt_a_variable() {
-    let expected = "Expected one of: file_path, line_width, use_tabs, indent_width, cwd, timeout.";
+    let expected = "Expected one of: file_path, file_path_with_ext, ext, line_width, use_tabs, indent_width, cwd, timeout.";
     for (argument, error) in [
       ("{{filePath}}", format!("Unknown variable '{{{{filePath}}}}'. {}", expected)),
       ("{{ }}", format!("Unknown variable '{{{{ }}}}'. {}", expected)),

@@ -816,6 +816,7 @@ mod test {
   async fn format_text(plugin: &InitializedWasmPlugin<TestEnvironment>) -> FormatResult {
     plugin
       .format_text(InitializedPluginFormatRequest {
+        real_file_path: PathBuf::from("/file.txt"),
         file_path: PathBuf::from("/file.txt"),
         file_text: b"text".to_vec(),
         range: None,

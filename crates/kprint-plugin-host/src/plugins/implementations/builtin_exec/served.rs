@@ -526,10 +526,18 @@ function field(name,   value) {
     text: &[u8],
     token: Arc<dyn CancellationToken>,
   ) -> Result<Option<String>, String> {
-    format_bytes(PathBuf::from(path), text.to_vec(), config.clone(), token, &SetupState::default(), served)
-      .await
-      .map(|bytes| bytes.map(|bytes| String::from_utf8(bytes).unwrap()))
-      .map_err(|err| err.to_string())
+    format_bytes(
+      PathBuf::from(path),
+      PathBuf::from(path),
+      text.to_vec(),
+      config.clone(),
+      token,
+      &SetupState::default(),
+      served,
+    )
+    .await
+    .map(|bytes| bytes.map(|bytes| String::from_utf8(bytes).unwrap()))
+    .map_err(|err| err.to_string())
   }
 
   fn run<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -571,6 +579,27 @@ function field(name,   value) {
         format(&config, &served, "dir/a b.txt", b"one\ntwo").await,
         Ok(Some("dir/a b.txt|one\ntwo|80|4|true".to_string()))
       );
+    });
+  }
+
+  #[test]
+  fn sends_the_real_path_when_a_shebang_supplies_the_extension() {
+    let worker = Worker::new(FIELDS);
+    let config = worker.config(serde_json::json!({"lineWidth":80,"indentWidth":4,"useTabs":true}), serde_json::json!({}));
+    run(async {
+      let output = format_bytes(
+        PathBuf::from("dir/build.dprint-ext-added.txt"),
+        PathBuf::from("dir/build"),
+        b"text".to_vec(),
+        config,
+        Arc::new(NullCancellationToken),
+        &SetupState::default(),
+        &ServedCommands::default(),
+      )
+      .await
+      .unwrap()
+      .unwrap();
+      assert_eq!(String::from_utf8(output).unwrap(), "dir/build|text|80|4|true");
     });
   }
 
