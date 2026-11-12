@@ -673,10 +673,12 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
     // owned because they outlive this scope by moving into the future below
     let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
+    let real_file_path = self.plugin_name_maps.get_real_file_path(&request.file_path).to_path_buf();
+    let plugin_file_path = self.plugin_name_maps.get_plugin_file_path(&request.file_path, &request.file_bytes).into_owned();
     let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.is_sandboxed());
     let outer_path = match embedder {
       Some(embedder) => embedder.outer_path,
-      None => request.file_path.clone(),
+      None => real_file_path.clone(),
     };
     log_debug!(
       self.environment,
@@ -701,10 +703,10 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
           Ok(GetPluginResult::Success(initialized_plugin)) => {
             let result = initialized_plugin
               .format_text(InitializedPluginWithConfigFormatRequest {
-                file_path: request.file_path.clone(),
+                file_path: plugin_file_path.clone(),
                 file_bytes: file_text.clone(),
                 range: request.range.clone(),
-                override_config: plugin.get_merged_overrides_for_path(&request.file_path, &request_override_config),
+                override_config: plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config),
                 on_host_format: scope.create_host_format_callback(plugin.clone(), outer_path.clone()),
                 token: request.token.clone(),
               })
@@ -1193,6 +1195,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
       return Ok(None);
     };
     Ok(Some(ResolvedConfigPathWithText {
+      reload: self.args.reload_config(),
       base_path: self.canonical_path_root_dir(path)?,
       ..global_config_path
     }))
@@ -1220,8 +1223,16 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
       return Ok(Vec::new());
     }
     let config_path = ResolvedConfigPathWithText {
+      reload: self.args.reload_config(),
       content: self.environment.read_file(&config_file_path)?,
-      base_path: config_file_path.parent().unwrap(),
+      base_path: {
+        let parent = config_file_path.parent().unwrap();
+        if kprint_discovery::is_project_config_dir(parent.as_ref(), self.environment) {
+          parent.parent().unwrap()
+        } else {
+          parent
+        }
+      },
       source: PathSource::new_local(config_file_path),
       is_global_config: false,
       is_first_download: false,
@@ -1576,12 +1587,30 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     plugins.push(plugin_resolver.resolve_builtin_exec().await);
   }
   let mut config_map = config.plugins.config.clone();
+  let mut trusted_config_map = config.plugins.trusted_config().clone();
 
   // resolve each plugin's configuration
   let mut plugins_with_config = Vec::new();
   let mut plugin_config_files = Vec::new();
   for plugin in plugins.into_iter() {
-    plugins_with_config.push((get_plugin_config_map(&plugin, &mut config_map)?, plugin));
+    let all_config = get_plugin_config_map(&plugin, &mut config_map)?;
+    let trusted_config = get_plugin_config_map(&plugin, &mut trusted_config_map)?;
+    let uses_exec_policy = plugin.info().config_key == "exec"
+      && (plugin.info().name == "dprint-plugin-exec" || plugin.built_in().is_some_and(|built_in| built_in.serves_plugin == "dprint-plugin-exec"));
+    let trusted_only = !plugin.is_sandboxed() && !uses_exec_policy;
+    let plugin_config = if trusted_only {
+      if all_config != trusted_config && plugin_resolver.should_warn_untrusted_config(&plugin.info().config_key) {
+        log_warn!(
+          environment,
+          "Ignored untrusted remote configuration for process plugin '{}'. Pin the extended configuration with a checksum to trust it.",
+          plugin.info().name
+        );
+      }
+      trusted_config
+    } else {
+      all_config
+    };
+    plugins_with_config.push((plugin_config, plugin, trusted_only));
   }
 
   // now get global config
@@ -1594,11 +1623,16 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
 
   // create the scope
   let mut plugin_futures = Vec::new();
-  for (mut plugin_config, plugin) in plugins_with_config {
-    crate::get_plugin_config_map::resolve_remote_schema_paths(plugin.info(), &mut plugin_config.properties, &config.plugins.origins)?;
+  for (mut plugin_config, plugin, trusted_only) in plugins_with_config {
+    let origins = if trusted_only {
+      config.plugins.trusted_origins()
+    } else {
+      &config.plugins.origins
+    };
+    crate::get_plugin_config_map::resolve_remote_schema_paths(plugin.info(), &mut plugin_config.properties, origins)?;
     let global_config = global_config.clone();
     let environment = environment.clone();
-    let property_origins = config.plugins.origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);
+    let property_origins = origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);
     let overrides = resolve_plugin_config_overrides(
       plugin_config.overrides,
       &config_base_path,

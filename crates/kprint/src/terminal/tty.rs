@@ -9,7 +9,7 @@ use crossterm::event::KeyModifiers;
 use crossterm::event::read;
 use crossterm::terminal;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct TerminalSize {
   pub cols: u16,
   pub rows: u16,

@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ConfigDiscovery;
-use crate::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::DiscoveryEnvironment as Environment;
 use crate::environment::PathKind;
@@ -621,17 +620,20 @@ impl<'a, TEnvironment: Environment> DirConfigFileFinder<'a, TEnvironment> {
 
   /// The config files in `dir`, in order of preference.
   pub fn find(&mut self, dir: &Path) -> Vec<PathBuf> {
+    if crate::is_project_config_dir(dir, self.environment) {
+      return Vec::new();
+    }
     if let Some(result) = self.cache.get(dir) {
       return result.clone();
     }
-    let result = POSSIBLE_CONFIG_FILE_NAMES
-      .iter()
+    let result = crate::config_file_names(dir, self.environment)
       // joined like the scan joins them (see `scan::config_file`), so the same
       // config file found either way is the same path
       .map(|file_name| self.environment.dir_entry_path(dir, file_name.as_ref()))
       // the config file already in use doesn't create a new scope
-      .filter(|path| Some(path.as_path()) != self.current_config_path.as_deref())
       .filter(|path| self.environment.path_is_file(path))
+      .take(1)
+      .filter(|path| Some(path.as_path()) != self.current_config_path.as_deref())
       .collect::<Vec<_>>();
     self.cache.insert(dir.to_path_buf(), result.clone());
     result

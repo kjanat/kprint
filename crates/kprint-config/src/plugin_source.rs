@@ -86,7 +86,10 @@ pub fn parse_plugin_source_reference(text: &str, base: &PathSource, environment:
     validate_plugin_extension(&parsed.specifier, text)?;
     // store the config directory for node_modules resolution. Callers pass the
     // directory to resolve plugin references from, not the config file path.
-    let base_dir = base.maybe_local_path().cloned();
+    let base_dir = match base {
+      PathSource::Npm(npm) => npm.base_dir.clone(),
+      _ => base.maybe_local_path().cloned(),
+    };
     return Ok(PluginSourceReference {
       path_source: PathSource::new_npm(parsed.specifier, base_dir),
       checksum: parsed.checksum,
@@ -94,7 +97,16 @@ pub fn parse_plugin_source_reference(text: &str, base: &PathSource, environment:
   }
 
   let checksum_reference = parse_checksum_path_or_url(text);
-  let path_source = resolve_url_or_file_path_to_path_source(&checksum_reference.path_or_url, base, environment)?;
+  let path_source = if let PathSource::Npm(npm) = base
+    && url::Url::parse(&checksum_reference.path_or_url).is_err()
+  {
+    let mut specifier = npm.specifier.clone();
+    specifier.path = crate::resolution::resolve_npm_extends::join_package_path(&specifier.path, &checksum_reference.path_or_url)?;
+    validate_plugin_extension(&specifier, text)?;
+    PathSource::new_npm(specifier, npm.base_dir.clone())
+  } else {
+    resolve_url_or_file_path_to_path_source(&checksum_reference.path_or_url, base, environment)?
+  };
 
   Ok(PluginSourceReference {
     path_source,

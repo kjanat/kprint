@@ -23,8 +23,12 @@ pub mod utils {
   pub use kprint_platform::utils::*;
 }
 mod get_init_config_file_text;
+mod init_plugin_options;
+mod init_preferences;
 pub mod configuration {
   pub use crate::get_init_config_file_text::*;
+  pub use crate::init_plugin_options::*;
+  pub use crate::init_preferences::*;
   pub use kprint_config::resolution::*;
   pub use kprint_host::get_plugin_config_map;
 }

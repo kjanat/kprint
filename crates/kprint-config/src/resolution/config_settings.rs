@@ -60,6 +60,9 @@ pub struct PluginConfiguration {
   /// The global configuration (ex. `lineWidth`) and each plugin's
   /// configuration by its key.
   pub config: ConfigMap,
+  /// Configuration from trusted layers. None means every layer is trusted.
+  pub trusted_config: Option<ConfigMap>,
+  pub trusted_origins: Option<PropertyOrigins>,
   /// The configuration file each property of `config` is from.
   pub origins: PropertyOrigins,
   /// What remote configuration added to the exec configuration, which a
@@ -258,7 +261,28 @@ impl ExecutionPolicy {
 }
 
 impl PluginConfiguration {
+  pub fn trusted_config(&self) -> &ConfigMap {
+    self.trusted_config.as_ref().unwrap_or(&self.config)
+  }
+
+  pub fn trusted_origins(&self) -> &PropertyOrigins {
+    self.trusted_origins.as_ref().unwrap_or(&self.origins)
+  }
+
+  fn merge_trusted_config(&mut self, other: &Self) -> Result<()> {
+    if self.trusted_config.is_some() || other.trusted_config.is_some() {
+      let mut trusted = self.trusted_config.take().unwrap_or_else(|| self.config.clone());
+      merge_config_map_into(&mut trusted, other.trusted_config().clone())?;
+      self.trusted_config = Some(trusted);
+      let mut origins = self.trusted_origins.take().unwrap_or_else(|| self.origins.clone());
+      origins.add_lower_precedence(other.trusted_origins().clone());
+      self.trusted_origins = Some(origins);
+    }
+    Ok(())
+  }
+
   pub(super) fn extend(&mut self, extended: PluginConfiguration) -> Result<()> {
+    self.merge_trusted_config(&extended)?;
     self.origins.add_lower_precedence(extended.origins);
     self.add_lower_precedence(extended.sources, extended.config)
   }
@@ -268,6 +292,7 @@ impl PluginConfiguration {
     // only inherited as far as this configuration's own "playWithFire" allows,
     // so the exec configuration is made again from what each specified, once
     // the rest is merged
+    self.merge_trusted_config(ancestor)?;
     let mut sources = ancestor.sources.clone();
     let mut config = ancestor.config.clone();
     self

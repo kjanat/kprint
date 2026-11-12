@@ -17,6 +17,7 @@ anyhow        = { workspace = true }
 cap-fs-ext    = { workspace = true }
 cap-std       = { workspace = true }
 deno_terminal = { workspace = true }
+flate2        = { workspace = true }
 fs3           = { workspace = true }
 ipnet         = { workspace = true }
 parking_lot   = { workspace = true }
@@ -26,6 +27,7 @@ sha2          = { workspace = true }
 similar       = { workspace = true, features = ["inline"] }
 sys_traits    = { workspace = true, features = ["real"] }
 sysinfo       = { workspace = true, features = ["system"] }
+tar           = { workspace = true }
 thiserror     = { workspace = true }
 tokio         = { workspace = true, features = ["io-std"] }
 tokio-util    = { workspace = true }

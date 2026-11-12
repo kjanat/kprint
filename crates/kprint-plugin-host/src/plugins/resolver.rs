@@ -25,6 +25,7 @@ use crate::plugins::referenced_plugin_name;
 use crate::utils::AsyncMutex;
 
 pub struct PluginWrapper {
+  was_set_up: bool,
   plugin: Box<dyn Plugin>,
   initialized_plugin: AsyncMutex<Option<Rc<dyn InitializedPlugin>>>,
 }
@@ -33,8 +34,13 @@ impl PluginWrapper {
   pub fn new(plugin: Box<dyn Plugin>) -> Self {
     Self {
       plugin,
+      was_set_up: false,
       initialized_plugin: Default::default(),
     }
+  }
+
+  pub fn was_set_up(&self) -> bool {
+    self.was_set_up
   }
 
   pub fn info(&self) -> &PluginInfo {
@@ -145,6 +151,9 @@ enum PluginCacheKey {
 }
 
 pub struct PluginResolver<TEnvironment: Environment> {
+  reload_plugins: std::cell::Cell<bool>,
+  reloaded: RefCell<std::collections::HashSet<PluginSourceReference>>,
+  warned_untrusted: RefCell<std::collections::HashSet<String>>,
   environment: TEnvironment,
   plugin_cache: Rc<PluginCache<TEnvironment>>,
   memory_cache: RefCell<HashMap<PluginCacheKey, Rc<tokio::sync::OnceCell<Rc<PluginWrapper>>>>>,
@@ -156,6 +165,9 @@ pub struct PluginResolver<TEnvironment: Environment> {
 impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
   pub fn new(environment: TEnvironment, plugin_cache: PluginCache<TEnvironment>) -> Self {
     PluginResolver {
+      reload_plugins: Default::default(),
+      reloaded: Default::default(),
+      warned_untrusted: Default::default(),
       environment,
       plugin_cache: Rc::new(plugin_cache),
       memory_cache: Default::default(),
@@ -163,6 +175,14 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
       next_config_id: Default::default(),
       config_releases: Default::default(),
     }
+  }
+
+  pub fn set_reload_plugins(&self, reload: bool) {
+    self.reload_plugins.set(reload);
+  }
+
+  pub fn should_warn_untrusted_config(&self, key: &str) -> bool {
+    self.warned_untrusted.borrow_mut().insert(key.to_string())
   }
 
   /// The queue a configuration's last owner pushes it on when it drops.
@@ -286,8 +306,22 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
         if let Some(plugin) = create_builtin_exec_plugin(&self.environment, &plugin_reference) {
           return Ok(Rc::new(PluginWrapper::new(plugin)));
         }
+        if self.reload_plugins.get()
+          && (plugin_reference.path_source.is_remote()
+            || matches!(&plugin_reference.path_source, crate::utils::PathSource::Npm(npm) if npm.specifier.version.is_some()))
+          && self.reloaded.borrow_mut().insert(plugin_reference.clone())
+        {
+          self
+            .plugin_cache
+            .forget(&plugin_reference)
+            .await
+            .with_context(|| format!("Error reloading plugin {}", plugin_reference.display()))?;
+        }
         match create_plugin(&self.plugin_cache, self.environment.clone(), &plugin_reference, &self.wasm_module_creator).await {
-          Ok(plugin) => Ok(Rc::new(PluginWrapper::new(plugin))),
+          Ok(created) => Ok(Rc::new(PluginWrapper {
+            was_set_up: created.was_set_up,
+            ..PluginWrapper::new(created.plugin)
+          })),
           Err(err) => {
             match self.plugin_cache.forget(&plugin_reference).await {
               Ok(()) => {}

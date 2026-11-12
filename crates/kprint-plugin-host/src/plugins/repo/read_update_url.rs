@@ -3,6 +3,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 use jsonc_parser::JsonValue;
 use jsonc_parser::parse_to_value;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use url::Url;
 
 use crate::environment::PluginEnvironment as Environment;
@@ -24,6 +26,7 @@ pub struct PluginUpdateUrlInfo {
   /// The npm package the plugin is published to. When present, the CLI writes
   /// an npm specifier into config files instead of the plugin's url.
   pub npm: Option<PluginNpmInfo>,
+  pub deprecated: Option<String>,
 }
 
 impl PluginUpdateUrlInfo {
@@ -61,6 +64,28 @@ impl PluginUpdateUrlInfo {
   pub fn full_url_no_wasm_checksum(&self) -> String {
     if self.is_wasm() { self.url.to_string() } else { self.full_url() }
   }
+  /// Warns when the plugin is deprecated, using the message its publisher
+  /// left. Warns once per plugin since several config files can use the same
+  /// plugin.
+  pub fn warn_if_deprecated(&self, plugin_name: &str, environment: &impl Environment) {
+    let Some(message) = &self.deprecated else {
+      return;
+    };
+    if WARNED_DEPRECATED_PLUGINS.with_borrow_mut(|warned| warned.insert(self.url.clone())) {
+      // the message is whatever the publisher wrote, so don't let it send
+      // escape sequences to the terminal
+      log_warn!(
+        environment,
+        "Plugin {} is deprecated: {}",
+        plugin_name,
+        crate::utils::replace_control_chars(message)
+      );
+    }
+  }
+}
+
+thread_local! {
+  static WARNED_DEPRECATED_PLUGINS: RefCell<HashSet<String>> = Default::default();
 }
 
 pub async fn read_update_url(downloader: &impl UrlDownloader, url: &Url) -> Result<Option<PluginUpdateUrlInfo>> {
@@ -106,6 +131,7 @@ pub async fn read_update_url(downloader: &impl UrlDownloader, url: &Url) -> Resu
     url: url.to_string(),
     checksum: checksum.map(|c| c.to_string()),
     npm,
+    deprecated: obj.take_string("deprecated").filter(|s| !s.is_empty()).map(|s| s.to_string()),
   }))
 }
 
@@ -137,6 +163,7 @@ mod test {
           url: "url".to_string(),
           checksum: None,
           npm: None,
+          deprecated: None,
         })
       );
       assert_eq!(
@@ -148,6 +175,7 @@ mod test {
           url: "url2".to_string(),
           checksum: Some("checksum".to_string()),
           npm: None,
+          deprecated: None,
         })
       );
     })

@@ -51,7 +51,31 @@ impl clap::builder::TypedValueParser for ConfigDiscoveryValueParser {
 pub use kprint_config::options::ConfigArg;
 pub use kprint_config::options::ConfigArgText;
 
+/// What `--reload` checks the server for newer versions of instead of using
+/// the cached ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReloadArg {
+  /// Remote configuration files.
+  pub config: bool,
+  /// Remote plugins.
+  pub plugins: bool,
+}
+
+impl std::str::FromStr for ReloadArg {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s.to_ascii_lowercase().as_str() {
+      "all" => Ok(ReloadArg { config: true, plugins: true }),
+      "config" => Ok(ReloadArg { config: true, plugins: false }),
+      "plugins" => Ok(ReloadArg { config: false, plugins: true }),
+      _ => Err(format!("expected 'config', 'plugins' or 'all', got '{s}'")),
+    }
+  }
+}
+
 pub struct CliArgs {
+  pub reload: ReloadArg,
   pub sub_command: SubCommand,
   pub log_level: LogLevel,
   pub plugins: Vec<String>,
@@ -68,6 +92,7 @@ impl CliArgs {
       plugins: vec![],
       config: None,
       config_discovery: None,
+      reload: ReloadArg::default(),
     }
   }
 
@@ -92,6 +117,7 @@ impl CliArgs {
       config: None,
       plugins: Vec::new(),
       config_discovery: None,
+      reload: ReloadArg::default(),
     }
   }
 
@@ -209,6 +235,7 @@ pub struct CheckSubCommand {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct FmtSubCommand {
+  pub line_ranges: Vec<FileLineRanges>,
   pub diff: bool,
   pub diff_format: DiffFormat,
   pub patterns: FilePatternArgs,
@@ -220,9 +247,72 @@ pub struct FmtSubCommand {
   pub only_dirty: bool,
 }
 
+pub use kprint_host::format::LineRange;
+
+/// Ranges of lines to format and the file they're for (ex. `--lines src/main.ts:10-20,35-40`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileLineRanges {
+  /// `None` when no file was specified (ex. `--lines 10-20`), which is for
+  /// the single file being formatted.
+  pub path: Option<String>,
+  pub ranges: Vec<LineRange>,
+}
+
+impl std::str::FromStr for FileLineRanges {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn looks_like_line_ranges(text: &str) -> bool {
+      fn is_number(text: &str) -> bool {
+        !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
+      }
+
+      text.split(',').all(|range| {
+        let (first, last) = range.split_once('-').unwrap_or((range, range));
+        is_number(first) && is_number(last)
+      })
+    }
+
+    fn parse_line_range(text: &str) -> Result<LineRange, String> {
+      fn parse_line(text: &str) -> Result<usize, String> {
+        match text.parse::<usize>() {
+          Ok(0) => Err("line numbers start at 1".to_string()),
+          Ok(line) => Ok(line),
+          Err(_) => Err(format!("expected a line number, got '{text}'")),
+        }
+      }
+
+      // a single line number is a range of that one line
+      let (first, last) = text.split_once('-').unwrap_or((text, text));
+      let (first, last) = (parse_line(first)?, parse_line(last)?);
+      if first > last {
+        return Err(format!("the first line ({first}) was after the last line ({last})"));
+      }
+      Ok(LineRange { first, last })
+    }
+
+    // the path may contain colons (ex. C:\file.ts:10-20), so the
+    // lines are the most text at the end that looks like them
+    let Some(ranges_start) = std::iter::once(0)
+      .chain(s.match_indices(':').map(|(i, _)| i + 1))
+      .find(|start| looks_like_line_ranges(&s[*start..]))
+    else {
+      return Err(format!("expected it to end with the lines to format (ex. 10-20), got '{s}'"));
+    };
+    let path = match ranges_start {
+      0 => None,
+      1 => return Err("expected a file path before the lines".to_string()),
+      _ => Some(s[..ranges_start - 1].to_string()),
+    };
+    let ranges = s[ranges_start..].split(',').map(parse_line_range).collect::<Result<Vec<_>, _>>()?;
+    Ok(FileLineRanges { path, ranges })
+  }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConfigSubCommand {
   Init {
+    preferences: bool,
     global: bool,
     /// Skip the interactive plugin prompt and accept the smart defaults.
     yes: bool,
@@ -252,7 +342,14 @@ pub enum ConfigSubCommand {
     /// themselves is written as-is.
     minimum_dependency_age: Option<MinimumDependencyAgeArg>,
   },
+  Install(InstallSubCommand),
   Edit,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct InstallSubCommand {
+  pub names: Vec<String>,
+  pub recursive: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -286,6 +383,7 @@ pub struct EditorServiceSubCommand {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct StdInFmtSubCommand {
+  pub line_ranges: Vec<LineRange>,
   pub file_name_or_path: String,
   pub file_bytes: Vec<u8>,
   pub patterns: FilePatternArgs,
@@ -311,6 +409,7 @@ pub fn parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader: T
 fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader: TStdInReader) -> Result<CliArgs> {
   fn parse_init(matches: &ArgMatches) -> Result<ConfigSubCommand> {
     Ok(ConfigSubCommand::Init {
+      preferences: matches.get_flag("preferences"),
       global: matches.get_flag("global"),
       yes: matches.get_flag("yes"),
       minimum_dependency_age: parse_minimum_dependency_age(matches)?,
@@ -404,16 +503,20 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
           format!("file.{}", file_name_path_or_extension)
         };
         SubCommand::StdInFmt(StdInFmtSubCommand {
+          line_ranges: parse_stdin_fmt_line_ranges(matches)?,
           file_name_or_path,
           file_bytes: std_in_reader.read()?,
           patterns: parse_file_patterns(matches, &std_in_reader)?,
         })
       } else {
+        let mut patterns = parse_file_patterns(matches, &std_in_reader)?;
+        let line_ranges = parse_fmt_line_ranges(matches, &mut patterns);
         let enable_stable_format = !matches.get_flag("skip-stable-format");
         SubCommand::Fmt(FmtSubCommand {
+          line_ranges,
           diff: matches.get_flag("diff"),
           diff_format: parse_diff_format(matches, DiffFormat::Pretty),
-          patterns: parse_file_patterns(matches, &std_in_reader)?,
+          patterns,
           incremental: if enable_stable_format { parse_incremental(matches) } else { Some(false) },
           enable_stable_format,
           allow_no_files: if matches.get_flag("staged") || matches.get_flag("dirty") {
@@ -452,6 +555,16 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
       })
     }
     ("init", matches) => SubCommand::Config(parse_init(matches)?),
+    ("install", matches) => {
+      is_global_config = matches.get_flag("global");
+      SubCommand::Config(ConfigSubCommand::Install(InstallSubCommand {
+        names: matches
+          .get_many::<String>("plugins-to-add")
+          .map(|values| values.cloned().collect())
+          .unwrap_or_default(),
+        recursive: matches.get_flag("recursive"),
+      }))
+    }
     ("add", matches) => {
       is_global_config = matches.get_flag("global");
       SubCommand::Config(parse_add(matches)?)
@@ -471,6 +584,16 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
           dry_run: *matches.get_one::<bool>("dry-run").unwrap(),
           minimum_dependency_age: parse_minimum_dependency_age(matches)?,
         }
+      }
+      ("install", matches) => {
+        is_global_config = matches.get_flag("global");
+        ConfigSubCommand::Install(InstallSubCommand {
+          names: matches
+            .get_many::<String>("plugins-to-add")
+            .map(|values| values.cloned().collect())
+            .unwrap_or_default(),
+          recursive: matches.get_flag("recursive"),
+        })
       }
       ("edit", matches) => {
         is_global_config = matches.get_flag("global");
@@ -514,6 +637,7 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
   };
 
   Ok(CliArgs {
+    reload: matches.get_one::<ReloadArg>("reload").copied().unwrap_or_default(),
     sub_command,
     log_level,
     config,
@@ -692,6 +816,56 @@ fn parse_diff_format(matches: &ArgMatches, default: DiffFormat) -> DiffFormat {
   }
 }
 
+/// Parses the line ranges for `fmt`, which come from `--lines` and the lines
+/// of `--stdin-files` (ex. `src/main.ts:10-20`). The files of the line ranges
+/// are added to the patterns so that they get formatted.
+fn parse_fmt_line_ranges(matches: &ArgMatches, patterns: &mut FilePatternArgs) -> Vec<FileLineRanges> {
+  let mut line_ranges = parse_line_ranges(matches);
+  if matches.get_flag("stdin-files")
+    && let Some(include_patterns) = patterns.include_patterns.as_mut()
+  {
+    for pattern in include_patterns.iter_mut() {
+      if let Ok(file_line_ranges) = pattern.parse::<FileLineRanges>()
+        && let Some(path) = &file_line_ranges.path
+      {
+        *pattern = path.clone();
+        line_ranges.push(file_line_ranges);
+      }
+    }
+    // a file may be on several lines when it has several line ranges
+    let mut seen_patterns = std::collections::HashSet::new();
+    include_patterns.retain(|pattern| seen_patterns.insert(pattern.clone()));
+  }
+  for path in line_ranges.iter().filter_map(|r| r.path.as_ref()) {
+    let include_patterns = patterns.include_patterns.get_or_insert_default();
+    if !include_patterns.contains(path) {
+      include_patterns.push(path.clone());
+    }
+  }
+  line_ranges
+}
+
+fn parse_stdin_fmt_line_ranges(matches: &ArgMatches) -> Result<Vec<LineRange>> {
+  let mut result = Vec::new();
+  for file_line_ranges in parse_line_ranges(matches) {
+    if let Some(path) = file_line_ranges.path {
+      bail!(
+        "A file path can't be specified in --lines when formatting stdin (got '{}'). Use --lines <first>-<last> instead.",
+        path
+      );
+    }
+    result.extend(file_line_ranges.ranges);
+  }
+  Ok(result)
+}
+
+fn parse_line_ranges(matches: &ArgMatches) -> Vec<FileLineRanges> {
+  matches
+    .get_many::<FileLineRanges>("lines")
+    .map(|values| values.cloned().collect())
+    .unwrap_or_default()
+}
+
 fn parse_incremental(matches: &ArgMatches) -> Option<bool> {
   if let Some(incremental) = matches.get_one::<String>("incremental") {
     Some(incremental != "false")
@@ -745,8 +919,33 @@ pub enum CliArgParserKind {
 }
 
 pub fn create_cli_parser(kind: CliArgParserKind) -> clap::Command {
+  fn install_command() -> Command {
+    Command::new("install")
+      .arg(
+        Arg::new("plugins-to-add")
+          .num_args(0..)
+          .help("Plugins to add to the configuration before installing."),
+      )
+      .about("Downloads and installs configured plugins without formatting files.")
+      .arg(Arg::new("recursive").long("recursive").short('r').action(clap::ArgAction::SetTrue))
+      .arg(
+        Arg::new("global")
+          .long("global")
+          .short('g')
+          .conflicts_with("config-discovery")
+          .action(clap::ArgAction::SetTrue),
+      )
+  }
+
   fn init_command() -> Command {
     Command::new("init")
+      .arg(
+        Arg::new("preferences")
+          .long("preferences")
+          .action(clap::ArgAction::SetTrue)
+          .conflicts_with_all(["yes", "global", "config"])
+          .help("Remember preferred plugins and options for future init runs."),
+      )
       .about("Initializes a configuration file in the current directory, or adds plugins to an existing one.")
       .arg(
         Arg::new("global")
@@ -930,6 +1129,7 @@ EXAMPLES:
     )
     .subcommand(init_command())
     .subcommand(add_command())
+    .subcommand(install_command())
     .subcommand(
       Command::new("fmt")
         .about("Formats the source files and writes the result to the file system.")
@@ -953,6 +1153,21 @@ EXAMPLES:
             .required(false)
         )
         .add_diff_format_arg()
+        .arg(
+          Arg::new("lines")
+            .long("lines")
+            .value_name(match kind {
+              // zsh's completions need the colons escaped
+              CliArgParserKind::ForCompletions => r"[file-path\:]first-last[,first-last]...",
+              _ => "[file-path:]first-last[,first-last]...",
+            })
+            .help("Only format the provided 1-based and inclusive ranges of lines of a file (ex. `--lines src/main.ts:10-20,35-40`). May be specified multiple times. The file path may be omitted when formatting a single file or using --stdin (ex. `--lines 10-20`). With --stdin-files, add the lines to a file path's line instead (ex. `src/main.ts:10-20,35-40`). What gets formatted is up to the plugin and plugins that don't support range formatting may format the entire file.")
+            .value_parser(clap::value_parser!(FileLineRanges))
+            .value_hint(clap::ValueHint::AnyPath)
+            .action(clap::ArgAction::Append)
+            .required(false)
+            .num_args(1)
+        )
         .add_only_staged_arg()
         .add_only_dirty_arg()
         .add_allow_no_files_arg()
@@ -1040,6 +1255,7 @@ EXAMPLES:
             .arg(minimum_dependency_age_arg())
         )
         .subcommand(add_command())
+    .subcommand(install_command())
         .subcommand(
           Command::new("edit")
             .about("Opens the configuration file in an editor.")
@@ -1177,6 +1393,21 @@ EXAMPLES:
         .global(true)
         .action(clap::ArgAction::Append)
         .num_args(1..)
+    )
+    .arg(
+      Arg::new("reload")
+        .long("reload")
+        .help("Checks for newer versions of remote configuration files and plugins instead of using the cached ones. Specify `config` or `plugins` to only check one of them.")
+        .global(true)
+        .value_parser(match kind {
+          // the parser accepts any text, so provide the values to complete
+          CliArgParserKind::ForCompletions => clap::builder::ValueParser::from(["config", "plugins", "all"]),
+          _ => clap::value_parser!(ReloadArg).into(),
+        })
+        .value_name("config|plugins")
+        .num_args(0..=1)
+        .require_equals(true)
+        .default_missing_value("all")
     )
     .arg(
       Arg::new("log-level")
@@ -2101,6 +2332,9 @@ mod test {
 }
 
 impl kprint_config::options::ConfigOptions for CliArgs {
+  fn reload_config(&self) -> bool {
+    self.reload.config
+  }
   fn config(&self) -> Option<&ConfigArg> {
     self.config.as_ref()
   }

@@ -66,6 +66,9 @@ pub struct NativeEnvironment<S: NativeServices> {
 }
 
 impl<S: NativeServices> NativeEnvironment<S> {
+  pub fn services(&self) -> &S {
+    &self.services
+  }
   pub fn new(services: S, version: impl Into<String>) -> Result<Self> {
     if let Err(err) = (*CACHE_DIR).as_ref() {
       bail!("Error creating cache directory: {:#}", err);

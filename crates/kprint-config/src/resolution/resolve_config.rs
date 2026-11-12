@@ -19,7 +19,6 @@ use crate::plugins::parse_plugin_source_reference;
 use crate::utils::PathSource;
 use crate::utils::PluginKind;
 use crate::utils::ShowConfirmStrategy;
-use crate::utils::resolve_path_source_to_file_with_cache;
 
 use super::ConfigMap;
 use super::ConfigMapValue;
@@ -273,7 +272,7 @@ async fn resolve_config_file<TEnvironment: Environment>(
     requires_checksum: false,
   }
   .parse(environment)?;
-  let collected = collect_layers(root, environment).await?;
+  let collected = collect_layers(root, config_path_and_text.reload, environment).await?;
 
   let mut remote_exec = RemoteExec::default();
   let mut layers = collected.layers.into_iter();
@@ -297,6 +296,12 @@ async fn resolve_config_file<TEnvironment: Environment>(
     }
   }
   remote_exec.apply(&mut config.plugins, environment)?;
+  if let Some(dir) = config.origin.source.maybe_local_path().and_then(|path| path.parent())
+    && kprint_discovery::is_project_config_dir(dir.as_ref(), environment)
+  {
+    config.origin.config_file_base = dir;
+    rebase_dot_config_patterns(&mut config);
+  }
 
   if collected.inherit {
     match ancestor {
@@ -312,6 +317,55 @@ async fn resolve_config_file<TEnvironment: Environment>(
   Ok(config)
 }
 
+/// Keep anchored patterns relative to the config directory while its scope
+/// includes the parent project. Unanchored patterns continue to match anywhere.
+fn rebase_dot_config_patterns(config: &mut ResolvedConfig) {
+  fn rebase(pattern: &mut String) {
+    *pattern = pattern.replace('\\', "/");
+    let (negation, text) = pattern.strip_prefix('!').map(|p| ("!", p)).unwrap_or(("", pattern.as_str()));
+    if let Some(relative) = text.strip_prefix("./").or_else(|| text.strip_prefix('/')) {
+      *pattern = format!("{negation}./.config/{relative}");
+    } else if text.starts_with("../") {
+      let mut segments = vec![".config"];
+      for segment in text.split('/') {
+        match segment {
+          ".." if segments.last().is_some_and(|segment| *segment != "..") => {
+            segments.pop();
+          }
+          "." => {}
+          other => segments.push(other),
+        }
+      }
+      *pattern = format!("{negation}./{}", segments.join("/"));
+    } else if text.trim_end_matches('/').contains('/') && !text.starts_with("**/") {
+      *pattern = format!("{negation}./.config/{text}");
+    }
+  }
+  fn plugins(map: &mut ConfigMap) {
+    for value in map.values_mut() {
+      if let ConfigMapValue::PluginConfig(plugin) = value {
+        if let Some(associations) = &mut plugin.associations {
+          for pattern in associations {
+            rebase(pattern);
+          }
+        }
+        for overrides in &mut plugin.overrides {
+          for pattern in &mut overrides.files {
+            rebase(pattern);
+          }
+        }
+      }
+    }
+  }
+  for pattern in config.files.includes.iter_mut().flatten().chain(config.files.excludes.iter_mut()) {
+    rebase(pattern);
+  }
+  plugins(&mut config.plugins.config);
+  if let Some(trusted) = &mut config.plugins.trusted_config {
+    plugins(trusted);
+  }
+}
+
 /// Resolves the configuration a local configuration file is a descendant of
 /// when dprint formats from an ancestor directory: the closest ancestor
 /// directory's configuration file, or else the global configuration file.
@@ -325,17 +379,23 @@ async fn resolve_ancestor_directories_config<TEnvironment: Environment>(
   let Some(config_dir) = config_path_and_text.source.maybe_local_path().and_then(|path| path.parent()) else {
     return Ok(None);
   };
+  let config_dir = if kprint_discovery::is_project_config_dir(config_dir.as_ref(), environment) {
+    config_dir.parent().unwrap()
+  } else {
+    config_dir
+  };
   let ancestor_path = match config_dir.parent() {
     Some(parent_dir) => get_default_config_file_in_ancestor_directories(environment, parent_dir.as_ref())?,
     None => None,
   };
-  let ancestor_path = match ancestor_path {
+  let mut ancestor_path = match ancestor_path {
     Some(path) => path,
     None => match resolve_global_config_path_and_text(environment).map_err(anyhow::Error::from)? {
       Some(path) if path.source != config_path_and_text.source => path,
       _ => return Ok(None),
     },
   };
+  ancestor_path.reload = config_path_and_text.reload;
   // the ancestor's directories are above it, so this ends
   Box::pin(resolve_config_file(&ancestor_path, Ancestor::FromDirectories, environment))
     .await
@@ -353,6 +413,10 @@ impl CollectedLayer {
   /// diagnostics.
   fn record_property_origins(&mut self) {
     let plugins = &mut self.settings.plugins;
+    if !self.origin.is_trusted() {
+      plugins.trusted_config = Some(ConfigMap::new());
+      plugins.trusted_origins = Some(PropertyOrigins::default());
+    }
     plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin);
     for value in plugins.config.values_mut() {
       if let ConfigMapValue::PluginConfig(plugin_config) = value {
@@ -382,7 +446,7 @@ struct CollectedLayers {
 /// extended) is only read where it has the highest precedence, since its
 /// properties are already set everywhere after that. A file that extends
 /// itself, directly or through other files, is an error.
-async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Result<CollectedLayers> {
+async fn collect_layers(root: ConfigLayer, reload: bool, environment: &impl Environment) -> Result<CollectedLayers> {
   struct PendingReference {
     reference: ConfigReference,
     referrer: LayerOrigin,
@@ -418,6 +482,8 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
     )))
   }
 
+  let mut npm_resolver = super::resolve_npm_extends::NpmExtendsResolver::default();
+  npm_resolver.reload = reload;
   let ConfigLayer { origin, directives, settings } = root;
   let inherit = directives.inherit;
   let mut pending = Vec::new();
@@ -432,13 +498,42 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
     // a reference that was read before is to the file it went to then
     let target = read_targets.get(&reference.target).unwrap_or(&reference.target);
     ensure_not_cycle(&reference, target, &referrer)?;
-    if referrer.requires_checksum && reference.checksum.is_none() {
+    let same_package = matches!((&referrer.source, &reference.target), (PathSource::Npm(a), PathSource::Npm(b)) if a.specifier.name == b.specifier.name && a.specifier.version == b.specifier.version && a.base_dir == b.base_dir);
+    if referrer.requires_checksum && reference.checksum.is_none() && !same_package {
       return Err(referrer.locate(anyhow::anyhow!(
         "Expected a checksum for '{}' because it is extended by checksum-pinned configuration. Append @ followed by the file's SHA-256 checksum.",
         reference.specifier
       )));
     }
-    let file = match resolve_extended_file(&reference, environment).await {
+    let resolved_file = if let PathSource::Npm(_) = &reference.target {
+      if reference.specifier.starts_with("npm:") {
+        npm_resolver
+          .resolve(&reference.specifier, &referrer.source.parent(), environment)
+          .await
+          .and_then(|file| file.into_text())
+      } else if let PathSource::Npm(base) = &referrer.source {
+        let relative = reference
+          .checksum
+          .as_ref()
+          .map(|_| reference.specifier.rsplit_once('@').unwrap().0)
+          .unwrap_or(&reference.specifier);
+        let file = npm_resolver.resolve_relative(relative, base, environment).await;
+        file.and_then(|file| {
+          if let Some(checksum) = &reference.checksum {
+            let actual = npm_resolver.tarball_checksum(base).unwrap();
+            if !actual.eq_ignore_ascii_case(checksum) {
+              anyhow::bail!("Invalid checksum for npm configuration {}", reference.specifier);
+            }
+          }
+          file.into_text()
+        })
+      } else {
+        unreachable!()
+      }
+    } else {
+      resolve_extended_file(&reference, reload, environment).await
+    };
+    let file = match resolved_file {
       Ok(file) => file,
       Err(err) => return Err(referrer.locate(err)),
     };
@@ -446,7 +541,7 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
     ensure_not_cycle(&reference, &file.source, &referrer)?;
     read_targets.insert(reference.target.clone(), file.source.clone());
     let is_new = collected_sources.insert(file.source.clone());
-    let trusted = referrer.is_trusted() && (reference.target.is_local() || reference.checksum.is_some());
+    let trusted = referrer.is_trusted() && (file.source.is_local() || reference.checksum.is_some() || same_package);
     let requires_checksum = referrer.requires_checksum || reference.checksum.is_some();
     if !checked_contexts.insert((file.source.clone(), trusted, requires_checksum)) {
       continue;
@@ -462,6 +557,19 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
       requires_checksum,
     }
     .parse(environment)?;
+    if !trusted
+      && file.is_first_download
+      && let PathSource::Npm(npm) = &file.source
+      && (settings.files.includes.is_some() || settings.files.excludes.iter().any(|p| is_negated_glob(p)))
+      && let Some(checksum) = npm_resolver.tarball_checksum(npm)
+    {
+      log_warn!(
+        environment,
+        "Remote configuration can be trusted when extended with a checksum ({}@{}).",
+        file.source.display(),
+        checksum
+      );
+    }
     if directives.inherit {
       return Err(origin.locate(anyhow::anyhow!(
         "The 'inherit' property can't be used in an extended configuration file. Specify it in the configuration file that extends it."
@@ -476,11 +584,16 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
   Ok(CollectedLayers { inherit, layers })
 }
 
-async fn resolve_extended_file(reference: &ConfigReference, environment: &impl Environment) -> Result<crate::utils::ResolvedFilePathWithText> {
+async fn resolve_extended_file(reference: &ConfigReference, reload: bool, environment: &impl Environment) -> Result<crate::utils::ResolvedFilePathWithText> {
   use crate::utils::RemoteCacheMode;
   use crate::utils::resolve_path_source_to_file_with_cache_mode;
   use crate::utils::verify_sha256_checksum;
-  let mut file = resolve_path_source_to_file_with_cache(reference.target.clone(), environment).await?;
+  let mut file = resolve_path_source_to_file_with_cache_mode(
+    reference.target.clone(),
+    environment,
+    if reload { RemoteCacheMode::Reload } else { RemoteCacheMode::Use },
+  )
+  .await?;
   if let Some(checksum) = &reference.checksum {
     if verify_sha256_checksum(&file.content, checksum).is_err() && reference.target.is_remote() {
       file = resolve_path_source_to_file_with_cache_mode(reference.target.clone(), environment, RemoteCacheMode::Reload).await?;
@@ -661,7 +774,7 @@ mod tests {
       let url = "https://example.com/base.json";
       let body = r#"{"excludes":["!**/*.txt"],"exec":{"commands":[{"command":"rustfmt","exts":["rs"]}]}}"#;
       environment.add_remote_file_bytes(url, b"{}".to_vec());
-      resolve_path_source_to_file_with_cache(PathSource::new_remote(url::Url::parse(url).unwrap()), &environment)
+      crate::utils::resolve_path_source_to_file_with_cache(PathSource::new_remote(url::Url::parse(url).unwrap()), &environment)
         .await
         .unwrap();
       environment.add_remote_file_bytes(url, body.as_bytes().to_vec());
@@ -751,6 +864,7 @@ mod tests {
   fn local_config_path(path: &str, environment: &TestEnvironment) -> ResolvedConfigPathWithText {
     let canonical = environment.canonicalize(path).unwrap();
     ResolvedConfigPathWithText {
+      reload: false,
       content: environment.read_file(&canonical).unwrap(),
       base_path: canonical.parent().unwrap(),
       source: PathSource::new_local(canonical),
@@ -2980,6 +3094,8 @@ lineWidth = 80
         minimum_dependency_age: Some("P3D".parse().unwrap()),
       },
       plugins: PluginConfiguration {
+        trusted_config: None,
+        trusted_origins: None,
         origins: Default::default(),
         remote_exec: Default::default(),
         sources: vec![
@@ -3016,6 +3132,8 @@ lineWidth = 80
       },
       execution: Default::default(),
       plugins: PluginConfiguration {
+        trusted_config: None,
+        trusted_origins: None,
         origins: Default::default(),
         remote_exec: Default::default(),
         // a plugin specified in the child has precedence over the ancestor's
@@ -3168,6 +3286,8 @@ lineWidth = 80
         routing: Default::default(),
         execution: Default::default(),
         plugins: PluginConfiguration {
+          trusted_config: None,
+          trusted_origins: None,
           origins: Default::default(),
           remote_exec: Default::default(),
           sources: Vec::new(),

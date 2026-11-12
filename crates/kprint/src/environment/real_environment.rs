@@ -162,3 +162,9 @@ impl kprint_platform::environment::ConsentEnvironment for CliServices {
     is_terminal_interactive()
   }
 }
+
+impl super::InitEnvironment for RealEnvironment {
+  fn prompt_terminal(&self) -> Option<Box<dyn crate::terminal::PromptTerminal + '_>> {
+    Some(Box::new(crate::terminal::LoggerPromptTerminal::new(&self.services().logger)))
+  }
+}

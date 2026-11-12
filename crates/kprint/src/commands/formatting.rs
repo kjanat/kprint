@@ -1,4 +1,10 @@
+use crate::arg_parser::FileLineRanges;
+use crate::arg_parser::LineRange;
+use crate::format::LineRangesByPath;
+use crate::format::get_line_range_byte_range;
+use crate::format::merge_line_ranges;
 use anyhow::Result;
+use anyhow::bail;
 use deno_terminal::colors;
 use kprint_communication::AtomicFlag;
 use kprint_plugin_types::NullCancellationToken;
@@ -6,6 +12,7 @@ use kprint_process_plugin::HostFormatRequest;
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -79,24 +86,29 @@ pub async fn stdin_fmt<TEnvironment: Environment>(
   } else {
     environment.cwd().join(file_path)
   };
-  output_stdin_format(file_path, &cmd.file_bytes, plugins_scope, environment).await
+  output_stdin_format(file_path, &cmd.file_bytes, &cmd.line_ranges, plugins_scope, environment).await
 }
 
 async fn output_stdin_format<TEnvironment: Environment>(
   file_path: PathBuf,
   file_bytes: &[u8],
+  line_ranges: &[LineRange],
   plugins_scope: Rc<PluginsScope<TEnvironment>>,
   environment: &TEnvironment,
 ) -> Result<()> {
-  let result = plugins_scope
-    .format(HostFormatRequest {
-      file_path,
-      file_bytes: file_bytes.to_vec(),
-      range: None,
-      override_config: Default::default(),
-      token: Arc::new(NullCancellationToken),
-    })
-    .await?;
+  let result = if !line_ranges.is_empty() {
+    format_line_ranges(&file_path, file_bytes, line_ranges, &plugins_scope).await?
+  } else {
+    plugins_scope
+      .format(HostFormatRequest {
+        file_path,
+        file_bytes: file_bytes.to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: Arc::new(NullCancellationToken),
+      })
+      .await?
+  };
   match result {
     Some(text) => environment.log_machine_readable(&text),
     None => environment.log_machine_readable(file_bytes),
@@ -152,7 +164,7 @@ pub async fn output_format_times<TEnvironment: Environment>(
   let durations: Arc<Mutex<Vec<(PathBuf, u128)>>> = Arc::new(Mutex::new(Vec::new()));
 
   for scope_and_paths in scopes.into_iter() {
-    run_parallelized(scope_and_paths, environment, None, EnsureStableFormat(false), {
+    run_parallelized(scope_and_paths, environment, None, EnsureStableFormat(false), Default::default(), {
       let durations = durations.clone();
       move |file_path, _, _, start_instant, _| {
         let duration = start_instant.elapsed().as_millis();
@@ -214,52 +226,59 @@ pub async fn check<TEnvironment: Environment>(
   let fail_fast_flag = cmd.fail_fast.then(|| Arc::new(AtomicFlag::default()));
 
   for (scope_and_paths, incremental_file) in scopes.into_iter().zip(incremental_files) {
-    run_parallelized(scope_and_paths, environment, incremental_file.clone(), EnsureStableFormat(false), {
-      let not_formatted_files_count = not_formatted_files_count.clone();
-      let incremental_file = incremental_file.clone();
-      let fail_fast_flag = fail_fast_flag.clone();
-      move |file_path, file_bytes, formatted_bytes, _, environment| {
-        if formatted_bytes != file_bytes {
-          not_formatted_files_count.inc();
-          if output_json {
-            output_json_difference(
-              OutputJsonDifferenceOptions {
-                file_path: &file_path,
-                file_bytes: &file_bytes,
-                formatted_bytes: &formatted_bytes,
-                diff_format,
-              },
-              &environment,
-            );
-          } else if list_different {
-            log_stdout_info!(environment, "{}", file_path.display());
+    run_parallelized(
+      scope_and_paths,
+      environment,
+      incremental_file.clone(),
+      EnsureStableFormat(false),
+      Default::default(),
+      {
+        let not_formatted_files_count = not_formatted_files_count.clone();
+        let incremental_file = incremental_file.clone();
+        let fail_fast_flag = fail_fast_flag.clone();
+        move |file_path, file_bytes, formatted_bytes, _, environment| {
+          if formatted_bytes != file_bytes {
+            not_formatted_files_count.inc();
+            if output_json {
+              output_json_difference(
+                OutputJsonDifferenceOptions {
+                  file_path: &file_path,
+                  file_bytes: &file_bytes,
+                  formatted_bytes: &formatted_bytes,
+                  diff_format,
+                },
+                &environment,
+              );
+            } else if list_different {
+              log_stdout_info!(environment, "{}", file_path.display());
+            } else {
+              output_difference(
+                OutputDifferenceOptions {
+                  file_path: &file_path,
+                  file_bytes: &file_bytes,
+                  formatted_bytes: &formatted_bytes,
+                  diff_format,
+                },
+                &environment,
+              );
+            }
+            if let Some(fail_fast_flag) = &fail_fast_flag {
+              fail_fast_flag.raise();
+              return Err(RunForFilePathError::Stop);
+            }
           } else {
-            output_difference(
-              OutputDifferenceOptions {
-                file_path: &file_path,
-                file_bytes: &file_bytes,
-                formatted_bytes: &formatted_bytes,
-                diff_format,
-              },
-              &environment,
-            );
+            // update the incremental cache when the file is already formatted correctly
+            // so that this runs faster next time, but don't update it with the
+            // correctly formatted file because it hasn't undergone a stable
+            // formatting check
+            if let Some(incremental_file) = &incremental_file {
+              incremental_file.update_file(&formatted_bytes);
+            }
           }
-          if let Some(fail_fast_flag) = &fail_fast_flag {
-            fail_fast_flag.raise();
-            return Err(RunForFilePathError::Stop);
-          }
-        } else {
-          // update the incremental cache when the file is already formatted correctly
-          // so that this runs faster next time, but don't update it with the
-          // correctly formatted file because it hasn't undergone a stable
-          // formatting check
-          if let Some(incremental_file) = &incremental_file {
-            incremental_file.update_file(&formatted_bytes);
-          }
+          Ok(())
         }
-        Ok(())
-      }
-    })
+      },
+    )
     .await?;
 
     if fail_fast_flag.as_ref().map(|flag| flag.is_raised()).unwrap_or(false) {
@@ -403,7 +422,13 @@ pub async fn format<TEnvironment: Environment>(
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
-  let incremental_files = get_incremental_files(&scopes, cmd.incremental, &cmd.patterns, environment);
+  let line_ranges = Rc::new(resolve_line_ranges_by_path(&cmd.line_ranges, &scopes, environment)?);
+  let incremental_files = get_incremental_files(
+    &scopes,
+    if line_ranges.is_empty() { cmd.incremental } else { Some(false) },
+    &cmd.patterns,
+    environment,
+  );
   scopes.plan_format_engines(&incremental_files).await?;
 
   let formatted_files_count = Arc::new(AtomicCounter::default());
@@ -416,6 +441,7 @@ pub async fn format<TEnvironment: Environment>(
       environment,
       incremental_file.clone(),
       EnsureStableFormat(cmd.enable_stable_format),
+      line_ranges.clone(),
       {
         let formatted_files_count = formatted_files_count.clone();
         let incremental_file = incremental_file.clone();
@@ -462,6 +488,116 @@ pub async fn format<TEnvironment: Environment>(
   }
 
   Ok(())
+}
+
+/// Resolves the `--lines` ranges to the files that will be formatted.
+fn resolve_line_ranges_by_path<TEnvironment: Environment>(
+  line_ranges: &[FileLineRanges],
+  scopes: &PluginsScopeAndPathsCollection<TEnvironment>,
+  environment: &TEnvironment,
+) -> Result<LineRangesByPath> {
+  let mut result = LineRangesByPath::new();
+  let mut ranges_without_path = Vec::<LineRange>::new();
+  for line_range in line_ranges {
+    match &line_range.path {
+      Some(path) => {
+        // resolve the same way as the file paths to format
+        let path_text = path;
+        let path = environment.cwd().join(path_text);
+        let path = match environment.canonicalize(&path) {
+          Ok(path) => path.into_path_buf(),
+          // the path is also used to find the files to format, so the
+          // files a glob finds would be formatted in their entirety
+          Err(_) if crate::utils::is_pattern(path_text) => {
+            bail!("Lines can only be specified for a file path, but '{}' is a glob.", path_text);
+          }
+          Err(_) => path, // doesn't exist, so it won't be formatted
+        };
+        result.entry(path).or_default().extend(&line_range.ranges);
+      }
+      None => ranges_without_path.extend(&line_range.ranges),
+    }
+  }
+  ensure_no_line_ranges_for_directory(&result, scopes)?;
+
+  if !ranges_without_path.is_empty() {
+    let mut file_paths = scopes.iter().flat_map(|s| s.file_paths_by_plugins.all_file_paths());
+    if let Some(file_path) = file_paths.next() {
+      let remaining_count = file_paths.count();
+      if remaining_count > 0 {
+        bail!(
+          concat!(
+            "A --lines flag without a file path can only be used when formatting a single file, but {} files were found. ",
+            "Specify the file each range is for (ex. --lines path/to/file.ts:10-20).",
+          ),
+          remaining_count + 1
+        );
+      }
+      result.entry(file_path.clone()).or_default().extend(ranges_without_path);
+    }
+  }
+
+  Ok(result)
+}
+
+/// Errors when a path with line ranges is a directory because its files would
+/// be formatted in their entirety. This looks at the files that were found
+/// instead of the file system in order to not make any system calls.
+fn ensure_no_line_ranges_for_directory<TEnvironment: Environment>(
+  line_ranges: &LineRangesByPath,
+  scopes: &PluginsScopeAndPathsCollection<TEnvironment>,
+) -> Result<()> {
+  if line_ranges.is_empty() {
+    return Ok(());
+  }
+  let all_file_paths = || scopes.iter().flat_map(|s| s.file_paths_by_plugins.all_file_paths());
+  let mut paths_not_found = line_ranges.keys().map(|p| p.as_path()).collect::<HashSet<_>>();
+  for file_path in all_file_paths() {
+    paths_not_found.remove(file_path.as_path());
+  }
+  // these are now either directories or files that aren't being formatted
+  if paths_not_found.is_empty() {
+    return Ok(());
+  }
+  for file_path in all_file_paths() {
+    if let Some(dir_path) = file_path.ancestors().skip(1).find(|ancestor| paths_not_found.contains(ancestor)) {
+      bail!("Lines can only be specified for a file path, but '{}' is a directory.", dir_path.display());
+    }
+  }
+  Ok(())
+}
+
+/// Formats the provided lines of the text, returning `None` when nothing changed.
+///
+/// The ranges are passed on to the plugins, so what's formatted is up to them.
+async fn format_line_ranges<TEnvironment: Environment>(
+  file_path: &Path,
+  file_bytes: &[u8],
+  line_ranges: &[LineRange],
+  plugins_scope: &Rc<PluginsScope<TEnvironment>>,
+) -> Result<Option<Vec<u8>>> {
+  let mut formatted_bytes: Option<Vec<u8>> = None;
+  // go from the last range to the first so that formatting a range
+  // doesn't shift the lines of the ranges that are still to be formatted
+  for line_range in merge_line_ranges(line_ranges).into_iter().rev() {
+    let current_bytes = formatted_bytes.as_deref().unwrap_or(file_bytes);
+    let Some(range) = get_line_range_byte_range(current_bytes, line_range) else {
+      continue; // past the end of the text
+    };
+    let result = plugins_scope
+      .format(HostFormatRequest {
+        file_path: file_path.to_path_buf(),
+        file_bytes: current_bytes.to_vec(),
+        range: Some(range),
+        override_config: Default::default(),
+        token: Arc::new(NullCancellationToken),
+      })
+      .await?;
+    if let Some(new_bytes) = result {
+      formatted_bytes = Some(new_bytes);
+    }
+  }
+  Ok(formatted_bytes)
 }
 
 #[cfg(test)]
@@ -1442,6 +1578,41 @@ mod test {
         ))
       )
     );
+  }
+
+  #[test]
+  fn process_configuration_requires_trusted_layers() {
+    for pinned in [false, true] {
+      let remote = r#"{ "testProcessPlugin": { "ending": "remote", "associations": ["**/*.other"], "overrides": { "files": "**/override.txt_ps", "ending": "override" } } }"#;
+      let url = "https://dprint.dev/shared.json";
+      let reference = if pinned {
+        format!("{}@{}", url, crate::utils::get_sha256_checksum(remote.as_bytes()))
+      } else {
+        url.to_string()
+      };
+      let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin()
+        .with_default_config(|c| {
+          c.add_remote_process_plugin()
+            .add_config_section("extends", &serde_json::to_string(&reference).unwrap());
+        })
+        .write_file("/file.txt_ps", "text")
+        .write_file("/override.txt_ps", "text")
+        .write_file("/file.other", "text")
+        .build();
+      environment.add_remote_file(url, remote.as_bytes());
+      run_test_cli(vec!["fmt"], &environment).unwrap();
+      environment.take_stdout_messages();
+      let warnings = environment.take_stderr_messages();
+      if pinned {
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(environment.read_file("/file.other").unwrap(), "text_remote");
+      } else {
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("Ignored untrusted remote configuration"));
+        assert_eq!(environment.read_file("/file.other").unwrap(), "text");
+        assert_eq!(environment.read_file("/override.txt_ps").unwrap(), "text_formatted_process");
+      }
+    }
   }
 
   #[test]
@@ -2433,6 +2604,103 @@ text2_formatted"
     assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_formatted");
     assert_eq!(environment.read_file(crlf_path).unwrap(), "#!/bin/sh\r\ntext_formatted");
     assert_eq!(environment.read_file(dotfile_path).unwrap(), "#!/bin/sh\ntext_formatted");
+  }
+
+  #[test]
+  fn should_provide_file_path_with_shebang_extension_to_plugin() {
+    let script_path = "/scripts/build";
+    let dotfile_path = "/.envrc";
+    let override_path = "/scripts/override";
+    let ext_path = "/scripts/file.txt_ps";
+    let association_path = "/scripts/association";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin()
+      .with_local_config("/config.json", |c| {
+        c.add_remote_process_plugin()
+          .add_config_section(
+            "shebangs",
+            r##"{
+              "#!/bin/sh": "txt_ps"
+            }"##,
+          )
+          .add_config_section(
+            "testProcessPlugin",
+            r#"{
+              "associations": ["**/*.txt_ps", "**/association"],
+              "overrides": {
+                "files": "**/override",
+                "ending": "overridden"
+              }
+            }"#,
+          );
+      })
+      .write_file(script_path, "#!/bin/sh\noutput_file_path")
+      .write_file(dotfile_path, "#!/bin/sh\noutput_file_path")
+      // the overrides are matched against the real path
+      .write_file(override_path, "#!/bin/sh\ntext")
+      .write_file(ext_path, "#!/bin/sh\noutput_file_path")
+      // matched by the plugin's associations, so it's given its real path
+      .write_file(association_path, "#!/bin/sh\noutput_file_path")
+      .build();
+
+    run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(5)]);
+    assert_eq!(
+      environment.read_file(association_path).unwrap(),
+      format!("#!/bin/sh\n{}_formatted_process", environment.canonicalize(association_path).unwrap().display())
+    );
+    assert_eq!(
+      environment.read_file(script_path).unwrap(),
+      format!(
+        "#!/bin/sh\n{}.dprint-ext-added.txt_ps_formatted_process",
+        environment.canonicalize(script_path).unwrap().display()
+      )
+    );
+    assert_eq!(
+      environment.read_file(dotfile_path).unwrap(),
+      format!(
+        "#!/bin/sh\n{}.dprint-ext-added.txt_ps_formatted_process",
+        environment.canonicalize(dotfile_path).unwrap().display()
+      )
+    );
+    assert_eq!(environment.read_file(override_path).unwrap(), "#!/bin/sh\ntext_overridden");
+    assert_eq!(
+      environment.read_file(ext_path).unwrap(),
+      format!("#!/bin/sh\n{}_formatted_process", environment.canonicalize(ext_path).unwrap().display())
+    );
+
+    // same when formatting the text provided via stdin
+    let test_std_in = TestStdInReader::from("#!/bin/sh\noutput_file_path");
+    run_test_cli_with_stdin(vec!["fmt", "--config", "/config.json", "--stdin", "./scripts/other"], &environment, test_std_in).unwrap();
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec![format!(
+        "#!/bin/sh\n{}_formatted_process",
+        environment.cwd().join("./scripts/other.dprint-ext-added.txt_ps").display()
+      )]
+    );
+
+    // a path that was given to a plugin is matched by its real path and the
+    // added extension, which is what a plugin provides when formatting with the host
+    for (file_path, text) in [
+      ("./scripts/other.dprint-ext-added.txt_ps", "output_file_path"),
+      ("./scripts/association.dprint-ext-added.other", "output_file_path"),
+    ] {
+      let test_std_in = TestStdInReader::from(text);
+      run_test_cli_with_stdin(vec!["fmt", "--config", "/config.json", "--stdin", file_path], &environment, test_std_in).unwrap();
+      assert_eq!(
+        environment.take_stdout_messages(),
+        vec![format!("{}_formatted_process", environment.cwd().join(file_path).display())]
+      );
+    }
+    let test_std_in = TestStdInReader::from("text");
+    run_test_cli_with_stdin(
+      vec!["fmt", "--config", "/config.json", "--stdin", "./scripts/override.dprint-ext-added.txt_ps"],
+      &environment,
+      test_std_in,
+    )
+    .unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["text_overridden"]);
   }
 
   #[test]
@@ -6150,6 +6418,36 @@ text_formatted"
   }
 
   #[test]
+  fn reloads_npm_plugins_and_configs_independently() {
+    use crate::test_helpers::WASM_PLUGIN_BYTES;
+    use crate::test_helpers::create_test_npm_tarball;
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{"extends": "npm:shared@1.0.0", "plugins": ["npm:reload-test@1.0.0"]}"#)
+      .write_file("/file.txt", "text")
+      .build();
+    let plugin_url = "https://registry.npmjs.org/reload-test/-/reload-test-1.0.0.tgz";
+    let config_url = "https://registry.npmjs.org/shared/-/shared-1.0.0.tgz";
+    environment.add_remote_file_bytes(plugin_url, create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]));
+    environment.add_remote_file_bytes(config_url, create_test_npm_tarball(&[("package/dprint.json", b"{}" as &[u8])]));
+    for (flag, plugin_count, config_count) in [
+      (None, 1, 1),
+      (None, 1, 1),
+      (Some("--reload=config"), 1, 2),
+      (Some("--reload=plugins"), 2, 2),
+      (Some("--reload"), 3, 3),
+    ] {
+      let mut args = vec!["fmt", "/file.txt"];
+      if let Some(flag) = flag {
+        args.push(flag);
+      }
+      run_test_cli(args, &environment).unwrap();
+      assert_eq!(environment.remote_file_download_count(plugin_url), plugin_count, "{flag:?}");
+      assert_eq!(environment.remote_file_download_count(config_url), config_count, "{flag:?}");
+      environment.clear_logs();
+    }
+  }
+
+  #[test]
   fn should_format_with_unversioned_npm_wasm_plugin_from_node_modules() {
     use crate::test_helpers::WASM_PLUGIN_BYTES;
 
@@ -6449,5 +6747,539 @@ text_formatted"
     assert_eq!(environment.read_file("/file.txt_ps").unwrap(), "text_formatted_process");
 
     let _ = environment.take_stderr_messages(); // drain process-plugin extract progress
+  }
+
+  #[test]
+  fn should_use_updated_remote_config_when_reloading() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_remote_config("https://dprint.dev/shared.json", |c| {
+        c.add_remote_wasm_plugin().add_config_section("test-plugin", r#"{ "ending": "shared-ending" }"#);
+      })
+      .with_default_config(|c| {
+        c.add_config_section("extends", r#""https://dprint.dev/shared.json""#);
+      })
+      .write_file("/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_shared-ending");
+
+    // the remote config changes, but the cached one is still fresh
+    environment.add_remote_file_bytes(
+      "https://dprint.dev/shared.json",
+      r#"{ "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"], "test-plugin": { "ending": "updated-ending" } }"#.into(),
+    );
+    environment.write_file("/file.txt", "text").unwrap();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_shared-ending");
+    assert_eq!(environment.remote_file_download_count("https://dprint.dev/shared.json"), 1);
+
+    // reloading gets the change
+    environment.write_file("/file.txt", "text").unwrap();
+    run_test_cli(vec!["fmt", "--reload", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_updated-ending");
+    assert_eq!(environment.remote_file_download_count("https://dprint.dev/shared.json"), 2);
+
+    // which is then cached
+    environment.write_file("/file.txt", "text").unwrap();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_updated-ending");
+    assert_eq!(environment.remote_file_download_count("https://dprint.dev/shared.json"), 2);
+    environment.take_stdout_messages();
+    environment.take_stderr_messages();
+  }
+
+  #[test]
+  fn should_download_remote_plugins_again_when_reloading() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file("/file.txt", "text")
+      .build();
+    let plugin_url = "https://plugins.dprint.dev/test-plugin.wasm";
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.remote_file_download_count(plugin_url), 1);
+
+    // cached
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.remote_file_download_count(plugin_url), 1);
+    run_test_cli(vec!["fmt", "--reload=config", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.remote_file_download_count(plugin_url), 1);
+
+    // reloaded
+    run_test_cli(vec!["fmt", "--reload=plugins", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.remote_file_download_count(plugin_url), 2);
+    run_test_cli(vec!["fmt", "--reload", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.remote_file_download_count(plugin_url), 3);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_formatted");
+    environment.take_stdout_messages();
+    environment.take_stderr_messages();
+  }
+
+  #[test]
+  fn should_format_using_config_in_dot_config_dir() {
+    for config_file_name in ["dprint.json", "dprint.jsonc"] {
+      let environment = TestEnvironmentBuilder::new()
+        .add_remote_wasm_plugin()
+        // the config file applies to the parent of the `.config` directory, so the
+        // patterns matching at any depth match there, while the anchored patterns
+        // are relative to the config file's directory
+        .with_local_config(format!("/.config/{}", config_file_name), |config_file| {
+          config_file
+            .add_remote_wasm_plugin()
+            .add_includes("**/*.txt")
+            .add_excludes("dist")
+            .add_excludes("./ignored")
+            .add_excludes("../src/excluded");
+        })
+        .initialize()
+        .write_file("/src/file.txt", "text")
+        .write_file("/src/excluded/file.txt", "text")
+        .write_file("/dist/file.txt", "text")
+        .write_file("/ignored/file.txt", "text")
+        .write_file("/.config/ignored/file.txt", "text")
+        .write_file("/.config/file.txt", "text")
+        .build();
+      run_test_cli(vec!["fmt"], &environment).unwrap();
+      assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+      assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+      assert_eq!(environment.read_file("/src/file.txt").unwrap(), "text_formatted");
+      assert_eq!(environment.read_file("/src/excluded/file.txt").unwrap(), "text");
+      assert_eq!(environment.read_file("/dist/file.txt").unwrap(), "text");
+      assert_eq!(environment.read_file("/ignored/file.txt").unwrap(), "text_formatted");
+      assert_eq!(environment.read_file("/.config/ignored/file.txt").unwrap(), "text");
+      assert_eq!(environment.read_file("/.config/file.txt").unwrap(), "text_formatted");
+    }
+  }
+
+  #[test]
+  fn should_format_using_config_in_dot_config_dir_of_ancestor_directory() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_local_config("/.config/dprint.json", |config_file| {
+        config_file.add_remote_wasm_plugin().add_includes("../other/**/*.txt");
+      })
+      .initialize()
+      .write_file("/other/sub/file.txt", "text")
+      .build();
+    environment.set_cwd("/other/sub/");
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/other/sub/file.txt").unwrap(), "text_formatted");
+  }
+
+  #[test]
+  fn should_format_only_dot_config_dir_when_cwd_is_dot_config_dir() {
+    // the `.config` directory is treated as part of its parent directory, so
+    // it works the same as being in any other sub directory of it
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_local_config("/.config/dprint.json", |config_file| {
+        config_file.add_remote_wasm_plugin().add_includes("**/*.txt");
+      })
+      .initialize()
+      .write_file("/file.txt", "text")
+      .write_file("/.config/file.txt", "text")
+      .write_file("/.config/sub/file.txt", "text")
+      .build();
+    environment.set_cwd("/.config/");
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text");
+    assert_eq!(environment.read_file("/.config/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/.config/sub/file.txt").unwrap(), "text_formatted");
+
+    // a sub directory of the `.config` directory finds it the same way
+    environment.clear_logs();
+    environment.write_file("/.config/sub/file.txt", "text").unwrap();
+    environment.set_cwd("/.config/sub/");
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/.config/sub/file.txt").unwrap(), "text_formatted");
+  }
+
+  #[test]
+  fn should_prefer_config_in_dir_over_dot_config_dir() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|config_file| {
+        config_file
+          .add_remote_wasm_plugin()
+          .add_config_section("test-plugin", r#"{ "ending": "root" }"#);
+      })
+      .with_local_config("/.config/dprint.json", |config_file| {
+        config_file
+          .add_remote_wasm_plugin()
+          .add_config_section("test-plugin", r#"{ "ending": "dot_config" }"#);
+      })
+      .write_file("/file.txt", "text")
+      .write_file("/.config/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_root");
+    // the shadowed config file doesn't create a scope for the `.config` directory
+    assert_eq!(environment.read_file("/.config/file.txt").unwrap(), "text_root");
+
+    // including when running from within the `.config` directory
+    environment.clear_logs();
+    environment.write_file("/.config/file.txt", "text").unwrap();
+    environment.set_cwd("/.config/");
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/.config/file.txt").unwrap(), "text_root");
+  }
+
+  #[test]
+  fn should_discover_descendant_config_in_dot_config_dir() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|config_file| {
+        config_file
+          .add_remote_wasm_plugin()
+          .add_config_section("test-plugin", r#"{ "ending": "root" }"#);
+      })
+      .with_local_config("/sub/.config/dprint.jsonc", |config_file| {
+        config_file
+          .add_remote_wasm_plugin()
+          .add_config_section("test-plugin", r#"{ "ending": "sub" }"#)
+          .add_excludes("excluded");
+      })
+      .write_file("/file.txt", "text")
+      .write_file("/sub/file.txt", "text")
+      .write_file("/sub/excluded/file.txt", "text")
+      .write_file("/sub/.config/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_root");
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_sub");
+    assert_eq!(environment.read_file("/sub/excluded/file.txt").unwrap(), "text");
+    assert_eq!(environment.read_file("/sub/.config/file.txt").unwrap(), "text_sub");
+
+    // and for file paths specified on the command line
+    environment.clear_logs();
+    environment.write_file("/file.txt", "text").unwrap();
+    environment.write_file("/sub/file.txt", "text").unwrap();
+    run_test_cli(vec!["fmt", "file.txt", "sub/file.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_root");
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_sub");
+  }
+
+  #[test]
+  fn should_base_config_arg_in_dot_config_dir_at_parent_dir() {
+    // the same as when it's discovered
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_local_config("/project/.config/dprint.json", |config_file| {
+        config_file
+          .add_remote_wasm_plugin()
+          .add_includes("src/**/*.txt")
+          .add_includes("../other/**/*.txt")
+          .add_includes("**/any.txt");
+      })
+      .initialize()
+      .write_file("/project/src/file.txt", "text")
+      .write_file("/project/.config/src/file.txt", "text")
+      .write_file("/project/other/file.txt", "text")
+      .write_file("/project/sub/any.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "--config", "project/.config/dprint.json"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert_eq!(environment.read_file("/project/src/file.txt").unwrap(), "text");
+    assert_eq!(environment.read_file("/project/.config/src/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/project/other/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/project/sub/any.txt").unwrap(), "text_formatted");
+  }
+
+  #[test]
+  fn should_format_with_associations_in_dot_config_dir_config() {
+    // the association globs are relative to the config file's directory the
+    // same as its includes, including for the includes derived from them
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_local_config("/.config/dprint.json", |config_file| {
+        config_file
+          .add_remote_wasm_plugin()
+          .add_config_section("test-plugin", r#"{ "associations": ["../src/**/*.other"], "ending": "wasm" }"#);
+      })
+      .initialize()
+      .write_file("/file.txt", "text")
+      .write_file("/src/file.other", "text")
+      .write_file("/.config/src/file.other", "text")
+      .write_file("/file.other", "text")
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_wasm");
+    assert_eq!(environment.read_file("/src/file.other").unwrap(), "text_wasm");
+    assert_eq!(environment.read_file("/.config/src/file.other").unwrap(), "text");
+    assert_eq!(environment.read_file("/file.other").unwrap(), "text");
+  }
+
+  #[test]
+  fn should_ignore_dot_config_file() {
+    // a `.config` that's a file isn't a directory to search
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|config_file| {
+        config_file.add_remote_wasm_plugin();
+      })
+      .write_file("/sub/.config", "text")
+      .write_file("/sub/file.txt", "text")
+      .build();
+    environment.set_cwd("/sub/");
+    run_test_cli(vec!["fmt", "--allow-no-files"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/sub/.config").unwrap(), "text");
+  }
+
+  #[test]
+  fn should_not_search_dot_config_dir_of_home_dir() {
+    // the home directory's `.config` is where the system's configuration goes
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_local_config("/home/.config/dprint.json", |config_file| {
+        config_file.add_remote_wasm_plugin().add_includes("**/*.txt");
+      })
+      .initialize()
+      .write_file("/home/project/file.txt", "text")
+      .write_file("/home/.config/file.txt", "text")
+      .build();
+    environment.set_cwd("/home/project/");
+    let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
+    err.assert_exit_code(11);
+    assert_eq!(environment.read_file("/home/project/file.txt").unwrap(), "text");
+
+    // it's an ordinary directory instead
+    environment.clear_logs();
+    environment.set_cwd("/home/.config/");
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert_eq!(environment.read_file("/home/.config/file.txt").unwrap(), "text_formatted");
+  }
+
+  #[test]
+  fn should_format_line_ranges_for_stdin_fmt() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin().build();
+    let run = |args: Vec<&str>, text: &str| {
+      let mut all_args = vec!["fmt", "--stdin", "file.txt"];
+      all_args.extend(args);
+      run_test_cli_with_stdin(all_args, &environment, TestStdInReader::from(text)).unwrap();
+      environment.take_stdout_messages()
+    };
+
+    // the test plugin replaces the range with _formatted_ and
+    // leaves the text alone when it ends with _formatted
+    let text = "line1\nline2\nline3\nline4\n_formatted";
+    assert_eq!(run(vec!["--lines", "2-2"], text), vec!["line1\n_formatted_\nline3\nline4\n_formatted"]);
+    assert_eq!(run(vec!["--lines=2-3"], text), vec!["line1\n_formatted_\nline4\n_formatted"]);
+    // multiple ranges in any order
+    assert_eq!(
+      run(vec!["--lines", "1", "--lines", "4-4", "--lines", "2-2"], text),
+      vec!["_formatted_\nline3\n_formatted_\n_formatted"]
+    );
+    // overlapping ranges are formatted as one
+    assert_eq!(run(vec!["--lines", "2-3", "--lines", "3-4"], text), vec!["line1\n_formatted_\n_formatted"]);
+    // excludes the carriage return
+    let crlf_text = "line1\r\nline2\r\n_formatted";
+    assert_eq!(run(vec!["--lines", "1-1"], crlf_text), vec!["_formatted_\r\nline2\r\n_formatted"]);
+    assert_eq!(run(vec!["--lines", "2-2"], crlf_text), vec!["line1\r\n_formatted_\r\n_formatted"]);
+    // past the end of the text
+    assert_eq!(run(vec!["--lines", "6-7"], text), vec![text]);
+    assert_eq!(run(vec!["--lines", "50-60"], text), vec![text]);
+  }
+
+  #[test]
+  fn should_format_line_ranges_for_file() {
+    let file_path = "/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .write_file(file_path, "line1\nline2\nline3\n_formatted")
+      .write_file("/other.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "--lines", "1-1", "--lines", "3-3", file_path], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path).unwrap(), "_formatted_\nline2\n_formatted_\n_formatted");
+
+    // nothing to format
+    run_test_cli(vec!["fmt", "--lines", "10-12", file_path], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), Vec::<String>::new());
+    assert_eq!(environment.read_file(file_path).unwrap(), "_formatted_\nline2\n_formatted_\n_formatted");
+
+    // a range without a file path needs a single file
+    let err = run_test_cli(vec!["fmt", "--lines", "1-1"], &environment).err().unwrap();
+    assert_eq!(
+      err.to_string(),
+      concat!(
+        "A --lines flag without a file path can only be used when formatting a single file, but 2 files were found. ",
+        "Specify the file each range is for (ex. --lines path/to/file.ts:10-20).",
+      )
+    );
+    assert_eq!(environment.read_file("/other.txt").unwrap(), "text");
+  }
+
+  fn build_line_ranges_environment() -> TestEnvironment {
+    // the test plugin replaces a range with _formatted_ and
+    // leaves the text alone when it ends with _formatted
+    TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .write_file("/a.txt", "a1\na2\na3\n_formatted")
+      .write_file("/sub/b.txt", "b1\nb2\n_formatted")
+      .write_file("/c.txt", "c")
+      .write_file("/d.txt", "d")
+      .build()
+  }
+
+  #[test]
+  fn should_format_line_ranges_for_multiple_files() {
+    let environment = build_line_ranges_environment();
+    run_test_cli(vec!["fmt", "--lines", "/a.txt:1-1,3", "--lines", "sub/b.txt:2-2"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.read_file("/a.txt").unwrap(), "_formatted_\na2\n_formatted_\n_formatted");
+    assert_eq!(environment.read_file("/sub/b.txt").unwrap(), "b1\n_formatted_\n_formatted");
+    // only the files with line ranges are formatted
+    assert_eq!(environment.read_file("/c.txt").unwrap(), "c");
+    assert_eq!(environment.read_file("/d.txt").unwrap(), "d");
+  }
+
+  #[test]
+  fn should_format_line_ranges_with_globs() {
+    let environment = build_line_ranges_environment();
+    // a file that's also matched by a glob only has its lines formatted
+    run_test_cli(vec!["fmt", "--lines", "/a.txt:2-2", "--", "/*.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+    assert_eq!(environment.read_file("/a.txt").unwrap(), "a1\n_formatted_\na3\n_formatted");
+    assert_eq!(environment.read_file("/c.txt").unwrap(), "c_formatted");
+    assert_eq!(environment.read_file("/d.txt").unwrap(), "d_formatted");
+    assert_eq!(environment.read_file("/sub/b.txt").unwrap(), "b1\nb2\n_formatted");
+  }
+
+  #[test]
+  fn should_error_for_line_ranges_of_directory() {
+    // a glob isn't tested here because the test environment's canonicalize never fails
+    let environment = build_line_ranges_environment();
+    let err = run_test_cli(vec!["fmt", "--lines", "/sub:1-1"], &environment).err().unwrap();
+    assert_eq!(err.to_string(), "Lines can only be specified for a file path, but '/sub' is a directory.");
+    let test_std_in = TestStdInReader::from(
+      "/a.txt:1-1
+/sub:2
+",
+    );
+    let err = run_test_cli_with_stdin(vec!["fmt", "--stdin-files"], &environment, test_std_in).err().unwrap();
+    assert_eq!(err.to_string(), "Lines can only be specified for a file path, but '/sub' is a directory.");
+    // nothing was formatted
+    assert_eq!(
+      environment.read_file("/a.txt").unwrap(),
+      "a1
+a2
+a3
+_formatted"
+    );
+    assert_eq!(
+      environment.read_file("/sub/b.txt").unwrap(),
+      "b1
+b2
+_formatted"
+    );
+  }
+
+  #[test]
+  fn should_format_line_ranges_for_file_with_glob_chars_in_name() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .write_file("/[id].txt", "a1\na2\n_formatted")
+      .write_file("/other.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "--lines", "/[id].txt:2"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/[id].txt").unwrap(), "a1\n_formatted_\n_formatted");
+    assert_eq!(environment.read_file("/other.txt").unwrap(), "text");
+  }
+
+  #[test]
+  fn should_format_line_ranges_and_entire_files() {
+    let environment = build_line_ranges_environment();
+    run_test_cli(vec!["fmt", "--lines", "/a.txt:2-2", "--", "/a.txt", "/c.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.read_file("/a.txt").unwrap(), "a1\n_formatted_\na3\n_formatted");
+    // a file without line ranges is formatted in its entirety
+    assert_eq!(environment.read_file("/c.txt").unwrap(), "c_formatted");
+    assert_eq!(environment.read_file("/sub/b.txt").unwrap(), "b1\nb2\n_formatted");
+    assert_eq!(environment.read_file("/d.txt").unwrap(), "d");
+  }
+
+  #[test]
+  fn should_format_line_ranges_from_stdin_files() {
+    let environment = build_line_ranges_environment();
+    let test_std_in = TestStdInReader::from("/a.txt:1-1,3\n/c.txt\n/sub/b.txt:2\n");
+    run_test_cli_with_stdin(vec!["fmt", "--stdin-files"], &environment, test_std_in).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+    assert_eq!(environment.read_file("/a.txt").unwrap(), "_formatted_\na2\n_formatted_\n_formatted");
+    assert_eq!(environment.read_file("/sub/b.txt").unwrap(), "b1\n_formatted_\n_formatted");
+    assert_eq!(environment.read_file("/c.txt").unwrap(), "c_formatted");
+    assert_eq!(environment.read_file("/d.txt").unwrap(), "d");
+  }
+
+  #[test]
+  fn should_not_use_incremental_when_formatting_line_ranges() {
+    let environment = build_line_ranges_environment();
+    run_test_cli(vec!["fmt", "--incremental", "--lines", "/a.txt:1-1"], &environment).unwrap();
+    assert_eq!(environment.read_file("/a.txt").unwrap(), "_formatted_\na2\na3\n_formatted");
+    environment.take_stdout_messages();
+    // the other lines still get formatted afterwards
+    run_test_cli(vec!["fmt", "--incremental", "--lines", "/a.txt:2-2"], &environment).unwrap();
+    assert_eq!(environment.read_file("/a.txt").unwrap(), "_formatted_\n_formatted_\na3\n_formatted");
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+  }
+
+  #[test]
+  fn should_format_stdin_resolving_config_file_in_dot_config_dir_from_provided_path() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_includes("./**/*.txt").add_remote_wasm_plugin();
+      })
+      .with_local_config("/sub-dir/.config/dprint.json", |c| {
+        c.add_includes("**/*.txt")
+          .add_remote_wasm_plugin()
+          .add_config_section("test-plugin", r#"{ "ending": "new_ending" }"#);
+      })
+      .write_file("/sub-dir/.config/file.txt", "test")
+      .initialize()
+      .build();
+    // a file in the `.config` directory is formatted with the config file found
+    // for its parent directory
+    let test_std_in = TestStdInReader::from("text");
+    run_test_cli_with_stdin(vec!["fmt", "--stdin", "/sub-dir/.config/file.txt"], &environment, test_std_in).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["text_new_ending"]);
+    let test_std_in = TestStdInReader::from("text");
+    run_test_cli_with_stdin(vec!["fmt", "--stdin", "/sub-dir/file.txt"], &environment, test_std_in).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["text_new_ending"]);
+  }
+
+  #[test]
+  fn should_inherit_ancestor_config_in_dot_config_dir_config() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|config| {
+        config
+          .add_remote_wasm_plugin()
+          .add_config_section("test-plugin", r#"{ "ending": "root" }"#)
+          .add_excludes("./sub/excluded/dir");
+      })
+      // inherits from the root config file rather than finding itself
+      .with_local_config("/sub/.config/dprint.json", |config| {
+        config.set_inherit(true);
+      })
+      .write_file("/file.txt", "text")
+      .write_file("/sub/file.txt", "text")
+      .write_file("/sub/excluded/dir/file.txt", "text")
+      .write_file("/sub/.config/excluded/dir/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_root");
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_root");
+    // the inherited excludes still point at the same directories
+    assert_eq!(environment.read_file("/sub/excluded/dir/file.txt").unwrap(), "text");
+    assert_eq!(environment.read_file("/sub/.config/excluded/dir/file.txt").unwrap(), "text_root");
   }
 }

@@ -609,12 +609,13 @@ impl<TEnvironment: Environment> Filter<'_, TEnvironment> {
     let hint = DirEntriesHint { has_gitignore: true, has_git };
     let gitignore = DirGitIgnores::for_listed_dir(self.environment, &path, hint, parent.gitignore.as_ref(), &self.gitignore.options);
     if self.options.discover_configs
-      && let Some(config_file) = POSSIBLE_CONFIG_FILE_NAMES
-        .iter()
+      && !crate::is_project_config_dir(&path, self.environment)
+      && let Some(config_file) = crate::config_file_names(&path, self.environment)
         // joined like the scan joins them (see `scan::config_file`)
         .map(|file_name| self.environment.dir_entry_path(&path, file_name.as_ref()))
-        .filter(|config_file| Some(config_file) != self.options.current_config_path.as_ref())
         .filter(|config_file| self.environment.path_kind(config_file) == Some(PathKind::File))
+        .take(1)
+        .filter(|config_file| Some(config_file) != self.options.current_config_path.as_ref())
         .find(|config_file| {
           index.as_ref().is_some_and(|index| index.contains_file(config_file))
             || !gitignore
@@ -683,12 +684,14 @@ impl<TEnvironment: Environment> Filter<'_, TEnvironment> {
   /// The config file that starts a new scope in `dir`. A gitignored config file
   /// only counts when git tracks it.
   fn config_file(&self, dir: &[u8], state: &DirState) -> Option<PathBuf> {
-    POSSIBLE_CONFIG_FILE_NAMES
-      .iter()
+    if crate::is_project_config_dir(&self.path(dir), self.environment) {
+      return None;
+    }
+    crate::config_file_names(&self.path(dir), self.environment)
       .filter(|file_name| self.special_files.contains(join(dir, file_name.as_bytes()).as_slice()))
       .map(|file_name| self.path(&join(dir, file_name.as_bytes())))
-      .filter(|config_file| Some(config_file) != self.options.current_config_path.as_ref())
       .find(|config_file| self.snapshot.index.contains_file(config_file) || !self.is_gitignored(state, config_file))
+      .filter(|config_file| Some(config_file) != self.options.current_config_path.as_ref())
   }
 
   fn listed_dir_gitignore(&self, dir: &[u8], path: &Path, parent: Option<Arc<DirGitIgnores>>) -> Option<Arc<DirGitIgnores>> {

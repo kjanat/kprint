@@ -63,7 +63,7 @@ pub struct InitConfigFileOptions<'a> {
   pub minimum_dependency_age: Option<MinimumDependencyAgeArg>,
 }
 
-pub async fn init_config_file<TEnvironment: Environment>(
+pub async fn init_config_file<TEnvironment: crate::environment::InitEnvironment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
   options: InitConfigFileOptions<'_>,
@@ -93,7 +93,18 @@ pub async fn init_config_file<TEnvironment: Environment>(
       }
       Ok(Vec::from([path]))
     } else {
-      Ok(POSSIBLE_CONFIG_FILE_NAMES.iter().map(PathBuf::from).collect::<Vec<_>>())
+      Ok(
+        kprint_discovery::config_file_names(environment.cwd().as_ref(), environment)
+          .filter(|path| {
+            !path.starts_with(".config/")
+              || matches!(
+                environment.path_kind(environment.cwd().as_ref().join(".config")),
+                Some(crate::environment::PathKind::Dir)
+              )
+          })
+          .map(PathBuf::from)
+          .collect::<Vec<_>>(),
+      )
     }
   }
 
@@ -108,13 +119,23 @@ pub async fn init_config_file<TEnvironment: Environment>(
     }
     return add_missing_plugins_to_config_file(environment, plugin_resolver, existing_path.clone(), &options).await;
   }
-  let config_file_path = config_file_paths.remove(0);
+  let dot_config_dir = environment.cwd().as_ref().join(".config");
+  let config_file_path = if !options.global
+    && options.config_arg.is_none()
+    && kprint_discovery::is_project_config_dir(&dot_config_dir, environment)
+    && matches!(environment.path_kind(&dot_config_dir), Some(crate::environment::PathKind::Dir))
+  {
+    Path::new(".config").join("dprint.json")
+  } else {
+    config_file_paths.remove(0)
+  };
   let text = get_init_config_file_text(
     environment,
     GetInitConfigFileTextOptions {
       non_interactive,
       minimum_dependency_age: options.minimum_dependency_age,
       config_format: ConfigFileFormat::from_path(&config_file_path),
+      options_loader: Some(Rc::new(PluginResolverOptionsLoader::new(environment.clone(), plugin_resolver.clone()))),
     },
   )
   .await?;
@@ -141,7 +162,7 @@ pub async fn init_config_file<TEnvironment: Environment>(
 /// init` does instead of erroring when it's run interactively in a directory
 /// that's already set up. The plugins the config file has are shown in the
 /// prompt, but can't be selected.
-async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
+async fn add_missing_plugins_to_config_file<TEnvironment: crate::environment::InitEnvironment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
   config_file_path: PathBuf,
@@ -151,8 +172,9 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
   let config_dir = config_file_path.parent();
   let config_text = environment.read_file(&config_file_path)?;
   let config_format = ConfigFileFormat::from_file(&config_file_path, &config_text);
-  let config = resolve_config_from_path_with_bytes(
+  let config = resolve_config_with_ancestors_from_path_with_bytes(
     &ResolvedConfigPathWithText {
+      reload: false,
       source: PathSource::new_local(config_file_path.clone()),
       is_first_download: false,
       content: config_text,
@@ -162,32 +184,71 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
     environment,
   )
   .await?;
-  let existing_plugin_names = get_config_file_plugin_names(environment, plugin_resolver, config.plugins.sources).await;
+  let file_text = environment.read_file(&config_file_path)?;
+  let config_base = PathSource::new_local(config_file_path.clone()).parent();
+  let references = config_format
+    .plugin_entries(&file_text)?
+    .into_iter()
+    .map(|entry| entry.and_then(|entry| kprint_config::parse_plugin_source_reference(&entry, &config_base, environment).ok()))
+    .collect::<Vec<_>>();
+  let mut existing_plugins = Vec::new();
+  for (reference, result) in get_config_file_plugins(plugin_resolver, config.plugins.sources).await {
+    match result {
+      Ok(plugin) => {
+        let index = references
+          .iter()
+          .position(|candidate| candidate.as_ref().is_some_and(|candidate| candidate.path_source == reference.path_source));
+        existing_plugins.push((plugin.referenced_plugin_name().to_string(), index));
+      }
+      Err(err) => log_warn!(environment, "Failed resolving plugin: {}\n\n{:#}", reference.path_source.display(), err),
+    }
+  }
+  existing_plugins.sort_by_key(|(_, index)| index.unwrap_or(usize::MAX));
   let plugins_to_add = get_init_plugins_to_add(
     environment,
     GetInitPluginsToAddOptions {
-      existing_plugin_names,
+      existing_plugin_names: existing_plugins.iter().map(|(name, _)| name.clone()).collect(),
       minimum_dependency_age: options.minimum_dependency_age.clone(),
       configured_minimum_dependency_age: config.execution.minimum_dependency_age.clone(),
       config_format,
+      options_loader: Some(Rc::new(PluginResolverOptionsLoader::new(environment.clone(), plugin_resolver.clone()))),
     },
   )
   .await?;
-  let entries = match plugins_to_add {
+  let plugins = match plugins_to_add {
     InitPluginsToAdd::AllPluginsConfigured => {
       log_stdout_info!(environment, "{} already has every plugin kprint knows about.", config_file_path.display());
       return Ok(());
     }
-    InitPluginsToAdd::Entries(entries) => entries,
+    InitPluginsToAdd::Plugins(plugins) => plugins,
   };
-  if entries.is_empty() {
+  if plugins.is_empty() {
     log_stdout_info!(environment, "\nNo plugins were added.");
     return Ok(());
   }
 
-  let file_text = environment.read_file(&config_file_path)?;
-  let file_text = ConfigFileFormat::from_file(&config_file_path, &file_text).add_plugins(&file_text, &[], &entries)?;
-  environment.write_file(&config_file_path, &file_text)?;
+  let entries = plugins
+    .iter()
+    .map(|plugin| PluginEntryToInsert {
+      entry: plugin.entry.clone(),
+      before_index: plugin
+        .before
+        .as_ref()
+        .and_then(|before| existing_plugins.iter().find(|(name, _)| name == before))
+        .and_then(|(_, index)| *index),
+    })
+    .collect::<Vec<_>>();
+  let blocks = plugins.into_iter().filter_map(|plugin| plugin.config).collect::<Vec<_>>();
+  let file_text = config_format.insert_plugins(&file_text, &entries)?;
+  let result = config_format.add_plugin_config_blocks(&file_text, &blocks)?;
+  for key in result.skipped_keys {
+    log_warn!(
+      environment,
+      "Did not write chosen options for '{}' because the configuration already has that property.",
+      key
+    );
+  }
+  environment.write_file(&config_file_path, &result.new_text)?;
   update_config_schema_file(environment, plugin_resolver, &config_file_path, &[]).await;
   log_stdout_info!(
     environment,
@@ -518,6 +579,7 @@ async fn resolve_plugin_url_to_add<TEnvironment: Environment>(
           )
         }
       };
+      plugin.warn_if_deprecated(plugin_name_or_url, environment);
       // when the plugin is distributed on npm, what gets written below comes
       // from the npm registry rather than the url and version in latest.json
       let config_dir = config_path.parent();
@@ -947,6 +1009,80 @@ async fn get_possible_plugins_to_add<TEnvironment: Environment>(
       .filter(|p| !current_plugin_names.contains(&p.name))
       .collect(),
   )
+}
+
+pub async fn install_plugins<TEnvironment: Environment>(
+  cmd: &crate::arg_parser::InstallSubCommand,
+  args: &CliArgs,
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+) -> Result<()> {
+  if !cmd.names.is_empty() {
+    add_plugin_config_file(
+      args,
+      AddPluginsOptions {
+        plugin_names_or_urls: &cmd.names,
+        no_version: false,
+        update_package_json: false,
+        checksum: false,
+        minimum_dependency_age: None,
+      },
+      environment,
+      plugin_resolver,
+    )
+    .await?;
+  }
+  // resolving the plugins is what downloads and sets them up
+  let plugins = if cmd.recursive && args.config_discovery(environment).traverse_descendants() {
+    // the directory tree is searched to find the other config files
+    let scopes = resolve_plugins_scope_and_paths(
+      args,
+      &FilePatternArgs::default(),
+      environment,
+      plugin_resolver,
+      ResolvePluginsScopeAndPathsOptions {
+        skip_traversal: false,
+        skip_scopes_without_files: false,
+      },
+    )
+    .await?;
+    scopes
+      .iter()
+      .flat_map(|scope| scope.scope.plugins.values())
+      .map(|plugin| plugin.plugin.clone())
+      .collect::<Vec<_>>()
+  } else {
+    // only resolve the plugins, as there's no need to start them up
+    let config = if args.plugins.is_empty()
+      && let Some(path) = resolve_main_config_path_and_bytes(args, environment).await?
+    {
+      resolve_config_with_ancestors_from_path_with_bytes(&path, environment).await?
+    } else {
+      resolve_config_from_args(args, environment).await?
+    };
+    plugin_resolver
+      .resolve_plugins(config.plugins.sources)
+      .await
+      .map_err(crate::resolution::ResolvePluginsError::from)?
+  };
+
+  let mut seen_plugins = HashSet::new();
+  for plugin in &plugins {
+    let info = plugin.info();
+    if seen_plugins.insert((&info.name, &info.version)) {
+      if plugin.was_set_up() {
+        log_stdout_info!(environment, "Installed {} {}", info.name, info.version);
+      } else {
+        // less prominent because nothing was done
+        log_stdout_info!(environment, "{}", colors::gray(format!("Already installed {} {}", info.name, info.version)));
+      }
+    }
+  }
+  if seen_plugins.is_empty() {
+    log_stdout_info!(environment, "No plugins to install.");
+  }
+
+  Ok(())
 }
 
 pub struct UpdatePluginsOptions {
@@ -1470,6 +1606,9 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
     }
 
     let latest = read_plugin_latest_info(environment, &plugin).await;
+    if let Some(latest) = &latest {
+      latest.warn_if_deprecated(&plugin.info().name, environment);
+    }
 
     // the plugin may have moved to npm, in which case the entry goes to its
     // package at the registry's latest version instead of following its url
@@ -1992,6 +2131,7 @@ async fn generate_config_file_schema<TEnvironment: Environment>(
 ) -> Result<GeneratedConfigSchema> {
   let config = resolve_config_with_ancestors_from_path_with_bytes(
     &ResolvedConfigPathWithText {
+      reload: false,
       source: PathSource::new_local(config_path.clone()),
       is_first_download: false,
       content: environment.read_file(config_path)?,
@@ -2114,6 +2254,7 @@ mod test {
       .with_info_file(|info| {
         info
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-typescript".to_string(),
             version: "0.17.2".to_string(),
             url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -2123,6 +2264,7 @@ mod test {
             ..Default::default()
           })
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-jsonc".to_string(),
             version: "0.2.3".to_string(),
             url: "https://plugins.dprint.dev/json-0.2.3.wasm".to_string(),
@@ -2142,10 +2284,7 @@ mod test {
       }
     });
     run_test_cli(vec!["init"], &environment).unwrap();
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Select plugins (space to toggle, type to filter, enter to finish):"]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Select plugins:"]);
     assert_eq!(
       environment.take_stdout_messages(),
       vec![
@@ -2162,6 +2301,7 @@ mod test {
       .with_info_file(|info| {
         info
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-typescript".to_string(),
             version: "0.17.2".to_string(),
             url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -2171,6 +2311,7 @@ mod test {
             ..Default::default()
           })
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-jsonc".to_string(),
             version: "0.2.3".to_string(),
             url: "https://plugins.dprint.dev/json-0.2.3.wasm".to_string(),
@@ -2208,6 +2349,7 @@ mod test {
       .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-plugin".to_string(),
           version: "0.2.0".to_string(),
           url: "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
@@ -2261,6 +2403,7 @@ mod test {
     let environment = TestEnvironmentBuilder::new()
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "dprint-plugin-typescript".to_string(),
           version: "0.17.2".to_string(),
           url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -2280,10 +2423,7 @@ mod test {
       }
     });
     run_test_cli(vec!["init", "--config", "./test.config.json"], &environment).unwrap();
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Select plugins (space to toggle, type to filter, enter to finish):"]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Select plugins:"]);
     assert_eq!(
       environment.take_stdout_messages(),
       vec![
@@ -2299,6 +2439,7 @@ mod test {
     let environment = TestEnvironmentBuilder::new()
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "dprint-plugin-typescript".to_string(),
           version: "0.17.2".to_string(),
           url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -2917,6 +3058,86 @@ mod test {
   }
 
   #[test]
+  fn should_error_when_config_file_exists_in_dot_config_dir_on_initialize() {
+    let environment = TestEnvironmentBuilder::new()
+      .with_local_config("/.config/dprint.json", |c| {
+        c.add_includes("**/*.txt");
+      })
+      .build();
+    let error_message = run_test_cli(vec!["init", "--yes"], &environment).err().unwrap();
+    assert_eq!(
+      error_message.to_string(),
+      format!("Configuration file '{}' already exists.", Path::new(".config").join("dprint.json").display())
+    );
+    assert!(!environment.path_exists("/dprint.json"));
+  }
+
+  #[test]
+  fn should_initialize_in_existing_dot_config_dir() {
+    for (dot_config_file_path, expected_path) in [
+      // the project already has a `.config` directory
+      ("/.config/dotnet-tools.json", Path::new(".config").join("dprint.json")),
+      // a `.config` file isn't a directory to put it in
+      ("/.config", std::path::PathBuf::from("dprint.json")),
+    ] {
+      let environment = TestEnvironmentBuilder::new()
+        .with_info_file(|info| {
+          info.add_plugin(TestInfoFilePlugin {
+            name: "dprint-plugin-typescript".to_string(),
+            version: "0.17.2".to_string(),
+            url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
+            config_key: Some("typescript".to_string()),
+            file_extensions: vec!["ts".to_string()],
+            config_excludes: vec![],
+            ..Default::default()
+          });
+        })
+        .write_file(dot_config_file_path, "{}")
+        .write_file("/file.ts", "")
+        .build();
+      run_test_cli(vec!["init", "--yes"], &environment).unwrap();
+      assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+      assert_eq!(
+        environment.take_stdout_messages()[0],
+        format!(
+          "
+Created {}",
+          expected_path.display()
+        )
+      );
+      let created = environment.read_file(Path::new("/").join(&expected_path)).unwrap();
+      assert!(created.contains("typescript-0.17.2.wasm"));
+    }
+  }
+
+  #[test]
+  fn should_not_find_config_file_in_home_dot_config_dir_on_initialize() {
+    // the home directory's `.config` isn't searched as part of it
+    let environment = TestEnvironmentBuilder::new()
+      .with_info_file(|info| {
+        info.add_plugin(TestInfoFilePlugin {
+          name: "dprint-plugin-typescript".to_string(),
+          version: "0.17.2".to_string(),
+          url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
+          config_key: Some("typescript".to_string()),
+          file_extensions: vec!["ts".to_string()],
+          config_excludes: vec![],
+          ..Default::default()
+        });
+      })
+      .with_local_config("/home/.config/dprint.json", |c| {
+        c.add_includes("**/*.txt");
+      })
+      .write_file("/home/file.ts", "")
+      .build();
+    environment.set_cwd("/home");
+    run_test_cli(vec!["init", "--yes"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert_eq!(environment.take_stdout_messages()[0], "\nCreated dprint.json");
+    assert!(environment.path_exists("/home/dprint.json"));
+  }
+
+  #[test]
   fn should_error_when_config_file_exists_on_initialize() {
     let environment = TestEnvironmentBuilder::new()
       .with_default_config(|c| {
@@ -2941,16 +3162,13 @@ mod test {
       remote_has_process_checksum: false,
     });
     // the plugin the config file already has isn't selectable
-    environment.set_multi_selection_result(vec![0]);
+    environment.set_multi_selection_result(vec![1]);
     run_test_cli(vec!["init"], &environment).unwrap();
     assert_eq!(
       environment.take_multi_selection_items(),
-      vec!["[ ] test-process-plugin", "[x] test-plugin — already in config (locked)"]
+      vec!["[x] test-plugin — already in config (locked)", "[ ] test-process-plugin"]
     );
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Select plugins to add (space to toggle, type to filter, enter to finish):"]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Select plugins to add:"]);
     assert_eq!(
       environment.take_stdout_messages(),
       vec![format!("\nAdded 1 plugin to {}", Path::new("/").join("dprint.json").display())]
@@ -2978,10 +3196,7 @@ mod test {
     let original_text = environment.read_file("./dprint.json").unwrap();
     environment.set_multi_selection_result(vec![]);
     run_test_cli(vec!["init"], &environment).unwrap();
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Select plugins to add (space to toggle, type to filter, enter to finish):"]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Select plugins to add:"]);
     assert_eq!(environment.take_stdout_messages(), vec!["\nNo plugins were added."]);
     assert_eq!(environment.read_file("./dprint.json").unwrap(), original_text);
   }
@@ -3012,6 +3227,7 @@ mod test {
       .with_info_file(|info| {
         info
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-typescript".to_string(),
             version: "0.17.2".to_string(),
             url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -3021,6 +3237,7 @@ mod test {
             ..Default::default()
           })
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-jsonc".to_string(),
             version: "0.2.3".to_string(),
             url: "https://plugins.dprint.dev/json-0.2.3.wasm".to_string(),
@@ -3040,10 +3257,7 @@ mod test {
       }
     });
     run_test_cli(vec!["init", "--global"], &environment).unwrap();
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Select plugins (space to toggle, type to filter, enter to finish):"]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Select plugins:"]);
     let config_path = if std::env::consts::OS == "macos" {
       Path::new("/home/.config/dprint")
     } else {
@@ -3066,6 +3280,7 @@ mod test {
     let environment = TestEnvironmentBuilder::new()
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "dprint-plugin-typescript".to_string(),
           version: "0.17.2".to_string(),
           url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -3086,10 +3301,7 @@ mod test {
       }
     });
     run_test_cli(vec!["init", "--global"], &environment).unwrap();
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Select plugins (space to toggle, type to filter, enter to finish):"]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Select plugins:"]);
     assert_eq!(
       environment.take_stdout_messages(),
       vec![
@@ -4043,6 +4255,7 @@ mod test {
     builder
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-plugin".to_string(),
           version: "0.2.0".to_string(),
           url: "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
@@ -4056,6 +4269,7 @@ mod test {
         });
 
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-process-plugin".to_string(),
           version: "0.3.0".to_string(),
           url: "https://plugins.dprint.dev/test-plugin-3.json".to_string(),
@@ -5593,6 +5807,7 @@ text",
       .add_remote_file("https://plugins.dprint.dev/dprint/test-plugin/latest.json", &test_plugin_latest_json(false))
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-plugin".to_string(),
           version: "0.2.0".to_string(),
           url: "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
@@ -5651,6 +5866,7 @@ text",
       .add_remote_wasm_plugin()
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-plugin".to_string(),
           version: "0.2.0".to_string(),
           url: "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
@@ -5734,6 +5950,7 @@ text",
       .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-plugin".to_string(),
           version: "0.3.0".to_string(),
           url: "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
@@ -6185,8 +6402,9 @@ text",
       "got: {}",
       environment.read_file("/dprint.json").unwrap()
     );
-    // without an age the version comes from jsDelivr, not the packument
-    assert_eq!(environment.remote_file_download_count("https://registry.npmjs.org/@dprint/test-plugin"), 0);
+    // The latest version still comes from jsDelivr; registry metadata is also
+    // consulted for deprecation warnings without enforcing a release age.
+    assert!(environment.remote_file_download_count("https://registry.npmjs.org/@dprint/test-plugin") > 0);
     environment.take_stderr_messages();
   }
 
@@ -6622,6 +6840,7 @@ text",
       )
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-process-plugin".to_string(),
           version: "0.1.0".to_string(),
           url: "https://plugins.dprint.dev/test-process.json".to_string(),
@@ -6670,6 +6889,7 @@ text",
       )
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "test-process-plugin".to_string(),
           version: "0.1.0".to_string(),
           url: "https://plugins.dprint.dev/test-process.json".to_string(),
@@ -6780,5 +7000,356 @@ text",
       stderr.iter().any(|m| m.contains("/package.json") && m.contains("failed to parse")),
       "expected parse warning, got: {stderr:?}"
     );
+  }
+
+  #[test]
+  fn should_install_plugins() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin().add_remote_process_plugin();
+      })
+      .build();
+    run_test_cli(vec!["install"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec!["Installed test-plugin 0.2.0", "Installed test-process-plugin 0.1.0"]
+    );
+    let mut stderr_messages = environment.take_stderr_messages();
+    stderr_messages.sort();
+    assert_eq!(stderr_messages, vec!["Extracting zip for test-process-plugin"]);
+
+    // already set up, so nothing is downloaded or compiled
+    run_test_cli(vec!["config", "install"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec![
+        colors::gray("Already installed test-plugin 0.2.0").to_string(),
+        colors::gray("Already installed test-process-plugin 0.1.0").to_string()
+      ]
+    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+
+    // and formatting uses what was installed
+    environment.write_file("/file.txt", "text").unwrap();
+    environment.write_file("/file.txt_ps", "text").unwrap();
+    run_test_cli(vec!["fmt", "/file.txt", "/file.txt_ps"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![crate::test_helpers::get_plural_formatted_text(2)]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    for url in [
+      "https://plugins.dprint.dev/test-plugin.wasm",
+      "https://plugins.dprint.dev/test-process.json",
+      "https://github.com/dprint/test-process-plugin/releases/0.1.0/test-process-plugin.zip",
+    ] {
+      assert_eq!(environment.remote_file_download_count(url), 1, "{}", url);
+    }
+  }
+
+  #[test]
+  fn should_install_plugins_in_global_config_when_no_local_config() {
+    // the config file is found the same way as `dprint add`
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_global_config(|config| {
+        config.add_remote_process_plugin();
+      })
+      .build();
+    run_test_cli(vec!["install"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["Installed test-process-plugin 0.1.0"]);
+    assert_eq!(environment.take_stderr_messages(), vec!["Extracting zip for test-process-plugin"]);
+
+    run_test_cli(vec!["install", "https://plugins.dprint.dev/test-plugin.wasm"], &environment).unwrap();
+    assert_contains!(
+      environment.read_file("/global-config/dprint.json").unwrap(),
+      "\"https://plugins.dprint.dev/test-plugin.wasm\""
+    );
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec![
+        colors::gray("Already installed test-process-plugin 0.1.0").to_string(),
+        "Installed test-plugin 0.2.0".to_string()
+      ]
+    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn should_install_plugins_inherited_from_ancestor_config() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .with_local_config("/sub_dir/dprint.json", |config| {
+        config.set_inherit(true).add_remote_process_plugin();
+      })
+      .set_cwd("/sub_dir")
+      .build();
+    run_test_cli(vec!["install"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec!["Installed test-process-plugin 0.1.0", "Installed test-plugin 0.2.0"]
+    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Extracting zip for test-process-plugin"]);
+  }
+
+  #[test]
+  fn should_error_installing_plugin_that_fails_to_resolve() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin_with_checksum("asdf");
+      })
+      .build();
+    let err = run_test_cli(vec!["install"], &environment).err().unwrap();
+    err.assert_exit_code(12);
+    assert_contains!(err.to_string(), "Error resolving plugin https://plugins.dprint.dev/test-plugin.wasm");
+    assert_eq!(environment.take_stdout_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn should_install_plugins_in_global_config() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_default_config(|config| {
+        config.add_remote_process_plugin();
+      })
+      .with_global_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .build();
+    run_test_cli(vec!["install", "-g"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["Installed test-plugin 0.2.0"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn should_install_plugins_in_descendant_configs_when_recursive() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .with_local_config("/sub/dprint.json", |config| {
+        config.add_remote_process_plugin();
+      })
+      .build();
+    // only the main config file by default
+    run_test_cli(vec!["install"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["Installed test-plugin 0.2.0"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+
+    run_test_cli(vec!["install", "--recursive"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec![
+        colors::gray("Already installed test-plugin 0.2.0").to_string(),
+        "Installed test-process-plugin 0.1.0".to_string()
+      ]
+    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Extracting zip for test-process-plugin"]);
+
+    run_test_cli(vec!["install", "--recursive"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec![
+        colors::gray("Already installed test-plugin 0.2.0").to_string(),
+        colors::gray("Already installed test-process-plugin 0.1.0").to_string()
+      ]
+    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn should_install_plugins_arg_instead_of_config_file_plugins() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_default_config(|config| {
+        config.add_remote_process_plugin();
+      })
+      .build();
+    let config_text = environment.read_file("./dprint.json").unwrap();
+    run_test_cli(vec!["install", "--plugins", "https://plugins.dprint.dev/test-plugin.wasm"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["Installed test-plugin 0.2.0"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    // the config file's plugin is not installed and the config file is left alone
+    assert_eq!(environment.remote_file_download_count("https://plugins.dprint.dev/test-process.json"), 0);
+    assert_eq!(environment.read_file("./dprint.json").unwrap(), config_text);
+  }
+
+  #[test]
+  fn should_install_plugins_arg_without_config_file() {
+    let environment = TestEnvironmentBuilder::new().add_remote_wasm_plugin().build();
+    run_test_cli(vec!["install", "--plugins", "https://plugins.dprint.dev/test-plugin.wasm"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["Installed test-plugin 0.2.0"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    // no config file gets created
+    assert!(environment.read_file("/dprint.json").is_err());
+  }
+
+  #[test]
+  fn should_install_plugins_arg_instead_of_config_file_plugins_when_recursive() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_default_config(|config| {
+        config.add_remote_process_plugin();
+      })
+      .with_local_config("/sub/dprint.json", |config| {
+        config.add_remote_process_plugin();
+      })
+      .build();
+    run_test_cli(
+      vec!["install", "--recursive", "--plugins", "https://plugins.dprint.dev/test-plugin.wasm"],
+      &environment,
+    )
+    .unwrap();
+    // the override applies to the descendant config files as well
+    assert_eq!(environment.take_stdout_messages(), vec!["Installed test-plugin 0.2.0"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert_eq!(environment.remote_file_download_count("https://plugins.dprint.dev/test-process.json"), 0);
+  }
+
+  #[test]
+  fn should_handle_no_plugins_to_install() {
+    let environment = TestEnvironmentBuilder::new().with_default_config(|_| {}).build();
+    run_test_cli(vec!["install"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["No plugins to install."]);
+  }
+
+  #[test]
+  fn should_error_installing_without_config_file() {
+    let environment = TestEnvironmentBuilder::new().build();
+    let err = run_test_cli(vec!["install"], &environment).err().unwrap();
+    err.assert_exit_code(11);
+    assert_contains!(err.to_string(), "No config file found at /dprint.json.");
+  }
+  #[test]
+  fn config_add_should_warn_when_plugin_deprecated() {
+    let environment = get_setup_env(SetupEnvOptions {
+      config_has_wasm: false,
+      config_has_wasm_checksum: false,
+      config_has_process: false,
+      remote_has_wasm_checksum: false,
+      remote_has_process_checksum: false,
+    });
+    environment.add_remote_file_bytes(
+      "https://plugins.dprint.dev/dprint/test-plugin/latest.json",
+      json!({
+        "schemaVersion": 1,
+        "url": "https://plugins.dprint.dev/test-plugin.wasm",
+        "version": "0.2.0",
+        "deprecated": "Use \u{1b}[31mother-plugin\u{1b}[0m instead.",
+      })
+      .to_string()
+      .into_bytes(),
+    );
+    run_test_cli(vec!["add", "test-plugin"], &environment).unwrap();
+    // still added, and the escape sequences in the message are replaced
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Plugin test-plugin is deprecated: Use \u{FFFD}[31mother-plugin\u{FFFD}[0m instead.".to_string()]
+    );
+    assert_eq!(
+      environment.read_file("./dprint.json").unwrap(),
+      r#"{
+  "plugins": [
+    "https://plugins.dprint.dev/test-plugin.wasm"
+  ]
+}"#
+    );
+  }
+
+  #[test]
+  fn config_add_should_not_warn_about_other_deprecated_plugins_in_config() {
+    let environment = get_setup_env(SetupEnvOptions {
+      config_has_wasm: true,
+      config_has_wasm_checksum: false,
+      config_has_process: false,
+      remote_has_wasm_checksum: false,
+      remote_has_process_checksum: false,
+    });
+    // the plugin already in the config is deprecated, but it's not the one being added
+    environment.add_remote_file_bytes(
+      "https://plugins.dprint.dev/dprint/test-plugin/latest.json",
+      json!({
+        "schemaVersion": 1,
+        "url": "https://plugins.dprint.dev/test-plugin.wasm",
+        "version": "0.2.0",
+        "deprecated": "Use other-plugin instead.",
+      })
+      .to_string()
+      .into_bytes(),
+    );
+    run_test_cli(vec!["add", "test-process-plugin"], &environment).unwrap();
+    assert!(environment.take_stderr_messages().is_empty());
+    assert_eq!(
+      environment.read_file("./dprint.json").unwrap(),
+      r#"{
+  "plugins": [
+    "https://plugins.dprint.dev/test-plugin-0.1.0.wasm",
+    "https://plugins.dprint.dev/test-plugin-3.json"
+  ]
+}"#
+    );
+  }
+
+  #[test]
+  fn config_update_should_warn_when_plugin_deprecated() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_info_file(|_| {})
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .add_remote_file(
+        "https://plugins.dprint.dev/dprint/test-plugin/latest.json",
+        &json!({
+          "schemaVersion": 1,
+          "url": "https://plugins.dprint.dev/test-plugin.wasm",
+          "version": "0.2.0",
+          "deprecated": "Use other-plugin instead."
+        })
+        .to_string(),
+      )
+      .initialize()
+      .build();
+    run_test_cli(vec!["config", "update"], &environment).unwrap();
+    // warns even though the plugin is already at its latest version
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Plugin test-plugin is deprecated: Use other-plugin instead.".to_string()]
+    );
+  }
+
+  #[test]
+  fn should_add_and_install_plugin_when_install_provided_plugin() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_process_plugin()
+      .with_default_config(|config| {
+        config.add_remote_process_plugin();
+      })
+      .build();
+    let expected_text = environment
+      .read_file("./dprint.json")
+      .unwrap()
+      .replace("\"\n  ]", "\",\n    \"https://plugins.dprint.dev/test-plugin.wasm\"\n  ]");
+    run_test_cli(vec!["install", "https://plugins.dprint.dev/test-plugin.wasm"], &environment).unwrap();
+    assert_eq!(environment.read_file("./dprint.json").unwrap(), expected_text);
+    // installs everything in the config file and not only what was added
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec!["Installed test-process-plugin 0.1.0", "Installed test-plugin 0.2.0"]
+    );
+    let mut stderr_messages = environment.take_stderr_messages();
+    stderr_messages.sort();
+    assert_eq!(stderr_messages, vec!["Extracting zip for test-process-plugin"]);
   }
 }

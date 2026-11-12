@@ -509,11 +509,11 @@ impl<T: FileSystemEnvironment + OutputEnvironment + EnvironmentVariables + Direc
 {
 }
 /// File selection and VCS metadata, without clocks or process execution.
-pub trait DiscoveryEnvironment: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment {}
-impl<T: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment> DiscoveryEnvironment for T {}
+pub trait DiscoveryEnvironment: FileSystemEnvironment + DirectoriesEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment {}
+impl<T: FileSystemEnvironment + DirectoriesEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment> DiscoveryEnvironment for T {}
 /// Configuration resolution may request consent, but never executes a process.
-pub trait ConfigEnvironment: PlatformEnvironment + ConsentEnvironment {}
-impl<T: PlatformEnvironment + ConsentEnvironment> ConfigEnvironment for T {}
+pub trait ConfigEnvironment: PlatformEnvironment + FileSystemSys + ConsentEnvironment {}
+impl<T: PlatformEnvironment + FileSystemSys + ConsentEnvironment> ConfigEnvironment for T {}
 
 /// Plugin acquisition and execution; no terminal input or VCS selection.
 pub trait PluginEnvironment: PlatformEnvironment + FileSystemSys + CompilerEnvironment {}

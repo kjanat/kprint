@@ -96,6 +96,71 @@ impl ConfigFileFormat {
     }
   }
 
+  pub fn plugin_entries(self, text: &str) -> Result<Vec<Option<String>>> {
+    match self {
+      Self::Json => super::get_plugin_entries_in_config(text),
+      Self::Toml => {
+        let doc = text.parse::<DocumentMut>()?;
+        Ok(
+          doc
+            .get("plugins")
+            .and_then(Item::as_array)
+            .map(|array| array.iter().map(|value| value.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        )
+      }
+    }
+  }
+
+  pub fn insert_plugins(self, text: &str, entries: &[super::PluginEntryToInsert]) -> Result<String> {
+    match self {
+      Self::Json => super::insert_plugins_in_config(text, entries),
+      Self::Toml => {
+        let mut doc = text.parse::<DocumentMut>()?;
+        if entries.is_empty() {
+          return Ok(text.to_string());
+        }
+        if !doc.contains_key("plugins") {
+          doc.insert("plugins", toml_edit::value(toml_edit::Array::new()));
+        }
+        let array = doc
+          .get_mut("plugins")
+          .and_then(Item::as_array_mut)
+          .ok_or_else(|| anyhow!("Expected plugins to be an array."))?;
+        let original_len = array.len();
+        for (count, entry) in entries.iter().enumerate() {
+          match entry.before_index.filter(|index| *index < original_len) {
+            Some(index) => array.insert(index + count, entry.entry.as_str()),
+            None => array.push(entry.entry.as_str()),
+          }
+        }
+        format_multiline(array);
+        Ok(doc.to_string())
+      }
+    }
+  }
+
+  pub fn add_plugin_config_blocks(self, text: &str, blocks: &[(String, serde_json::Value)]) -> Result<super::AddPluginConfigBlocksResult> {
+    match self {
+      Self::Json => super::add_plugin_config_blocks(text, blocks),
+      Self::Toml => {
+        let mut doc = text.parse::<DocumentMut>()?;
+        let mut skipped_keys = Vec::new();
+        for (key, config) in blocks {
+          if doc.contains_key(key) {
+            skipped_keys.push(key.clone());
+            continue;
+          }
+          doc.insert(key, Item::Table(value_to_table(json_to_value(config.clone())?)?));
+        }
+        Ok(super::AddPluginConfigBlocksResult {
+          new_text: doc.to_string(),
+          skipped_keys,
+        })
+      }
+    }
+  }
+
   /// See [`update_plugin_in_config`].
   pub fn update_plugin(self, text: &str, info: &PluginUpdateInfo) -> String {
     match self {
@@ -1272,5 +1337,48 @@ exts = ["rs"]
     let mut json_config = ConfigFileFormat::Json.read(json_text).unwrap();
     json_config.schema = None;
     assert_eq!(ConfigFileFormat::Toml.read(&toml_text).unwrap(), json_config);
+  }
+}
+
+#[cfg(test)]
+mod init_insertion_tests {
+  use super::*;
+
+  #[test]
+  fn inserts_toml_plugins_and_options_without_overwriting_existing_settings() {
+    let text = "# keep comment\nplugins = [\"original\"]\n[original]\nwidth = 80\n";
+    let text = ConfigFileFormat::Toml
+      .insert_plugins(
+        text,
+        &[
+          super::super::PluginEntryToInsert {
+            entry: "before".to_string(),
+            before_index: Some(0),
+          },
+          super::super::PluginEntryToInsert {
+            entry: "after".to_string(),
+            before_index: None,
+          },
+        ],
+      )
+      .unwrap();
+    let result = ConfigFileFormat::Toml
+      .add_plugin_config_blocks(
+        &text,
+        &[
+          ("original".to_string(), serde_json::json!({"width": 10})),
+          ("before".to_string(), serde_json::json!({"width": 100})),
+        ],
+      )
+      .unwrap();
+    assert_eq!(result.skipped_keys, vec!["original"]);
+    assert!(result.new_text.contains("# keep comment"));
+    let doc = result.new_text.parse::<DocumentMut>().unwrap();
+    assert_eq!(doc["original"]["width"].as_integer(), Some(80));
+    assert_eq!(doc["before"]["width"].as_integer(), Some(100));
+    assert_eq!(
+      ConfigFileFormat::Toml.plugin_entries(&result.new_text).unwrap(),
+      vec![Some("before".to_string()), Some("original".to_string()), Some("after".to_string())]
+    );
   }
 }

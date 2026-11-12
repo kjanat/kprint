@@ -53,7 +53,15 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
       let path = self.environment.canonicalize(path).context("failed resolving --config path")?;
       let content = self.environment.read_file(&path).context("failed resolving --config path")?;
       Some(ResolvedConfigPathWithText {
-        base_path: path.parent().unwrap_or_else(|| path.clone()),
+        reload: false,
+        base_path: {
+          let dir = path.parent().unwrap_or_else(|| path.clone());
+          if kprint_discovery::is_project_config_dir(dir.as_ref(), &self.environment) {
+            dir.parent().unwrap()
+          } else {
+            dir
+          }
+        },
         source: PathSource::new_local(path),
         is_first_download: false,
         content,

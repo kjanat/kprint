@@ -41,7 +41,6 @@ use tree_fucker::ScanFailure;
 use tree_fucker::ScanOptions;
 use tree_fucker::ScanPolicy;
 
-use crate::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::DiscoveryEnvironment as Environment;
 use crate::repo_index::IndexDir;
 use crate::repo_index::RepoIndex;
@@ -252,18 +251,24 @@ impl<TEnvironment: Environment> DiscoveryPolicy<TEnvironment> {
   /// Returns the config file in `dir` that starts a new scope, if any. A
   /// gitignored config file only counts when git tracks it.
   fn config_file(&self, context: &DirContext, listing: &DirectoryListing) -> Option<PathBuf> {
-    POSSIBLE_CONFIG_FILE_NAMES
-      .iter()
+    if crate::is_project_config_dir(&context.dir, &self.environment) {
+      return None;
+    }
+    crate::config_file_names(&context.dir, &self.environment)
       .filter(|file_name| {
-        listing
-          .entries
-          .iter()
-          .any(|entry| entry.info.kind == ObservedKind::Resolved(EntryKind::File) && entry.name == **file_name)
+        if let Some(name) = file_name.strip_prefix(".config/") {
+          listing.entries.iter().any(|entry| entry.name == ".config") && self.environment.path_is_file(context.dir.join(".config").join(name))
+        } else {
+          listing
+            .entries
+            .iter()
+            .any(|entry| entry.info.kind == ObservedKind::Resolved(EntryKind::File) && entry.name == *file_name)
+        }
       })
       .map(|file_name| self.environment.dir_entry_path(&context.dir, file_name.as_ref()))
       // the config file in use doesn't start a new scope
-      .filter(|path| Some(path) != self.options.current_config_path.as_ref())
       .find(|path| !context.is_gitignored(path, /* is dir */ false))
+      .filter(|path| Some(path) != self.options.current_config_path.as_ref())
   }
 }
 

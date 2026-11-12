@@ -135,7 +135,32 @@ impl ConfigDocument<'_> {
         Some((path, hash)) if hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit()) => (path, Some(hash.to_ascii_lowercase())),
         _ => (specifier.as_str(), None),
       };
-      let target = resolve_url_or_file_path_to_path_source(path, &base, environment)?;
+      let target = if path.starts_with("npm:") {
+        let parsed = crate::utils::parse_npm_specifier(path)?;
+        let base_dir = match &base {
+          PathSource::Local(local) => Some(local.path.clone()),
+          PathSource::Npm(npm) => npm.base_dir.clone(),
+          _ => None,
+        };
+        PathSource::new_npm(parsed.specifier, base_dir)
+      } else if let PathSource::Npm(npm) = &base {
+        if path.starts_with('~') || url::Url::parse(path).is_ok_and(|url| !matches!(url.scheme(), "http" | "https")) {
+          bail!(
+            "Cannot extend '{}' in a configuration file from the npm registry. Only relative paths to files in the package, npm specifiers, and http(s) urls are supported.",
+            path
+          );
+        }
+        if url::Url::parse(path).is_ok() {
+          resolve_url_or_file_path_to_path_source(path, &base, environment)?
+        } else {
+          let mut specifier = npm.specifier.clone();
+          specifier.path = super::resolve_npm_extends::join_package_path(&specifier.path, path)
+            .map_err(|err| anyhow::anyhow!("Failed resolving '{}' in the \"extends\" of {}: {}", path, npm.specifier.display(), err))?;
+          PathSource::new_npm(specifier, npm.base_dir.clone())
+        }
+      } else {
+        resolve_url_or_file_path_to_path_source(path, &base, environment)?
+      };
       directives.extends.push(ConfigReference { specifier, target, checksum });
     }
 
@@ -156,16 +181,21 @@ impl ConfigDocument<'_> {
     }
     settings.plugins.config = config_map(&file.global, file.plugin_tables)?;
     templates.expand_config_map(&mut settings.plugins.config)?;
-    if source.is_remote() {
+    if source.is_remote() || matches!(source, PathSource::Npm(_)) {
       for value in settings.plugins.config.values_mut() {
         if let ConfigMapValue::PluginConfig(config) = value
           && let Some(PluginConfigFile::Path(path)) = &mut config.config_file
         {
-          let PathSource::Remote(remote) = source else { unreachable!() };
           if path.starts_with("~/") || path.contains('\\') {
             bail!("Remote configurations may only select HTTP(S) plugin configuration files.");
           }
-          let target = remote.url.join(path)?;
+          let target = match source {
+            PathSource::Remote(remote) => remote.url.join(path)?,
+            PathSource::Npm(_) => {
+              url::Url::parse(path).map_err(|_| anyhow::anyhow!("Npm configurations require an absolute HTTP(S) URL for configFile: {path}"))?
+            }
+            _ => unreachable!(),
+          };
           if !matches!(target.scheme(), "http" | "https") {
             bail!("Remote configurations may only select HTTP(S) plugin configuration files.");
           }
