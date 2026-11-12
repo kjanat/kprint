@@ -286,9 +286,9 @@ jobs:
       - name: Publish packages to Verdaccio
         run: |
           for tarball in deployment/npm/tarballs/*.tgz; do
-            npm publish "${tarball}" --registry http://localhost:4873/
+            npm publish "${tarball}" --registry http://localhost:4873/ --tag ci
           done
-          version="$(npm view @kprint/kprint version --registry http://localhost:4873/)"
+          version="$(npm view @kprint/kprint@ci version --registry http://localhost:4873/)"
           echo "KPRINT_VERSION=${version}" >> "${GITHUB_ENV}"
       - name: Create the test projects
         run: mkdir -p "${RUNNER_TEMP}/npm-test" "${RUNNER_TEMP}/readonly-test"
