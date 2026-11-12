@@ -106,39 +106,103 @@ function stepOf(job: string, name: string) {
   return step;
 }
 
-Deno.test("a nightly uploads its tarballs in their numbered order, platform packages first", async () => {
+const nightlyTarballs = [
+  ["01-kprint-kprint-win32-x64-1.2.3.tgz", "@kprint/kprint-win32-x64"],
+  ["00-kprint-kprint-freebsd-x64-1.2.3.tgz", "@kprint/kprint-freebsd-x64"],
+  ["17-kjanat-fmt-1.2.3.tgz", "@kjanat/fmt"],
+  ["16-kprint-kprint-1.2.3.tgz", "@kprint/kprint"],
+];
+
+async function runNightly(listed: (directory: string) => Promise<Record<string, string>>) {
   const step = stepOf("publish-npm", "Publish the nightly to npm").run;
   if (step === undefined) throw new Error("The nightly step runs no script");
   const directory = await Deno.makeTempDir({ prefix: "kprint-nightly-test-" });
   try {
+    const tarballs = `${directory}/deployment/npm/tarballs`;
     await Deno.mkdir(`${directory}/bin`);
-    await Deno.mkdir(`${directory}/deployment/npm/tarballs`, { recursive: true });
-    const tarballs = [
-      "01-kprint-kprint-win32-x64-1.2.3.tgz",
-      "00-kprint-kprint-freebsd-x64-1.2.3.tgz",
-      "17-kjanat-fmt-1.2.3.tgz",
-      "16-kprint-kprint-1.2.3.tgz",
-    ];
-    for (const name of tarballs) await Deno.writeTextFile(`${directory}/deployment/npm/tarballs/${name}`, "");
-    await Deno.writeTextFile(`${directory}/bin/npm`, `#!/bin/bash\nprintf '%s\\n' "$*" >> "${directory}/calls"\n`);
+    await Deno.mkdir(`${directory}/listed/@kprint`, { recursive: true });
+    await Deno.mkdir(`${directory}/listed/@kjanat`);
+    await Deno.mkdir(tarballs, { recursive: true });
+    for (const [file, name] of nightlyTarballs) {
+      const source = `${directory}/source/${file}/package`;
+      await Deno.mkdir(source, { recursive: true });
+      await Deno.writeTextFile(`${source}/package.json`, JSON.stringify({ name, version: "1.2.3" }));
+      const packed = await new Deno.Command("bash", {
+        args: ["-c", "tar -czf \"$1\" -C \"$2\" package", "pack", `${tarballs}/${file}`, `${directory}/source/${file}`],
+      }).output();
+      deepStrictEqual(packed.code, 0);
+    }
+    for (const [spec, integrity] of Object.entries(await listed(tarballs))) {
+      await Deno.writeTextFile(`${directory}/listed/${spec}`, integrity);
+    }
+    await Deno.writeTextFile(
+      `${directory}/bin/npm`,
+      `#!/bin/bash
+if [[ "$1" == view ]]; then
+  [[ -f "${directory}/listed/$2" ]] || { echo "npm error code E404" >&2; exit 1; }
+  cat "${directory}/listed/$2"
+  exit 0
+fi
+printf '%s\\n' "$*" >> "${directory}/calls"
+`,
+    );
     await Deno.chmod(`${directory}/bin/npm`, 0o755);
     const result = await new Deno.Command("bash", {
       args: ["-e", "-c", step],
       cwd: directory,
       clearEnv: true,
       env: { PATH: `${directory}/bin:${Deno.env.get("PATH")}`, NPM_TAG: "nightly" },
+      stdout: "piped",
       stderr: "piped",
     }).output();
-    deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
-    deepStrictEqual((await Deno.readTextFile(`${directory}/calls`)).trim().split("\n"), [
-      "publish deployment/npm/tarballs/00-kprint-kprint-freebsd-x64-1.2.3.tgz --provenance --access public --tag nightly",
-      "publish deployment/npm/tarballs/01-kprint-kprint-win32-x64-1.2.3.tgz --provenance --access public --tag nightly",
-      "publish deployment/npm/tarballs/16-kprint-kprint-1.2.3.tgz --provenance --access public --tag nightly",
-      "publish deployment/npm/tarballs/17-kjanat-fmt-1.2.3.tgz --provenance --access public --tag nightly",
-    ]);
+    const calls = await Deno.readTextFile(`${directory}/calls`).catch(() => "");
+    return {
+      code: result.code,
+      stdout: new TextDecoder().decode(result.stdout),
+      stderr: new TextDecoder().decode(result.stderr),
+      calls: calls.trim().split("\n").filter(Boolean),
+    };
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
+}
+
+async function integrity(path: string) {
+  const digest = await crypto.subtle.digest("SHA-512", await Deno.readFile(path));
+  return `sha512-${btoa(String.fromCharCode(...new Uint8Array(digest)))}`;
+}
+
+const published = (file: string) => `publish deployment/npm/tarballs/${file} --provenance --access public --tag nightly`;
+
+Deno.test("a nightly uploads its tarballs in their numbered order, platform packages first", async () => {
+  const result = await runNightly(() => Promise.resolve({}));
+  deepStrictEqual(result.code, 0, result.stderr);
+  deepStrictEqual(result.calls, [
+    published("00-kprint-kprint-freebsd-x64-1.2.3.tgz"),
+    published("01-kprint-kprint-win32-x64-1.2.3.tgz"),
+    published("16-kprint-kprint-1.2.3.tgz"),
+    published("17-kjanat-fmt-1.2.3.tgz"),
+  ]);
+});
+
+Deno.test("a retried nightly skips the tarballs npm already lists and uploads the rest", async () => {
+  const result = await runNightly(async (tarballs) => ({
+    "@kprint/kprint-freebsd-x64@1.2.3": await integrity(`${tarballs}/00-kprint-kprint-freebsd-x64-1.2.3.tgz`),
+  }));
+  deepStrictEqual(result.code, 0, result.stderr);
+  match(result.stdout, /npm already has @kprint\/kprint-freebsd-x64@1\.2\.3/);
+  deepStrictEqual(result.calls, [
+    published("01-kprint-kprint-win32-x64-1.2.3.tgz"),
+    published("16-kprint-kprint-1.2.3.tgz"),
+    published("17-kjanat-fmt-1.2.3.tgz"),
+  ]);
+});
+
+Deno.test("a nightly stops when npm lists a different tarball under the same version", async () => {
+  const result = await runNightly(() => Promise.resolve({ "@kprint/kprint-freebsd-x64@1.2.3": "sha512-different" }));
+  deepStrictEqual(result.code, 1);
+  match(result.stderr, /npm has a different @kprint\/kprint-freebsd-x64@1\.2\.3/);
+  deepStrictEqual(result.calls, []);
 });
 
 Deno.test("a release publishes its npm tarballs through Beepboop's ledger", () => {

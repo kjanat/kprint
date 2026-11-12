@@ -392,6 +392,13 @@ jobs:
           NPM_TAG: ${{ needs.plan.outputs.npm_tag }}
         run: |
           for tarball in deployment/npm/tarballs/*.tgz; do
+            spec="$(tar -xzOf "${tarball}" package/package.json | jq -r '"\(.name)@\(.version)"')"
+            listed="$(npm view "${spec}" dist.integrity || true)"
+            if [[ -n "${listed}" ]]; then
+              [[ "${listed}" == "sha512-$(openssl dgst -sha512 -binary "${tarball}" | base64 -w0)" ]] || { echo "npm has a different ${spec}" >&2; exit 1; }
+              echo "npm already has ${spec}"
+              continue
+            fi
             npm publish "${tarball}" --provenance --access public --tag "${NPM_TAG}"
           done
   docker:
