@@ -1,6 +1,6 @@
 use crate::utils::warn_if_npm_deprecated as warn_if_deprecated;
-pub(crate) use kprint_platform::utils::extract_tarball_replacing;
-pub(crate) use kprint_platform::utils::extract_tarball_to_dir;
+#[cfg(test)]
+use kprint_platform::utils::extract_tarball_to_dir;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -466,12 +466,14 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
   // extract and read the plugin file in a blocking task since
   // tarball decompression and file I/O can be slow
   let extract_dir = get_npm_extract_dir(&specifier.name, version, environment);
+  kprint_platform::utils::extract_npm_tarball(
+    tarball_bytes, extract_dir.clone(), environment.clone(), kprint_platform::utils::NpmExtractionMode::Reuse,
+  ).await?;
   let requested_path = specifier.path.clone();
   let specifier_clone = specifier.clone();
   let environment_clone = environment.clone();
   let (plugin_bytes, local_path, resolved_path) = kprint_async_runtime::spawn_blocking(move || -> Result<_> {
     let environment = environment_clone;
-    extract_tarball_to_dir(&tarball_bytes, &extract_dir, &environment)?;
 
     // for a pathless add, pick whichever plugin file the package actually ships.
     let resolved_path = if detect_path {

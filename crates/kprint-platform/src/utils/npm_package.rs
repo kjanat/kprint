@@ -11,74 +11,158 @@ use tar::Archive;
 pub trait NpmPackageEnvironment: crate::environment::PlatformEnvironment + crate::environment::FileSystemSys {}
 impl<T: crate::environment::PlatformEnvironment + crate::environment::FileSystemSys> NpmPackageEnvironment for T {}
 
-pub fn extract_tarball_to_dir(tarball_bytes: &[u8], dest_dir: &Path, environment: &impl NpmPackageEnvironment) -> Result<()> {
-  use crate::utils::fs::get_atomic_path;
+/// Limits include skipped entries, tar metadata and padding.
+#[derive(Clone, Debug)]
+pub struct NpmExtractionOptions {
+  pub max_entry_bytes: u64,
+  pub max_expanded_bytes: u64,
+  pub max_entries: usize,
+  pub deadline: std::time::Instant,
+  pub cancellation: tokio_util::sync::CancellationToken,
+}
 
-  if environment.path_exists(dest_dir) {
-    return Ok(());
-  }
-
-  let temp_dir = get_atomic_path(environment, dest_dir);
-  environment.mk_dir_all(&temp_dir)?;
-
-  if let Err(err) = extract_tarball_to_dir_inner(tarball_bytes, &temp_dir, environment) {
-    environment.try_remove_dir_all(&temp_dir);
-    return Err(err);
-  }
-
-  match environment.rename(&temp_dir, dest_dir) {
-    Ok(()) => Ok(()),
-    Err(err) => {
-      if environment.path_exists(dest_dir) {
-        // another concurrent extract finished first — discard our copy and
-        // use theirs (immutable name@version means contents are equivalent)
-        environment.try_remove_dir_all(&temp_dir);
-        Ok(())
-      } else {
-        environment.try_remove_dir_all(&temp_dir);
-        Err(err.into())
-      }
+impl Default for NpmExtractionOptions {
+  fn default() -> Self {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    Self {
+      max_entry_bytes: 128 * 1024 * 1024,
+      max_expanded_bytes: 512 * 1024 * 1024,
+      max_entries: 100_000,
+      deadline: crate::utils::current_deadline().map_or(deadline, |current| current.min(deadline)),
+      cancellation: Default::default(),
     }
   }
 }
 
-/// Extracts an npm tarball into `dest_dir`, replacing any existing contents.
-/// Same wrapper-stripping / path-traversal / permission-preserving rules as
-/// [`extract_tarball_to_dir`], but for caches whose contents are *not*
-/// content-addressable (e.g. the per-plugin cache, which gets rewritten
-/// whenever the source plugin.json changes). The extract goes through a
-/// sibling temp dir so a crash mid-extract can't leave the destination
-/// half-populated; the caller is responsible for serializing extracts
-/// against the same `dest_dir` via fs locks.
-pub fn extract_tarball_replacing(tarball_bytes: &[u8], dest_dir: &Path, environment: &impl NpmPackageEnvironment) -> Result<()> {
-  use crate::utils::fs::get_atomic_path;
-
-  let temp_dir = get_atomic_path(environment, dest_dir);
-  environment.mk_dir_all(&temp_dir)?;
-
-  if let Err(err) = extract_tarball_to_dir_inner(tarball_bytes, &temp_dir, environment) {
-    environment.try_remove_dir_all(&temp_dir);
-    return Err(err);
+impl NpmExtractionOptions {
+  fn check(&self) -> std::io::Result<()> {
+    if self.cancellation.is_cancelled() {
+      return Err(std::io::Error::other("npm extraction cancelled"));
+    }
+    if std::time::Instant::now() >= self.deadline {
+      return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "npm extraction deadline exceeded"));
+    }
+    Ok(())
   }
+}
 
-  // remove any existing directory before moving the staged extract into place.
-  // surface a removal failure directly — otherwise the rename below fails with
-  // a confusing "directory not empty" error that hides the real cause.
-  if let Err(err) = environment.remove_dir_all(dest_dir) {
-    environment.try_remove_dir_all(&temp_dir);
-    return Err(err.into());
+#[derive(Clone, Copy)]
+pub enum NpmExtractionMode {
+  Reuse,
+  Replace,
+}
+
+/// Runs extraction off the runtime thread. Dropping the future cancels the worker,
+/// which checks cancellation between bounded reads and filesystem operations.
+pub async fn extract_npm_tarball(
+  bytes: Vec<u8>,
+  dest: PathBuf,
+  environment: impl NpmPackageEnvironment,
+  mode: NpmExtractionMode,
+) -> Result<()> {
+  extract_npm_tarball_with_options(bytes, dest, environment, mode, NpmExtractionOptions::default()).await
+}
+
+async fn extract_npm_tarball_with_options(
+  bytes: Vec<u8>,
+  dest: PathBuf,
+  environment: impl NpmPackageEnvironment,
+  mode: NpmExtractionMode,
+  options: NpmExtractionOptions,
+) -> Result<()> {
+  let _cancel_on_drop = options.cancellation.clone().drop_guard();
+  kprint_async_runtime::spawn_blocking(move || extract_with_options(&bytes, &dest, &environment, mode, &options)).await?
+}
+
+pub fn extract_tarball_to_dir(bytes: &[u8], dest: &Path, environment: &impl NpmPackageEnvironment) -> Result<()> {
+  extract_with_options(bytes, dest, environment, NpmExtractionMode::Reuse, &NpmExtractionOptions::default())
+}
+
+pub fn extract_tarball_replacing(bytes: &[u8], dest: &Path, environment: &impl NpmPackageEnvironment) -> Result<()> {
+  extract_with_options(bytes, dest, environment, NpmExtractionMode::Replace, &NpmExtractionOptions::default())
+}
+
+fn extract_with_options(
+  bytes: &[u8],
+  dest: &Path,
+  environment: &impl NpmPackageEnvironment,
+  mode: NpmExtractionMode,
+  options: &NpmExtractionOptions,
+) -> Result<()> {
+  options.check()?;
+  if matches!(mode, NpmExtractionMode::Reuse) && environment.path_exists(dest) {
+    return Ok(());
   }
-  if let Err(err) = environment.rename(&temp_dir, dest_dir) {
-    environment.try_remove_dir_all(&temp_dir);
-    return Err(err.into());
+  let staging = crate::utils::fs::get_atomic_path(environment, dest);
+  environment.mk_dir_all(&staging)?;
+  let result = (|| {
+    extract_inner(bytes, &staging, environment, options)?;
+    options.check()?;
+    if matches!(mode, NpmExtractionMode::Replace) {
+      environment.remove_dir_all(dest)?;
+    }
+    match environment.rename(&staging, dest) {
+      Ok(()) => Ok(()),
+      Err(_) if matches!(mode, NpmExtractionMode::Reuse) && environment.path_exists(dest) => Ok(()),
+      Err(err) => Err(err.into()),
+    }
+  })();
+  // The staging path is absent after a successful rename. It is removed after
+  // every failure, including a limit, cancellation or a concurrent cache fill.
+  if environment.path_exists(&staging) {
+    environment.try_remove_dir_all(&staging);
+  }
+  result
+}
+
+struct CheckedReader<'a, R> {
+  inner: R,
+  remaining: u64,
+  options: &'a NpmExtractionOptions,
+}
+
+impl<R: std::io::Read> std::io::Read for CheckedReader<'_, R> {
+  fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+    self.options.check()?;
+    let size = buffer.len().min(64 * 1024).min(self.remaining.saturating_add(1).min(usize::MAX as u64) as usize);
+    let read = self.inner.read(&mut buffer[..size])?;
+    self.remaining = self.remaining.checked_sub(read as u64).ok_or_else(|| std::io::Error::other("npm tarball exceeds byte limit"))?;
+    Ok(read)
+  }
+}
+
+fn archive_reader<'a>(bytes: &'a [u8], options: &'a NpmExtractionOptions) -> impl std::io::Read + 'a {
+  let compressed = CheckedReader { inner: bytes, remaining: options.max_expanded_bytes, options };
+  CheckedReader { inner: GzDecoder::new(compressed), remaining: options.max_expanded_bytes, options }
+}
+
+// A raw preflight counts extension headers and rejects oversized metadata before
+// tar's normal iterator buffers GNU long names or PAX records. It also bounds
+// skipped entries. Extraction then uses tar's normal path/extension handling.
+fn preflight(bytes: &[u8], options: &NpmExtractionOptions) -> Result<()> {
+  let mut archive = Archive::new(archive_reader(bytes, options));
+  for (count, entry) in archive.entries()?.raw(true).enumerate() {
+    options.check()?;
+    if count >= options.max_entries {
+      bail!("npm tarball exceeds entry count limit");
+    }
+    let entry = entry?;
+    if entry.size() > options.max_entry_bytes {
+      bail!("npm tarball entry exceeds per-entry byte limit");
+    }
   }
   Ok(())
 }
 
 #[doc(hidden)]
 pub fn extract_tarball_to_dir_inner(tarball_bytes: &[u8], output_dir: &Path, environment: &impl NpmPackageEnvironment) -> Result<()> {
-  let decoder = GzDecoder::new(tarball_bytes);
-  let mut archive = Archive::new(decoder);
+  extract_inner(tarball_bytes, output_dir, environment, &NpmExtractionOptions::default())
+}
+
+fn extract_inner(tarball_bytes: &[u8], output_dir: &Path, environment: &impl NpmPackageEnvironment, options: &NpmExtractionOptions) -> Result<()> {
+  options.check()?;
+  preflight(tarball_bytes, options)?;
+  let mut archive = Archive::new(archive_reader(tarball_bytes, options));
   // npm tarballs wrap every entry under a single top-level directory (usually
   // "package/"). Lock in that wrapper from the first entry and reject any
   // entry that doesn't share it, otherwise files outside the wrapper would
@@ -89,6 +173,10 @@ pub fn extract_tarball_to_dir_inner(tarball_bytes: &[u8], output_dir: &Path, env
 
   for entry in archive.entries().context("Failed to read npm tarball entries")? {
     let mut entry = entry.context("Failed to read npm tarball entry")?;
+    options.check()?;
+    if entry.size() > options.max_entry_bytes {
+      bail!("npm tarball entry exceeds per-entry byte limit");
+    }
     let entry_type = entry.header().entry_type();
 
     // skip symlinks, hardlinks, and other special entries
@@ -165,6 +253,7 @@ pub fn extract_tarball_to_dir_inner(tarball_bytes: &[u8], output_dir: &Path, env
 
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+    options.check()?;
     environment.write_file_bytes(&dest_path, &bytes)?;
     files_written += 1;
 

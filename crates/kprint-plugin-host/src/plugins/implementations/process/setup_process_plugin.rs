@@ -13,7 +13,6 @@ use std::time::Duration;
 use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::implementations::NoRetrySetupError;
 use crate::plugins::implementations::SetupPluginResult;
-use crate::plugins::npm_resolution::extract_tarball_replacing;
 use crate::utils::PathSource;
 use crate::utils::extract_zip;
 use crate::utils::fetch_file_or_url_bytes;
@@ -156,7 +155,7 @@ async fn setup_from_tarball<TEnvironment: Environment>(
   let extract_env = environment.clone();
   let extract_dest = plugin_cache_dir_path.to_path_buf();
   // tarball decompression + file I/O blocks; keep it off the runtime thread.
-  kprint_async_runtime::spawn_blocking(move || extract_tarball_replacing(&tarball_bytes, &extract_dest, &extract_env)).await??;
+  kprint_platform::utils::extract_npm_tarball(tarball_bytes, extract_dest, extract_env, kprint_platform::utils::NpmExtractionMode::Replace).await?;
 
   if !environment.path_exists(&executable_path) {
     bail!(
