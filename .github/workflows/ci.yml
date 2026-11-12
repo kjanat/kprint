@@ -132,6 +132,17 @@ jobs:
         run: deno install --frozen --entrypoint deployment/npm/build.ts deployment/npm/release_test.ts deployment/npm/pack_test.ts deployment/npm/workflow_test.ts
       - run: deno task --cwd deployment/npm check
       - run: deno task --cwd deployment/npm test
+      - name: Checkout the pinned release coordinator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: kjanat/beepboop
+          ref: 36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
+          path: .coordinator-source
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with: { bun-version: 1.4.4 }
+      - name: Verify release recovery against the pinned coordinator
+        run: bash deployment/npm/verify-coordinator.sh .coordinator-source
 
   build:
     needs: changes

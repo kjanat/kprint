@@ -1,0 +1,121 @@
+--- a/test/flows/publish-ledger.test.ts
++++ b/test/flows/publish-ledger.test.ts
+@@ -117,7 +117,7 @@
+ 		required: packages,
+ 		credentials: Object.keys(layout.secrets),
+ 		prepare: { strategy: 'managed' },
+-		promote: { approval: 'push', workflow: { file: `publish-${name}.yml`, publications: packages } },
++		promote: { approval: 'push', workflow: { file: `publish-${name}.yml`, publications: layout === splitLayout ? [...packages, "github-release:octo/lint"] : packages } },
+ 	};
+ }
+ 
+@@ -1380,3 +1380,109 @@
+ 		{ state: 'failed-retryable', holder: `${identity.runId}:1`, error: 'error: crates.io rejected lint-core' },
+ 	]);
+ }, 60_000);
++
++const splitLayout = { ...generatedLayout };
++
++test('kprint: a partial npm failure recovers after GitHub publication using the same tarballs', async () => {
++  world.npm.publish('@octo/tool', '1.0.0');
++  world.npm.publish('@octo/tool-linux-x64', '1.0.0');
++  const { repository, begun } = await released({ main: [toolLinux, tool] }, splitLayout);
++  const { execution, identity } = started(begun, 'main');
++  const state = packTarballs(['@octo/tool-linux-x64', '@octo/tool'], '1.1.0');
++  const digests = [tarballDigest('@octo/tool-linux-x64', '1.1.0'), tarballDigest('@octo/tool', '1.1.0')];
++  world.github.recordTag(repository, 'v1.1.0', 'a'.repeat(40), execution.sourceSha, true);
++  await withIdentity(world, identity, () => Effect.runPromise(workflowCall(world, '/api/workflow/release', { executionId: execution.id })));
++  expect(repository.releases.find(release => release.tag === 'v1.1.0')?.draft).toBe(false);
++  expect((await executionOf(repository, execution.id)).state).not.toBe('succeeded');
++  const publish = tarballs(state);
++  const first = await publishing(identity, execution.id, {
++    run: argv => argv[0] === 'npm' && state.manifests.get(argv[2] ?? '')?.name === '@octo/tool'
++      ? Effect.succeed({ code: 7, stdout: '', output: 'npm rejected the facade' }) : publish(argv),
++    credentials: { NODE_AUTH_TOKEN: 'npm-token' }, tarballs: join(target, 'tarballs'),
++  });
++  if (first.result._tag === 'Failure') throw new Error(first.result.failure.message);
++  expect(Effect.runSync(Effect.result(requireAll(first.result.success)))._tag).toBe('Failure');
++  const partial = await ledgerOf(repository, execution.id);
++  expect(partial.records.map(record => [record.digest, record.status.state])).toEqual([
++    [digests[0], 'published'], [digests[1], 'failed-retryable'],
++  ]);
++  await failRun(repository, identity, execution.id);
++  expect((await executionOf(repository, execution.id)).state).not.toBe('succeeded');
++  const retried = { ...identity, attempt: 2 };
++  await begin(world, retried, execution.id, 'main', 'promote');
++  const second = await publishing(retried, execution.id, {
++    run: publish, credentials: { NODE_AUTH_TOKEN: 'npm-token' }, tarballs: join(target, 'tarballs'),
++  });
++  if (second.result._tag === 'Failure') throw new Error(second.result.failure.message);
++  expect(states(second.result.success)).toEqual([
++    ['pkg:npm/%40octo/tool-linux-x64@1.1.0', 'published'], ['pkg:npm/%40octo/tool@1.1.0', 'published'],
++  ]);
++  expect([tarballDigest('@octo/tool-linux-x64', '1.1.0'), tarballDigest('@octo/tool', '1.1.0')]).toEqual(digests);
++  expect(state.commands.filter(command => command.startsWith('npm publish'))).toEqual([
++    'npm publish @octo/tool-linux-x64', 'npm publish @octo/tool',
++  ]);
++  const run = repository.runs.find(entry => entry.id === identity.runId)!;
++  run.status = 'completed'; run.conclusion = 'success';
++  await world.workflowRun(repository, run, 'success', 'workflow_dispatch');
++  await world.wait(2_000);
++  expect((await executionOf(repository, execution.id)).state).toBe('succeeded');
++}, 60_000);
++
++test('kprint: successful npm uploads remain incomplete until GitHub publication recovers', async () => {
++  world.npm.publish('@octo/tool', '1.0.0');
++  world.npm.publish('@octo/tool-linux-x64', '1.0.0');
++  const { repository, begun } = await released({ main: [toolLinux, tool] }, splitLayout);
++  const { execution, identity } = started(begun, 'main');
++  const state = packTarballs(['@octo/tool-linux-x64', '@octo/tool'], '1.1.0');
++  const result = await publishing(identity, execution.id, {
++    run: tarballs(state), credentials: { NODE_AUTH_TOKEN: 'npm-token' }, tarballs: join(target, 'tarballs'),
++  });
++  if (result.result._tag === 'Failure') throw new Error(result.result.failure.message);
++  expect(Effect.runSync(Effect.result(requireAll(result.result.success)))._tag).toBe('Success');
++  const publication = () => withIdentity(world, identity, () => Effect.runPromise(workflowCall(world, '/api/workflow/release', { executionId: execution.id })));
++  await expect(publication()).rejects.toThrow('Publish the release tag before the release');
++  expect((await executionOf(repository, execution.id)).state).not.toBe('succeeded');
++  expect((await ledgerOf(repository, execution.id)).records.every(record => record.status.state === 'published')).toBe(true);
++  world.github.recordTag(repository, 'v1.1.0', 'a'.repeat(40), execution.sourceSha, true);
++  await publication();
++  const run = repository.runs.find(entry => entry.id === identity.runId)!;
++  run.status = 'completed'; run.conclusion = 'success';
++  await world.workflowRun(repository, run, 'success', 'workflow_dispatch');
++  await world.wait(2_000);
++  expect((await executionOf(repository, execution.id)).state).toBe('succeeded');
++  expect(state.commands.filter(command => command.startsWith('npm publish'))).toHaveLength(2);
++}, 60_000);
++
++test('kprint: a managed upload has no acceptance receipt until its subprocess completes', async () => {
++  world.npm.publish('@octo/tool', '1.0.0');
++  world.npm.publish('@octo/tool-linux-x64', '1.0.0');
++  const { repository, begun } = await released({ main: [toolLinux, tool] }, generatedLayout);
++  const { execution, identity } = started(begun, 'main');
++  const state = packTarballs(['@octo/tool-linux-x64', '@octo/tool'], '1.1.0');
++  const completion = Promise.withResolvers<void>();
++  const startedUpload = Promise.withResolvers<void>();
++  const publish = tarballs(state);
++  let delayed = false;
++  const publication = publishing(identity, execution.id, {
++    run: argv => {
++      if (argv[0] !== 'npm' || delayed) return publish(argv);
++      delayed = true;
++      return Effect.gen(function* () {
++        startedUpload.resolve();
++        yield* Effect.promise(() => completion.promise);
++        return yield* publish(argv);
++      });
++    },
++    credentials: { NODE_AUTH_TOKEN: 'npm-token' }, tarballs: join(target, 'tarballs'),
++  });
++  await startedUpload.promise;
++  try {
++    expect((await ledgerOf(repository, execution.id)).records[0]?.status.state).toBe('claimed');
++    expect((await executionOf(repository, execution.id)).publications.every(entry => entry.outcome !== 'succeeded')).toBe(true);
++  } finally {
++    completion.resolve();
++  }
++  const result = await publication;
++  if (result.result._tag === 'Failure') throw new Error(result.result.failure.message);
++  expect((await ledgerOf(repository, execution.id)).records.every(record => record.status.state === 'published')).toBe(true);
++}, 60_000);
