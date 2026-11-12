@@ -3314,11 +3314,13 @@ dependencies = [
 [[package]]
 name = "tree-fucker"
 version = "0.1.0"
-source = "git+https://github.com/kjanat/tree-fucker?rev=b30f8c4a5fcb99916a044d135701687230dbda43#b30f8c4a5fcb99916a044d135701687230dbda43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49494dd3562b073155c02580408a2e83e58eb61b1bf191321a500273c4cd9287"
 dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "getrandom 0.4.3",
  "imbl",
  "libc",
  "rustix",

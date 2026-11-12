@@ -29,10 +29,10 @@ kprint-process-plugin = { path = "crates/kprint-process-plugin", version = "=0.1
 kprint-test-support   = { path = "crates/kprint-test-support", version = "=0.1.0" }
 kprint-wasm-plugin    = { path = "crates/kprint-wasm-plugin", version = "=0.1.0" }
 
+actions-rs                        = "0.1"
 json-schema-sort.version          = "0.1"
 json-schema-sort.default-features = false
-tree-fucker.git                   = "https://github.com/kjanat/tree-fucker"
-tree-fucker.rev                   = "b30f8c4a5fcb99916a044d135701687230dbda43"
+tree-fucker                       = "0.1.0"
 
 anyhow                    = "1"
 async-trait               = "0.1"
