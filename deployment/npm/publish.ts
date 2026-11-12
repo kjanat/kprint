@@ -35,23 +35,17 @@ export function verifyPackage(expected: PackedPackage, actual: RegistryPackage) 
   }
 }
 
-export async function publishVerified(
+export async function publishPackage(
   pkg: PackedPackage,
   read: () => Promise<RegistryPackage | undefined>,
   publish: () => Promise<void>,
-  wait: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 2000)),
 ): Promise<Publication> {
-  let actual = await read();
+  const actual = await read();
   if (actual) verifyPackage(pkg, actual);
   else {
+    // npm may scan an accepted upload before making it visible. Its successful
+    // exit status is the receipt; registry availability must not gate the release.
     await publish();
-    for (let attempt = 0; attempt < 60; attempt++) {
-      actual = await read();
-      if (actual) break;
-      await wait();
-    }
-    if (!actual) throw new Error(`Publication not visible on npm: ${pkg.name}@${pkg.version}`);
-    verifyPackage(pkg, actual);
   }
   return {
     id: `pkg:npm/${pkg.name.split("/").map(encodeURIComponent).join("/")}`,

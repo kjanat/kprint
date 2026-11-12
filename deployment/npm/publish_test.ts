@@ -1,5 +1,5 @@
 import { deepStrictEqual, rejects, throws } from "node:assert/strict";
-import { packedPackage, type PackedPackage, publishVerified, type RegistryPackage } from "./publish.ts";
+import { packedPackage, type PackedPackage, publishPackage, type RegistryPackage } from "./publish.ts";
 const pack: PackedPackage = { name: "@kprint/kprint", version: "1.2.3", integrity: "sha512-test", filename: "package.tgz" };
 const visible: RegistryPackage = { name: pack.name, version: pack.version, dist: { integrity: pack.integrity } };
 
@@ -15,7 +15,7 @@ Deno.test("npm pack accepts both array and package-keyed JSON while checking the
 
 Deno.test("a retry recognizes an already published facade without publishing it again", async () => {
   let calls = 0;
-  const result = await publishVerified(pack, () => Promise.resolve(visible), async () => {
+  const result = await publishPackage(pack, () => Promise.resolve(visible), async () => {
     calls++;
   });
   deepStrictEqual(calls, 0);
@@ -30,21 +30,25 @@ Deno.test("a retry recognizes an already published facade without publishing it 
   });
 });
 
-Deno.test("publication waits for registry visibility and verifies the built tarball", async () => {
-  let reads = 0, publishes = 0, waits = 0;
-  await publishVerified(pack, () => Promise.resolve(++reads > 2 ? visible : undefined), async () => {
-    publishes++;
+Deno.test("a successful npm publish reports success without any post-upload registry reads", async () => {
+  let reads = 0, publishes = 0;
+  const result = await publishPackage(pack, () => {
+    reads++;
+    if (reads > 1) throw new Error("Post-upload registry reads are forbidden");
+    return Promise.resolve(undefined);
   }, async () => {
-    waits++;
+    publishes++;
   });
-  deepStrictEqual({ reads, publishes, waits }, { reads: 3, publishes: 1, waits: 1 });
+  deepStrictEqual({ reads, publishes }, { reads: 1, publishes: 1 });
+  deepStrictEqual(result.outcome, "succeeded");
+  deepStrictEqual(result.digest, pack.integrity);
 });
 
 Deno.test("existing names, versions or tarballs that differ stop the release", async () => {
   for (const changed of [{ name: "@other/tool" }, { version: "9.9.9" }, { dist: { integrity: "sha512-different" } }]) {
     let publishes = 0;
     await rejects(() =>
-      publishVerified(pack, () => Promise.resolve({ ...visible, ...changed }), async () => {
+      publishPackage(pack, () => Promise.resolve({ ...visible, ...changed }), async () => {
         publishes++;
       }), /differ/);
     deepStrictEqual(publishes, 0);
@@ -54,12 +58,18 @@ Deno.test("existing names, versions or tarballs that differ stop the release", a
 Deno.test("registry failures never become a reason to republish an immutable version", async () => {
   let publishes = 0;
   await rejects(() =>
-    publishVerified(pack, () => Promise.reject(new Error("HTTP 500")), async () => {
+    publishPackage(pack, () => Promise.reject(new Error("HTTP 500")), async () => {
       publishes++;
     }), /HTTP 500/);
   deepStrictEqual(publishes, 0);
 });
 
-Deno.test("an unobservable publication fails instead of reporting success", async () => {
-  await rejects(() => publishVerified(pack, () => Promise.resolve(undefined), () => Promise.resolve(), () => Promise.resolve()), /not visible/);
+Deno.test("a failed npm publish propagates its error without post-upload registry reads", async () => {
+  let reads = 0;
+  await rejects(() =>
+    publishPackage(pack, () => {
+      reads++;
+      return Promise.resolve(undefined);
+    }, () => Promise.reject(new Error("npm publish exited with code 1"))), /npm publish exited with code 1/);
+  deepStrictEqual(reads, 1);
 });
