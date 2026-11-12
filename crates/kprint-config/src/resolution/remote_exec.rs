@@ -1042,7 +1042,6 @@ mod test {
   #[test]
   #[allow(clippy::disallowed_methods)] // runs a real command against real files
   fn a_relative_path_entry_finds_a_name_in_the_working_directory() {
-    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1050,8 +1049,7 @@ mod test {
       let bin = dir.path().join(name);
       std::fs::create_dir(&bin).unwrap();
       let script = bin.join("tombi");
-      std::fs::write(&script, format!("#!/bin/sh\necho {}\n", name)).unwrap();
-      std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+      kprint_test_support::test_helpers::write_executable(&script, &format!("#!/bin/sh\necho {}\n", name));
     }
     let run_with_path = |path: String| {
       let output = Command::new("tombi").env("PATH", path).current_dir(dir.path().join("chosen")).output().unwrap();

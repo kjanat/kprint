@@ -1980,14 +1980,11 @@ mod test {
   #[test]
   #[allow(clippy::disallowed_methods)]
   fn kills_what_an_exited_worker_started_that_kept_its_output_open() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().unwrap();
     let pid_file = dir.path().join("pid");
     let worker_path = dir.path().join("worker");
     // a worker that starts something which keeps its output open, then exits
-    std::fs::write(&worker_path, format!("#!/bin/sh\nsleep 60 &\necho $! > '{}'\nexit 3\n", pid_file.display())).unwrap();
-    std::fs::set_permissions(&worker_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    kprint_test_support::test_helpers::write_executable(&worker_path, &format!("#!/bin/sh\nsleep 60 &\necho $! > '{}'\nexit 3\n", pid_file.display()));
     let mut worker = ProcessWorker::spawn(&worker_path, Arc::from(&b"\0asm"[..]), true, 1).unwrap();
     let mut limits = limits();
     limits.poll_interval = Duration::from_millis(10);

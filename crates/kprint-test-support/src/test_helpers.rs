@@ -292,3 +292,15 @@ pub fn initialize_plugins(environment: &crate::environment::TestEnvironment) {
   environment.compile_cached_wasm_plugins();
   environment.clear_logs();
 }
+
+// A fork in a concurrent test holds an inherited write descriptor until it execs, and executing the file meanwhile fails with ETXTBSY.
+#[cfg(unix)]
+pub fn write_executable(path: &std::path::Path, contents: &str) {
+  use std::os::unix::fs::PermissionsExt;
+  let staged = path.with_file_name(format!("{}.staged", path.file_name().unwrap().to_string_lossy()));
+  std::fs::write(&staged, contents).unwrap();
+  let copied = std::process::Command::new("cp").arg(&staged).arg(path).status().unwrap();
+  assert!(copied.success(), "cp {} {}: {}", staged.display(), path.display(), copied);
+  std::fs::remove_file(&staged).unwrap();
+  std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
