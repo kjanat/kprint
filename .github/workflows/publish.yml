@@ -39,7 +39,7 @@ jobs:
       ref: ${{ steps.plan.outputs.ref }}
       targets: ${{ steps.plan.outputs.targets }}
     steps:
-      - uses: kjanat/beepboop/actions/begin@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+      - uses: kjanat/beepboop/actions/begin@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         id: beepboop
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -234,14 +234,12 @@ jobs:
         if: needs.plan.outputs.channel == 'managed'
         run: deno run --allow-read deployment/npm/release.ts assets zips
       - name: Build npm packages
-        run: deno run -A deployment/npm/build.ts "${VERSION}" ${ZIPS:+--zips "${ZIPS}"} ${EXACT_VERSION:+--exact-version}
-      - name: Tar the npm packages (keeps file modes)
-        run: tar cf deployment/npm/dist.tar -C deployment/npm --exclude='node_modules' dist
-      - name: Upload the npm packages
+        run: deno run -A deployment/npm/build.ts "${VERSION}" ${ZIPS:+--zips "${ZIPS}"} ${EXACT_VERSION:+--exact-version} --pack deployment/npm/tarballs
+      - name: Upload the npm tarballs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: npm-packages
-          path: deployment/npm/dist.tar
+          name: npm-tarballs
+          path: deployment/npm/tarballs
           retention-days: 1
   test-npm:
     name: "npm test (${{ matrix.runner }})"
@@ -266,13 +264,11 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - name: Download the npm packages
+      - name: Download the npm tarballs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: npm-packages
-          path: deployment/npm
-      - name: Extract the npm packages
-        run: tar xf deployment/npm/dist.tar -C deployment/npm
+          name: npm-tarballs
+          path: deployment/npm/tarballs
       - name: Start Verdaccio
         run: |
           npx verdaccio@6 --config deployment/npm/verdaccio.yaml --listen 4873 &
@@ -289,10 +285,10 @@ jobs:
           npm config set //localhost:4873/:_authToken dummy-token
       - name: Publish packages to Verdaccio
         run: |
-          for package in deployment/npm/dist/@kprint/*/ deployment/npm/dist/kprint/ deployment/npm/dist/fmt/; do
-            npm publish "${package}" --registry http://localhost:4873/
+          for tarball in deployment/npm/tarballs/*.tgz; do
+            npm publish "${tarball}" --registry http://localhost:4873/
           done
-          version="$(node -p "require('./deployment/npm/dist/kprint/package.json').version")"
+          version="$(npm view @kprint/kprint version --registry http://localhost:4873/)"
           echo "KPRINT_VERSION=${version}" >> "${GITHUB_ENV}"
       - name: Create the test projects
         run: mkdir -p "${RUNNER_TEMP}/npm-test" "${RUNNER_TEMP}/readonly-test"
@@ -362,7 +358,7 @@ jobs:
       id-token: write
     timeout-minutes: 15
     steps:
-      - uses: kjanat/beepboop/actions/begin@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+      - uses: kjanat/beepboop/actions/begin@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         id: beepboop
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -374,36 +370,30 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
           registry-url: "https://registry.npmjs.org"
-      - name: Download the npm packages
+      - name: Download the npm tarballs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: npm-packages
-          path: deployment/npm
-      - name: Extract the npm packages
-        run: tar xf deployment/npm/dist.tar -C deployment/npm
-      - name: Install the build's dependencies
-        run: deno install --entrypoint deployment/npm/build.ts
+          name: npm-tarballs
+          path: deployment/npm/tarballs
       - name: Publish to npm
-        env:
-          VERSION: ${{ needs.plan.outputs.version }}
-          NPM_TAG: ${{ needs.plan.outputs.npm_tag }}
-          EXACT_VERSION: ${{ needs.plan.outputs.channel == 'managed' && '1' || '' }}
-        run: deno run -A deployment/npm/build.ts "${VERSION}" --publish-only --report "${RUNNER_TEMP}/npm-publications.json" ${EXACT_VERSION:+--exact-version} ${NPM_TAG:+--tag "${NPM_TAG}"}
-      - name: Read verified npm publications
-        id: publications
         if: needs.plan.outputs.channel == 'managed'
-        run: printf 'json=%s\n' "$(jq -c . "${RUNNER_TEMP}/npm-publications.json")" >> "${GITHUB_OUTPUT}"
-      - uses: kjanat/beepboop/actions/report@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
-        if: needs.plan.outputs.channel == 'managed'
+        uses: kjanat/beepboop/actions/publish@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
-          publications: ${{ steps.publications.outputs.json }}
+          npm-tarballs: deployment/npm/tarballs
+      - name: Publish the nightly to npm
+        if: needs.plan.outputs.channel == 'nightly'
+        env:
+          NPM_TAG: ${{ needs.plan.outputs.npm_tag }}
+        run: |
+          for tarball in deployment/npm/tarballs/*.tgz; do
+            npm publish "${tarball}" --provenance --access public --tag "${NPM_TAG}"
+          done
   docker:
     name: Docker
     needs: [plan, nightly-build]
@@ -439,7 +429,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: kjanat/beepboop/actions/begin@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+      - uses: kjanat/beepboop/actions/begin@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         id: beepboop
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -459,17 +449,17 @@ jobs:
         run: |
           gh release view "${RELEASE_TAG}" --json isDraft,targetCommitish,assets > "${RUNNER_TEMP}/release.json"
           deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}"
-      - uses: kjanat/beepboop/actions/token@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+      - uses: kjanat/beepboop/actions/token@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         id: bot
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
           permission-contents: write
-      - uses: kjanat/beepboop/actions/publish-refs@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+      - uses: kjanat/beepboop/actions/publish-refs@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         env:
           ${{ insert }}: ${{ fromJSON(steps.bot.outputs.gitId) }}
         with:
           token: ${{ steps.bot.outputs.token }}
-      - uses: kjanat/beepboop/actions/publish-release@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+      - uses: kjanat/beepboop/actions/publish-release@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
 run-name: ${{ inputs.beepboop_title || github.workflow }}

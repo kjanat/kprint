@@ -3,7 +3,7 @@ import { parse } from "@std/yaml";
 import matrix from "../../.github/build-matrix.json" with { type: "json" };
 
 interface Workflow {
-  jobs: Record<string, { steps: { id?: string; run?: string }[] }>;
+  jobs: Record<string, { needs?: string[]; steps: { id?: string; name?: string; run?: string }[] }>;
 }
 const workflow = parse(await Deno.readTextFile(new URL("../../.github/workflows/publish.yml", import.meta.url))) as Workflow;
 const plan = workflow.jobs.plan.steps.find((step) => step.id === "plan")!.run!;
@@ -98,4 +98,51 @@ Deno.test("stable manual dispatch requires a Beepboop execution", async () => {
   deepStrictEqual(result.code, 1);
   match(result.error, /Start stable releases through Beepboop/);
   deepStrictEqual(result.output, "");
+});
+
+function stepOf(job: string, name: string) {
+  const step = workflow.jobs[job]?.steps.find((step) => step.name === name);
+  if (step === undefined) throw new Error(`${job} has no step ${name}`);
+  return step;
+}
+
+Deno.test("a nightly uploads its tarballs in their numbered order, platform packages first", async () => {
+  const step = stepOf("publish-npm", "Publish the nightly to npm").run;
+  if (step === undefined) throw new Error("The nightly step runs no script");
+  const directory = await Deno.makeTempDir({ prefix: "kprint-nightly-test-" });
+  try {
+    await Deno.mkdir(`${directory}/bin`);
+    await Deno.mkdir(`${directory}/deployment/npm/tarballs`, { recursive: true });
+    const tarballs = [
+      "01-kprint-kprint-win32-x64-1.2.3.tgz",
+      "00-kprint-kprint-freebsd-x64-1.2.3.tgz",
+      "17-kjanat-fmt-1.2.3.tgz",
+      "16-kprint-kprint-1.2.3.tgz",
+    ];
+    for (const name of tarballs) await Deno.writeTextFile(`${directory}/deployment/npm/tarballs/${name}`, "");
+    await Deno.writeTextFile(`${directory}/bin/npm`, `#!/bin/bash\nprintf '%s\\n' "$*" >> "${directory}/calls"\n`);
+    await Deno.chmod(`${directory}/bin/npm`, 0o755);
+    const result = await new Deno.Command("bash", {
+      args: ["-e", "-c", step],
+      cwd: directory,
+      clearEnv: true,
+      env: { PATH: `${directory}/bin:${Deno.env.get("PATH")}`, NPM_TAG: "nightly" },
+      stderr: "piped",
+    }).output();
+    deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
+    deepStrictEqual((await Deno.readTextFile(`${directory}/calls`)).trim().split("\n"), [
+      "publish deployment/npm/tarballs/00-kprint-kprint-freebsd-x64-1.2.3.tgz --provenance --access public --tag nightly",
+      "publish deployment/npm/tarballs/01-kprint-kprint-win32-x64-1.2.3.tgz --provenance --access public --tag nightly",
+      "publish deployment/npm/tarballs/16-kprint-kprint-1.2.3.tgz --provenance --access public --tag nightly",
+      "publish deployment/npm/tarballs/17-kjanat-fmt-1.2.3.tgz --provenance --access public --tag nightly",
+    ]);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("a release publishes its npm tarballs through Beepboop's ledger", () => {
+  const publish = stepOf("publish-npm", "Publish to npm");
+  match(JSON.stringify(publish), /kjanat\/beepboop\/actions\/publish@[0-9a-f]{40}/);
+  match(JSON.stringify(publish), /"npm-tarballs":"deployment\/npm\/tarballs"/);
 });
