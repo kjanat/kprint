@@ -1,0 +1,118 @@
+{
+  "scope": "@kprint",
+  "versionSource": "crates/kprint/Cargo.toml#package.version",
+  "facades": [
+    {
+      "name": "@kprint/kprint",
+      "pkg": "kprint",
+      "shim": "@kjanat/fmt"
+    }
+  ],
+  "targets": [
+    {
+      "zipFileName": "kprint-x86_64-unknown-freebsd.zip",
+      "os": "freebsd",
+      "cpu": "x64",
+      "pkg": "freebsd-x64"
+    },
+    {
+      "zipFileName": "kprint-x86_64-pc-windows-msvc.zip",
+      "os": "win32",
+      "cpu": "x64",
+      "pkg": "win32-x64"
+    },
+    {
+      "zipFileName": "kprint-aarch64-pc-windows-msvc.zip",
+      "os": "win32",
+      "cpu": "arm64",
+      "pkg": "win32-arm64"
+    },
+    {
+      "zipFileName": "kprint-x86_64-apple-darwin.zip",
+      "os": "darwin",
+      "cpu": "x64",
+      "pkg": "darwin-x64"
+    },
+    {
+      "zipFileName": "kprint-aarch64-apple-darwin.zip",
+      "os": "darwin",
+      "cpu": "arm64",
+      "pkg": "darwin-arm64"
+    },
+    {
+      "zipFileName": "kprint-x86_64-unknown-linux-gnu.zip",
+      "os": "linux",
+      "cpu": "x64",
+      "libc": "glibc",
+      "pkg": "linux-x64-glibc"
+    },
+    {
+      "zipFileName": "kprint-x86_64-unknown-linux-musl.zip",
+      "os": "linux",
+      "cpu": "x64",
+      "libc": "musl",
+      "pkg": "linux-x64-musl"
+    },
+    {
+      "zipFileName": "kprint-aarch64-unknown-linux-gnu.zip",
+      "os": "linux",
+      "cpu": "arm64",
+      "libc": "glibc",
+      "pkg": "linux-arm64-glibc"
+    },
+    {
+      "zipFileName": "kprint-aarch64-unknown-linux-musl.zip",
+      "os": "linux",
+      "cpu": "arm64",
+      "libc": "musl",
+      "pkg": "linux-arm64-musl"
+    },
+    {
+      "zipFileName": "kprint-riscv64gc-unknown-linux-gnu.zip",
+      "os": "linux",
+      "cpu": "riscv64",
+      "libc": "glibc",
+      "pkg": "linux-riscv64-glibc"
+    },
+    {
+      "zipFileName": "kprint-loongarch64-unknown-linux-gnu.zip",
+      "os": "linux",
+      "cpu": "loong64",
+      "libc": "glibc",
+      "pkg": "linux-loong64-glibc"
+    },
+    {
+      "zipFileName": "kprint-loongarch64-unknown-linux-musl.zip",
+      "os": "linux",
+      "cpu": "loong64",
+      "libc": "musl",
+      "pkg": "linux-loong64-musl"
+    },
+    {
+      "zipFileName": "kprint-powerpc64le-unknown-linux-gnu.zip",
+      "os": "linux",
+      "cpu": "ppc64",
+      "libc": "glibc",
+      "pkg": "linux-ppc64-glibc"
+    },
+    {
+      "zipFileName": "kprint-powerpc64le-unknown-linux-musl.zip",
+      "os": "linux",
+      "cpu": "ppc64",
+      "libc": "musl",
+      "pkg": "linux-ppc64-musl"
+    },
+    {
+      "zipFileName": "kprint-aarch64-linux-android.zip",
+      "os": "android",
+      "cpu": "arm64",
+      "pkg": "android-arm64"
+    },
+    {
+      "zipFileName": "kprint-x86_64-linux-android.zip",
+      "os": "android",
+      "cpu": "x64",
+      "pkg": "android-x64"
+    }
+  ]
+}

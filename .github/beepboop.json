@@ -2,9 +2,48 @@
   "$schema": "https://beepboop.kjanat.dev/schema/v1.json",
   "streams": {
     "main": {
-      "packages": [],
+      "packages": [
+        "pkg:npm/%40kprint/kprint",
+        "pkg:npm/%40kjanat/fmt",
+        "pkg:npm/%40kprint/kprint-freebsd-x64",
+        "pkg:npm/%40kprint/kprint-win32-x64",
+        "pkg:npm/%40kprint/kprint-win32-arm64",
+        "pkg:npm/%40kprint/kprint-darwin-x64",
+        "pkg:npm/%40kprint/kprint-darwin-arm64",
+        "pkg:npm/%40kprint/kprint-linux-x64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-x64-musl",
+        "pkg:npm/%40kprint/kprint-linux-arm64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-arm64-musl",
+        "pkg:npm/%40kprint/kprint-linux-riscv64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-musl",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-musl",
+        "pkg:npm/%40kprint/kprint-android-arm64",
+        "pkg:npm/%40kprint/kprint-android-x64"
+      ],
       "versionScope": "one-for-stream",
-      "mustPublish": [],
+      "mustPublish": [
+        "pkg:github/kjanat/kprint",
+        "pkg:npm/%40kprint/kprint",
+        "pkg:npm/%40kjanat/fmt",
+        "pkg:npm/%40kprint/kprint-freebsd-x64",
+        "pkg:npm/%40kprint/kprint-win32-x64",
+        "pkg:npm/%40kprint/kprint-win32-arm64",
+        "pkg:npm/%40kprint/kprint-darwin-x64",
+        "pkg:npm/%40kprint/kprint-darwin-arm64",
+        "pkg:npm/%40kprint/kprint-linux-x64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-x64-musl",
+        "pkg:npm/%40kprint/kprint-linux-arm64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-arm64-musl",
+        "pkg:npm/%40kprint/kprint-linux-riscv64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-musl",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-musl",
+        "pkg:npm/%40kprint/kprint-android-arm64",
+        "pkg:npm/%40kprint/kprint-android-x64"
+      ],
       "versionSource": {
         "kind": "tags",
         "prefix": ""
@@ -14,13 +53,34 @@
           "file": "binaries.yml",
           "mode": "observe",
           "ref": "refs/tags/*",
-          "publications": ["pkg:github/kjanat/kprint"]
+          "publications": [
+            "pkg:github/kjanat/kprint"
+          ]
         },
         "publish": {
           "file": "publish.yml",
           "mode": "observe",
           "ref": "refs/tags/*",
-          "publications": []
+          "publications": [
+            "pkg:npm/%40kprint/kprint",
+            "pkg:npm/%40kjanat/fmt",
+            "pkg:npm/%40kprint/kprint-freebsd-x64",
+            "pkg:npm/%40kprint/kprint-win32-x64",
+            "pkg:npm/%40kprint/kprint-win32-arm64",
+            "pkg:npm/%40kprint/kprint-darwin-x64",
+            "pkg:npm/%40kprint/kprint-darwin-arm64",
+            "pkg:npm/%40kprint/kprint-linux-x64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-x64-musl",
+            "pkg:npm/%40kprint/kprint-linux-arm64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-arm64-musl",
+            "pkg:npm/%40kprint/kprint-linux-riscv64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-loong64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-loong64-musl",
+            "pkg:npm/%40kprint/kprint-linux-ppc64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-ppc64-musl",
+            "pkg:npm/%40kprint/kprint-android-arm64",
+            "pkg:npm/%40kprint/kprint-android-x64"
+          ]
         },
         "preview": {
           "file": "preview.yml",
@@ -106,5 +166,9 @@
       }
     }
   },
-  "managers": ["cargo", "workflow"]
+  "managers": [
+    "cargo",
+    "npm",
+    "workflow"
+  ]
 }

@@ -3,7 +3,8 @@ import $ from "@david/dax";
 import { parseArgs } from "@std/cli/parse-args";
 // @ts-types="@types/decompress"
 import decompress from "decompress";
-import { mainPackage, platformDir, platformPackage, scope } from "./names.ts";
+import { fmtPackage, mainPackage, platformDir, platformPackage, scope } from "./names.ts";
+import targets from "./targets.json" with { type: "json" };
 
 interface Package {
   zipFileName: string;
@@ -20,102 +21,22 @@ const args = parseArgs(Deno.args, {
   // `out`: the directory to build in, instead of `dist`.
   string: ["zips", "tag", "out"],
 });
-const allPackages: Package[] = [
-  {
-    zipFileName: "kprint-x86_64-unknown-freebsd.zip",
-    os: "freebsd",
-    cpu: "x64",
-  },
-  {
-    zipFileName: "kprint-x86_64-pc-windows-msvc.zip",
-    os: "win32",
-    cpu: "x64",
-  },
-  {
-    zipFileName: "kprint-aarch64-pc-windows-msvc.zip",
-    os: "win32",
-    cpu: "arm64",
-  },
-  {
-    zipFileName: "kprint-x86_64-apple-darwin.zip",
-    os: "darwin",
-    cpu: "x64",
-  },
-  {
-    zipFileName: "kprint-aarch64-apple-darwin.zip",
-    os: "darwin",
-    cpu: "arm64",
-  },
-  {
-    zipFileName: "kprint-x86_64-unknown-linux-gnu.zip",
-    os: "linux",
-    cpu: "x64",
-    libc: "glibc",
-  },
-  {
-    zipFileName: "kprint-x86_64-unknown-linux-musl.zip",
-    os: "linux",
-    cpu: "x64",
-    libc: "musl",
-  },
-  {
-    zipFileName: "kprint-aarch64-unknown-linux-gnu.zip",
-    os: "linux",
-    cpu: "arm64",
-    libc: "glibc",
-  },
-  {
-    zipFileName: "kprint-aarch64-unknown-linux-musl.zip",
-    os: "linux",
-    cpu: "arm64",
-    libc: "musl",
-  },
-  {
-    zipFileName: "kprint-riscv64gc-unknown-linux-gnu.zip",
-    os: "linux",
-    cpu: "riscv64",
-    libc: "glibc",
-  },
-  {
-    zipFileName: "kprint-loongarch64-unknown-linux-gnu.zip",
-    os: "linux",
-    cpu: "loong64",
-    libc: "glibc",
-  },
-  {
-    zipFileName: "kprint-loongarch64-unknown-linux-musl.zip",
-    os: "linux",
-    cpu: "loong64",
-    libc: "musl",
-  },
-  {
-    // Node reports ppc64le as "ppc64"
-    zipFileName: "kprint-powerpc64le-unknown-linux-gnu.zip",
-    os: "linux",
-    cpu: "ppc64",
-    libc: "glibc",
-  },
-  {
-    zipFileName: "kprint-powerpc64le-unknown-linux-musl.zip",
-    os: "linux",
-    cpu: "ppc64",
-    libc: "musl",
-  },
-  {
-    // android (Termux): Node reports the platform as "android" and the arch as
-    // "arm64"/"x64". bionic libc, so no libc field (npm only knows glibc/musl).
-    zipFileName: "kprint-aarch64-linux-android.zip",
-    os: "android",
-    cpu: "arm64",
-  },
-  {
-    zipFileName: "kprint-x86_64-linux-android.zip",
-    os: "android",
-    cpu: "x64",
-  },
-];
+const allPackages: Package[] = targets.targets.map((target) => {
+  const { os, cpu, libc } = target;
+  if (os !== "win32" && os !== "darwin" && os !== "linux" && os !== "android" && os !== "freebsd") {
+    throw new Error(`Invalid npm target OS: ${os}`);
+  }
+  if (cpu !== "x64" && cpu !== "arm64" && cpu !== "riscv64" && cpu !== "loong64" && cpu !== "ppc64") {
+    throw new Error(`Invalid npm target CPU: ${cpu}`);
+  }
+  if (libc !== undefined && libc !== "glibc" && libc !== "musl") {
+    throw new Error(`Invalid npm target libc: ${libc}`);
+  }
+  const pkg = [os, cpu, libc].filter(Boolean).join("-");
+  if (target.pkg !== pkg) throw new Error(`Npm target ${target.pkg} must be named ${pkg}`);
+  return { zipFileName: target.zipFileName, os, cpu, libc };
+});
 
-const fmtPackage = "@kjanat/fmt";
 // fmt.ts's configuration without one
 const fmtDefaultConfig = "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json";
 
