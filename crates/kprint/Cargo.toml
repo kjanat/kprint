@@ -1,6 +1,6 @@
 [package]
 name        = "kprint"
-version     = "0.61.0"
+version     = "0.62.0"
 authors     = ["Kaj Kowalski <info@kajkowalski.nl>", "dprint code formatting <david@dprint.dev>"]
 edition     = { workspace = true }
 description = "Binary for dprint code formatter—a pluggable and configurable code formatting platform."
