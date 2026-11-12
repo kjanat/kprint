@@ -146,3 +146,7 @@ Deno.test("a release publishes its npm tarballs through Beepboop's ledger", () =
   match(JSON.stringify(publish), /kjanat\/beepboop\/actions\/publish@[0-9a-f]{40}/);
   match(JSON.stringify(publish), /"npm-tarballs":"deployment\/npm\/tarballs"/);
 });
+
+Deno.test("the GitHub release waits only for the binaries", () => {
+  deepStrictEqual(workflow.jobs["finalize-release"]?.needs, ["plan", "release-binaries"]);
+});

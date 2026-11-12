@@ -421,8 +421,7 @@ jobs:
     needs:
       - plan
       - release-binaries
-      - publish-npm
-    if: always() && !cancelled() && needs.plan.outputs.channel == 'managed' && needs.release-binaries.result == 'success' && needs.publish-npm.result == 'success'
+    if: always() && !cancelled() && needs.plan.outputs.channel == 'managed' && needs.release-binaries.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
