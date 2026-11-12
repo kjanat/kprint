@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/kjanat/beepboop/e59870aa51383d456a19731bc0f4a34ec275c0d3/schemas/targets.v1.json",
+  "$schema": "https://raw.githubusercontent.com/kjanat/beepboop/aa43ae66fc65a4f3ae7254b80c360eccaa69499c/schemas/targets.v1.json",
   "scope": "@kprint",
   "versionSource": "crates/kprint/Cargo.toml#package.version",
   "facades": [
