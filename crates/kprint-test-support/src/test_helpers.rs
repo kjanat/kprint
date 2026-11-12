@@ -298,6 +298,7 @@ pub fn initialize_plugins(environment: &crate::environment::TestEnvironment) {
 /// The destination must be absent or a regular file. Concurrent writers use
 /// independent staging directories; the last rename wins. Existing executions
 /// keep the old inode, and failed writes leave the previous destination intact.
+/// Names are passed through unchanged and must be accepted by the filesystem.
 /// The caller owns the parent directory and must keep it stable during the call.
 #[cfg(unix)]
 pub fn write_executable(path: &std::path::Path, contents: &str) {
@@ -350,9 +351,26 @@ mod executable_tests {
   }
 
   #[test]
-  fn preserves_non_utf8_names_and_replaces_existing_files() {
+  fn handles_non_utf8_names_without_lossy_substitution() {
     use std::os::unix::ffi::OsStringExt;
     let root = tempfile::tempdir().unwrap();
+    // APFS rejects these names. Probe the filesystem itself so the same test
+    // also exercises accepted names on macOS filesystems that permit them.
+    let probe = root.path().join(std::ffi::OsString::from_vec(vec![b'a', 0xfe]));
+    match std::fs::write(&probe, "probe") {
+      Ok(()) => std::fs::remove_file(&probe).unwrap(),
+      Err(error) => {
+        #[cfg(target_os = "macos")]
+        {
+          assert_eq!(error.raw_os_error(), Some(92), "expected Darwin EILSEQ: {error}");
+          assert!(std::panic::catch_unwind(|| write_executable(&probe, "#!/bin/sh\nexit 0\n")).is_err());
+          assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0, "rejected names must leave no staging files");
+          return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        panic!("Creating a non-UTF-8 fixture: {error}");
+      }
+    }
     for name in [vec![b'a', 0xfe], vec![b'a', 0xff]] {
       let path = root.path().join(std::ffi::OsString::from_vec(name));
       write_executable(&path, "#!/bin/sh\nprintf first\n");
@@ -362,6 +380,18 @@ mod executable_tests {
       assert_eq!(output.stdout, b"second");
     }
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2, "staging directories must be cleaned");
+  }
+
+  #[test]
+  fn replaces_existing_files() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("worker");
+    write_executable(&path, "#!/bin/sh\nprintf first\n");
+    write_executable(&path, "#!/bin/sh\nprintf second\n");
+    let output = Command::new(&path).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"second");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
   }
 
   #[test]
