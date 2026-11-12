@@ -102,12 +102,11 @@ impl CommandConfiguration {
 }
 
 fn eq_ignore_case(a: &str, b: &str) -> bool {
-  a.chars().flat_map(char::to_lowercase).eq(b.chars().flat_map(char::to_lowercase))
+  a.to_lowercase() == b.to_lowercase()
 }
 
 fn ends_with_ignore_case(text: &str, suffix: &str) -> bool {
-  let mut chars = text.chars().rev().flat_map(|c| c.to_lowercase().rev());
-  suffix.chars().rev().flat_map(|c| c.to_lowercase().rev()).all(|c| chars.next() == Some(c))
+  text.to_lowercase().ends_with(&suffix.to_lowercase())
 }
 
 /// A command's `associations` glob, which matches paths relative to the

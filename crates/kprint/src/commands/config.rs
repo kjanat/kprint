@@ -370,10 +370,16 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
       base_dir: config_dir.clone(),
       minimum_dependency_age: age_cutoff.clone(),
     };
-    let url = match selected.resolve_npm(environment, npm_options).await {
-      Some(resolved) => resolved?.config_file_entry(),
-      None if checksum => ensure_url_checksum(selected.full_url(), plugin_resolver).await?,
-      None => selected.full_url_no_wasm_checksum(),
+    let url = if kprint_config::parse_plugin_source_reference(&selected.full_url(), &PathSource::new_local(config_path.clone()).parent(), environment)
+      .is_ok_and(|reference| kprint_config::exec::legacy::is_exec_plugin_reference(&reference))
+    {
+      kprint_config::exec::BUILT_IN_REFERENCE_NAME.to_string()
+    } else {
+      match selected.resolve_npm(environment, npm_options).await {
+        Some(resolved) => resolved?.config_file_entry(),
+        None if checksum => ensure_url_checksum(selected.full_url(), plugin_resolver).await?,
+        None => selected.full_url_no_wasm_checksum(),
+      }
     };
     vec![url]
   } else {
@@ -507,6 +513,32 @@ async fn resolve_plugin_url_to_add<TEnvironment: Environment>(
     checksum,
     minimum_dependency_age,
   } = options;
+  let base = PathSource::new_local(config_path.clone()).parent();
+  let alias = if plugin_name_or_url == "dprint/exec" { "exec" } else { plugin_name_or_url };
+  if kprint_config::parse_plugin_source_reference(alias, &base, environment)
+    .is_ok_and(|reference| kprint_config::exec::legacy::is_exec_plugin_reference(&reference))
+  {
+    if no_version || update_package_json {
+      if !alias.starts_with("npm:") {
+        bail!("--no-version / --package-json only apply to `npm:` specifiers (got '{}').", plugin_name_or_url);
+      }
+      if no_version && crate::utils::parse_npm_specifier(alias)?.specifier.version.is_some() {
+        bail!("--no-version cannot be combined with a versioned specifier: {}", alias);
+      }
+      if update_package_json {
+        bail!("--package-json does not apply to built-in exec; it needs no npm dependency.");
+      }
+    }
+    if config_plugins.iter().any(kprint_config::exec::legacy::is_exec_plugin_reference) {
+      log_warn!(
+        environment,
+        "Skipping {}. The configuration file already has it, served by kprint's built-in exec.",
+        plugin_name_or_url
+      );
+      return Ok(None);
+    }
+    return Ok(Some(alias.to_string()));
+  }
   // intercept npm: specifiers before URL parsing. For unversioned forms,
   // defer to package.json devDependencies if present (so npm/node_modules
   // manages the version), otherwise resolve dist-tags.latest and compute
@@ -4371,6 +4403,35 @@ Created {}",
     run_test_cli(vec!["config", "update"], &environment).unwrap();
     assert_eq!(environment.read_file("/dprint.json").unwrap(), config_text);
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn config_add_exec_aliases_never_need_external_plugin_setup() {
+    for alias in [
+      "exec",
+      "dprint/exec",
+      "npm:@dprint/exec",
+      "npm:@dprint/exec@0.9.0",
+      "npm:@dprint/exec@0.9.0/plugin.json@abc",
+      "https://plugins.dprint.dev/exec-0.9.0.json@abc",
+    ] {
+      for checksum in [false, true] {
+        let environment = TestEnvironmentBuilder::new().with_default_config(|_| {}).build();
+        let mut args = vec!["add", alias];
+        if checksum {
+          args.push("--checksum");
+        }
+        run_test_cli(args, &environment).unwrap();
+        let text = environment.read_file("/dprint.json").unwrap();
+        let expected = if alias == "dprint/exec" { "exec" } else { alias };
+        assert!(text.contains(expected), "{text}");
+        assert!(!environment.path_exists("/package.json"));
+        environment.clear_logs();
+        run_test_cli(vec!["add", alias], &environment).unwrap();
+        assert_eq!(environment.read_file("/dprint.json").unwrap(), text);
+        environment.clear_logs();
+      }
+    }
   }
 
   #[test]

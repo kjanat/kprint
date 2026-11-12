@@ -504,8 +504,8 @@ the documentation's placeholder unreadable. Use `text` fences for pseudo-code,
 or put `<!-- dprint-ignore -->` immediately before a code fence to preserve that
 individual block.
 
-To keep shell syntax highlighting while preserving all shell examples, disable
-embedded shell formatting in the Markdown configuration:
+To keep syntax highlighting while preserving `sh` and `bash` examples, disable
+embedded formatting for those extensions in the Markdown configuration:
 
 ```json
 {
@@ -515,8 +515,9 @@ embedded shell formatting in the Markdown configuration:
 }
 ```
 
-This also works in a local configuration that extends a shared configuration
-with a shell plugin. Standalone shell files still use that plugin. Other embedded
+Add an empty array for any other shell extension your configuration uses, such
+as `"zsh": []`. This also works in a local configuration that extends a shared
+configuration with a shell plugin. Standalone shell files still use that plugin. Other embedded
 languages retain their configured formatting behavior. For only selected
 Markdown files, put the same `embedded` setting in a matching Markdown override.
 

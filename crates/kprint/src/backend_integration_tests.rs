@@ -310,6 +310,10 @@ fn builtin_exec_matches_configured_names_and_extensions_case_insensitively() {
     ("/Makefile", r#""fileNames":["MAKEFILE"]"#),
     ("/ÉTÉ", r#""fileNames":["été"]"#),
     ("/file.ÉTÉ", r#""exts":["été"]"#),
+    ("/ΟΣ", r#""fileNames":["ος"]"#),
+    ("/file.ΟΣ", r#""exts":["ος"]"#),
+    ("/ος", r#""fileNames":["ΟΣ"]"#),
+    ("/file.ος", r#""exts":["ΟΣ"]"#),
   ] {
     let environment = TestEnvironmentBuilder::new()
       .with_default_config(|config| {
