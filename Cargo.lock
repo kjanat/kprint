@@ -1715,6 +1715,7 @@ dependencies = [
  "anyhow",
  "kprint-async-runtime",
  "kprint-plugin-types",
+ "serde",
  "sys_traits",
  "tree-fucker",
  "url",

@@ -243,6 +243,10 @@ impl<S: NativeServices> crate::environment::FileSystemEnvironment for NativeEnvi
     })
   }
 
+  fn file_change_id(&self, path: &Path) -> Option<FileChangeId> {
+    super::file_change_id::file_change_id(path)
+  }
+
   fn read_file_bytes(&self, file_path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     log_debug!(self, "Reading file: {}", file_path.as_ref().display());
     #[allow(clippy::disallowed_methods)]

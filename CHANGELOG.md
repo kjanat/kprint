@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Revalidate local plugin contents on cache hits, including process archives, so same-size replacements with preserved timestamps cannot reuse a stale formatting identity.
+- Detect local plugin replacements even when size and mtime are preserved, including process archives. Reuse digests when stable Unix file identities and nanosecond change times match; hash sources when that information is unavailable.
 
 - Match exec extensions and filenames case-insensitively. Preserve real paths for shebang-matched files, add `{{file_path_with_ext}}` and `{{ext}}`, and explicitly report that exec does not support range formatting. Invalidate the built-in exec formatting cache for the changed behavior.
 

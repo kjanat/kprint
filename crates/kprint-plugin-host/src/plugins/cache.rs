@@ -689,8 +689,8 @@ where
     })
   }
 
-  /// Checks metadata and content for every local source consumed during setup.
-  /// Old entries without digests are rebuilt instead of trusting their metadata.
+  /// Reuses digests only when a stable filesystem change identity still matches.
+  /// Other sources are hashed. Old entries without digests are rebuilt.
   fn local_stamps_match(&self, meta: &PluginCacheMeta) -> bool {
     let Some(stamps) = &meta.local_stamps else {
       return false;
@@ -699,10 +699,20 @@ where
       return false;
     }
     stamps.iter().all(|stamp| {
+      if stamp.checksum.is_empty() {
+        return false;
+      }
+      // Missing stored identities get one rebuild when a stable identity first
+      // becomes available. Unsupported or recent timestamps still require hashing.
+      if let Some(current) = self.environment.file_change_id(Path::new(&stamp.path)) {
+        return stamp.change_id.as_ref() == Some(&current)
+          && self
+            .file_size_and_mtime(&stamp.path)
+            .is_some_and(|(len, modified)| len == stamp.len && to_unix_millis(modified) == stamp.modified_ms);
+      }
       self
         .file_size_and_mtime(&stamp.path)
         .is_some_and(|(len, modified)| len == stamp.len && to_unix_millis(modified) == stamp.modified_ms)
-        && !stamp.checksum.is_empty()
         && self
           .environment
           .read_file_bytes(&stamp.path)
@@ -740,6 +750,7 @@ where
       len,
       modified_ms: to_unix_millis(modified),
       checksum: String::new(),
+      change_id: self.environment.file_change_id(path.as_ref()),
     })
   }
 
@@ -1137,6 +1148,47 @@ mod test {
     assert!(!environment.path_exists(&third_file_path));
     assert!(read_meta(&hash, &environment).is_none());
 
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn stable_local_identity_skips_reads_and_changed_identity_revalidates() -> Result<()> {
+    let environment = TestEnvironment::new();
+    environment.set_fs_time(1000);
+    let path = PathBuf::from("/test.wasm");
+    let bytes = [WASM_PLUGIN_BYTES, &[0, 3, 1, b'x', b'A']].concat();
+    environment.write_file_bytes(&path, &bytes)?;
+    let mut change = crate::environment::FileChangeId {
+      device: 1,
+      inode: 2,
+      changed_secs: 1000,
+      changed_nanos: 123,
+    };
+    environment.set_file_change_id(&path, change.clone());
+    let cache = PluginCache::new(environment.clone());
+    let source = PluginSourceReference::new_local(path.clone());
+    let first = cache.get_plugin_cache_item(&source).await?;
+    let reads = environment.file_read_count(&path);
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    assert_eq!(environment.file_read_count(&path), reads, "warm hits must not read the source");
+    let changed = [WASM_PLUGIN_BYTES, &[0, 3, 1, b'x', b'B']].concat();
+    environment.write_file_bytes(&path, &changed)?;
+    change.changed_nanos += 1;
+    environment.set_file_change_id(&path, change);
+    let second = cache.get_plugin_cache_item(&source).await?;
+    assert!(second.was_set_up);
+    assert_ne!(first.formatting_identity, second.formatting_identity);
+    let reads = environment.file_read_count(&path);
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    assert_eq!(environment.file_read_count(&path), reads);
+    // Digest-bearing metadata from the first PR revision gains an identity once.
+    let hash = entry_hash(&cache.compute_cache_key(&source.path_source)?, &environment);
+    let mut meta = read_meta(&hash, &environment).unwrap();
+    meta.local_stamps.as_mut().unwrap()[0].change_id = None;
+    write_meta(&hash, &meta, &environment)?;
+    assert!(cache.get_plugin_cache_item(&source).await?.was_set_up);
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    environment.clear_logs();
     Ok(())
   }
 
