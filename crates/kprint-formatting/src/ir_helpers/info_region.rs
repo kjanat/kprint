@@ -215,8 +215,8 @@ mod test {
     // its new start line with the end line from before it moved.
     let text = format_for_test(|arena| {
       let region = InfoRegion::new(arena);
-      let start_ln = LineNumber::new("start");
-      let end_ln = LineNumber::new("end");
+      let start_ln = LineNumber::new(arena, "start");
+      let end_ln = LineNumber::new(arena, "end");
       region.add(end_ln);
       let is_multi_line = move |context: &mut ConditionResolverContext| {
         let start_ln = context.resolved_line_number(start_ln)?;
@@ -252,7 +252,7 @@ mod test {
     // column from before it moved instead of working it out again.
     let text = format_for_test(|arena| {
       let region = InfoRegion::new(arena);
-      let end_cn = ColumnNumber::new("end");
+      let end_cn = ColumnNumber::new(arena, "end");
       region.add(end_cn);
       let mut items = PrintItems::new(arena);
       items.push_condition(conditions::if_true(
@@ -277,7 +277,7 @@ mod test {
   fn keeps_infos_when_region_does_not_move() {
     let text = format_for_test(|arena| {
       let region = InfoRegion::new(arena);
-      let end_cn = ColumnNumber::new("end");
+      let end_cn = ColumnNumber::new(arena, "end");
       region.add(end_cn);
       let mut items = PrintItems::new(arena);
       items.extend(region.gen_start(arena));

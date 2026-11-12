@@ -7,7 +7,6 @@ use super::WriteItem;
 use super::collections::*;
 use super::infinite_reevaluation_protection::InfiniteReevaluationProtector;
 use super::print_items::*;
-use super::thread_state;
 use super::writer::*;
 
 pub struct SavePoint<'a> {
@@ -101,15 +100,15 @@ impl<'a> Printer<'a> {
         },
       ),
       resolved_conditions: BumpHashMap::with_hasher_in(Default::default(), arena.bump()),
-      resolved_line_number_anchors: VecU32U32Map::with_capacity(thread_state::next_line_number_anchor_id()),
-      resolved_line_numbers: VecU32U32Map::with_capacity(thread_state::next_line_number_id()),
-      resolved_column_numbers: VecU32U32Map::with_capacity(thread_state::next_column_number_id()),
-      resolved_is_start_of_lines: VecU32BoolMap::with_capacity(thread_state::next_is_start_of_line_id()),
-      resolved_indent_levels: VecU32U8Map::with_capacity(thread_state::next_indent_level_id()),
-      resolved_line_start_column_numbers: VecU32U32Map::with_capacity(thread_state::next_line_start_column_number_id()),
-      resolved_line_start_indent_levels: VecU32U8Map::with_capacity(thread_state::next_line_start_indent_level_id()),
+      resolved_line_number_anchors: VecU32U32Map::with_capacity(arena.counts.line_number_anchor_id.count()),
+      resolved_line_numbers: VecU32U32Map::with_capacity(arena.counts.line_number_id.count()),
+      resolved_column_numbers: VecU32U32Map::with_capacity(arena.counts.column_number_id.count()),
+      resolved_is_start_of_lines: VecU32BoolMap::with_capacity(arena.counts.is_start_of_line_id.count()),
+      resolved_indent_levels: VecU32U8Map::with_capacity(arena.counts.indent_level_id.count()),
+      resolved_line_start_column_numbers: VecU32U32Map::with_capacity(arena.counts.line_start_column_number_id.count()),
+      resolved_line_start_indent_levels: VecU32U8Map::with_capacity(arena.counts.line_start_indent_level_id.count()),
       look_ahead_save_points: LookAheadSavePoints::default(),
-      infinite_reevaluation_protector: InfiniteReevaluationProtector::with_capacity(thread_state::next_condition_reevaluation_id()),
+      infinite_reevaluation_protector: InfiniteReevaluationProtector::with_capacity(arena.counts.condition_reevaluation_id.count()),
       stored_condition_save_points: BumpHashMap::with_hasher_in(Default::default(), arena.bump()),
       next_node_stack: NodeStack::default(),
       max_width: options.max_width,
@@ -220,6 +219,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn resolved_line_number(&mut self, line_number: LineNumber) -> Option<u32> {
+    self.arena.id.assert_matches(line_number.owner);
     let value = self.resolved_line_numbers.get(line_number.unique_id());
     if value.is_none() {
       self.add_look_ahead_save_point(LookAheadKey::LineNumber(line_number.unique_id()), line_number.name());
@@ -228,6 +228,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn resolved_column_number(&mut self, column_number: ColumnNumber) -> Option<u32> {
+    self.arena.id.assert_matches(column_number.owner);
     let value = self.resolved_column_numbers.get(column_number.unique_id());
     if value.is_none() {
       self.add_look_ahead_save_point(LookAheadKey::ColumnNumber(column_number.unique_id()), column_number.name());
@@ -236,6 +237,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn resolved_is_start_of_line(&mut self, is_start_of_line: IsStartOfLine) -> Option<bool> {
+    self.arena.id.assert_matches(is_start_of_line.owner);
     let value = self.resolved_is_start_of_lines.get(is_start_of_line.unique_id());
     if value.is_none() {
       self.add_look_ahead_save_point(LookAheadKey::IsStartOfLine(is_start_of_line.unique_id()), is_start_of_line.name());
@@ -244,6 +246,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn resolved_indent_level(&mut self, indent_level: IndentLevel) -> Option<u8> {
+    self.arena.id.assert_matches(indent_level.owner);
     let value = self.resolved_indent_levels.get(indent_level.unique_id());
     if value.is_none() {
       self.add_look_ahead_save_point(LookAheadKey::IndentLevel(indent_level.unique_id()), indent_level.name());
@@ -252,6 +255,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn resolved_line_start_column_number(&mut self, line_start_column_number: LineStartColumnNumber) -> Option<u32> {
+    self.arena.id.assert_matches(line_start_column_number.owner);
     let value = self.resolved_line_start_column_numbers.get(line_start_column_number.unique_id());
     if value.is_none() {
       self.add_look_ahead_save_point(
@@ -263,6 +267,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn resolved_line_start_indent_level(&mut self, line_start_indent_level: LineStartIndentLevel) -> Option<u8> {
+    self.arena.id.assert_matches(line_start_indent_level.owner);
     let value = self.resolved_line_start_indent_levels.get(line_start_indent_level.unique_id());
     if value.is_none() {
       self.add_look_ahead_save_point(
@@ -274,6 +279,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn clear_info(&mut self, info: Info) {
+    self.arena.id.assert_matches(info.owner());
     match info {
       Info::LineNumber(info) => self.resolved_line_numbers.remove(info.unique_id()),
       Info::ColumnNumber(info) => self.resolved_column_numbers.remove(info.unique_id()),
@@ -290,11 +296,13 @@ impl<'a> Printer<'a> {
 
   /// Gets the line number when it's resolved, without looking ahead to it when it isn't.
   pub fn peek_line_number(&self, line_number: LineNumber) -> Option<u32> {
+    self.arena.id.assert_matches(line_number.owner);
     self.resolved_line_numbers.get(line_number.unique_id())
   }
 
   /// Sets the line number to a value that was worked out before.
   pub fn set_line_number(&mut self, line_number: LineNumber, value: u32) {
+    self.arena.id.assert_matches(line_number.owner);
     self.resolved_line_numbers.insert(line_number.unique_id(), value);
   }
 
@@ -303,6 +311,7 @@ impl<'a> Printer<'a> {
   /// This keeps a resolution usable when whatever it refers to has shifted up or down the page
   /// without otherwise changing, leaving it correct relative to everything around it.
   pub fn shift_line_number(&mut self, info: LineNumber, delta: isize) {
+    self.arena.id.assert_matches(info.owner);
     let id = info.unique_id();
     if let Some(value) = self.resolved_line_numbers.get(id) {
       self.resolved_line_numbers.insert(id, (value as isize + delta) as u32);
@@ -310,6 +319,7 @@ impl<'a> Printer<'a> {
   }
 
   pub fn resolved_condition(&mut self, condition_reference: &ConditionReference) -> Option<bool> {
+    self.arena.id.assert_matches(condition_reference.owner);
     if !self.resolved_conditions.contains_key(&condition_reference.id) {
       self.add_look_ahead_save_point(LookAheadKey::Condition(condition_reference.id), condition_reference.name());
     }

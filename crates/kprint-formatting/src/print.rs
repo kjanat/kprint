@@ -99,9 +99,9 @@ mod test {
       format(
         |arena| {
           let mut items = PrintItems::new(arena);
-          assert_eq!(LineNumber::new("").unique_id(), 0);
-          assert_eq!(LineNumber::new("").unique_id(), 1);
-          assert_eq!(LineNumber::new("").unique_id(), 2);
+          assert_eq!(LineNumber::new(arena, "").unique_id(), 0);
+          assert_eq!(LineNumber::new(arena, "").unique_id(), 1);
+          assert_eq!(LineNumber::new(arena, "").unique_id(), 2);
           items.push_str_runtime_width_computed("test");
           items.push_string(format(
             |arena| {
@@ -109,14 +109,14 @@ mod test {
               // 0 when formatting within a format because these
               // are stored as resolved within the printer using
               // a vector and the id is the index
-              assert_eq!(LineNumber::new("").unique_id(), 0);
-              assert_eq!(LineNumber::new("").unique_id(), 1);
+              assert_eq!(LineNumber::new(arena, "").unique_id(), 0);
+              assert_eq!(LineNumber::new(arena, "").unique_id(), 1);
               "test".into_print_items(arena)
             },
             get_print_options(),
           ));
           // now ensure it goes back to where it left off
-          assert_eq!(LineNumber::new("").unique_id(), 3);
+          assert_eq!(LineNumber::new(arena, "").unique_id(), 3);
           items
         },
         get_print_options(),

@@ -4,7 +4,7 @@ use kprint_formatting::*;
 fn should_not_go_back_to_a_condition_taking_the_same_path() {
   // the condition is printed while the line number isn't resolved, which is the same as false
   fn generate<'a>(arena: &'a Arena) -> PrintItems<'a> {
-    let end_ln = LineNumber::new("end");
+    let end_ln = LineNumber::new(arena, "end");
     let mut items = PrintItems::new(arena);
     items.push_condition(conditions::if_true(
       "newLineIfEndOnLaterLine",
@@ -24,8 +24,8 @@ fn should_not_go_back_to_a_condition_taking_the_same_path() {
 fn should_go_back_to_a_condition_still_looking_ahead_when_it_changes() {
   // the condition is still unknown once the first line number is resolved, then the second one makes it true
   fn generate<'a>(arena: &'a Arena) -> PrintItems<'a> {
-    let first_ln = LineNumber::new("first");
-    let second_ln = LineNumber::new("second");
+    let first_ln = LineNumber::new(arena, "first");
+    let second_ln = LineNumber::new(arena, "second");
     let mut items = PrintItems::new(arena);
     items.push_condition(conditions::if_true(
       "markIfSecondOnLaterLine",
@@ -53,7 +53,7 @@ fn should_go_back_when_another_condition_looked_ahead_at_the_same_info() {
   // only the first condition goes back once the line number is resolved, which prints the second
   // one again, and the second one changes even though the first one doesn't
   fn generate<'a>(arena: &'a Arena) -> PrintItems<'a> {
-    let end_ln = LineNumber::new("end");
+    let end_ln = LineNumber::new(arena, "end");
     let mut items = PrintItems::new(arena);
     items.push_condition(conditions::if_true(
       "markIfEndOnLaterLine",
@@ -99,7 +99,7 @@ fn lookahead_probe_uses_the_conditions_newline_forcing_state() {
   assert_eq!(
     format(
       |arena| {
-        let column = ColumnNumber::new("afterForceNoNewLines");
+        let column = ColumnNumber::new(arena, "afterForceNoNewLines");
         let mut items = PrintItems::new(arena);
         items.push_signal(Signal::StartForceNoNewLines);
         items.push_condition(conditions::if_true(

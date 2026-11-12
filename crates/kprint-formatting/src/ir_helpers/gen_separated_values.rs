@@ -211,10 +211,10 @@ where
 {
   let arena = opts.single_line_options.separator.arena();
   let indent_width = opts.indent_width;
-  let start_ln = LineNumber::new("startSeparatedValues");
-  let start_cn = ColumnNumber::new("startSeparatedValues");
-  let start_lscn = LineStartColumnNumber::new("startSeparatedValues");
-  let end_ln = LineNumber::new("endSeparatedValues");
+  let start_ln = LineNumber::new(arena, "startSeparatedValues");
+  let start_cn = ColumnNumber::new(arena, "startSeparatedValues");
+  let start_lscn = LineStartColumnNumber::new(arena, "startSeparatedValues");
+  let end_ln = LineNumber::new(arena, "endSeparatedValues");
   let value_datas: ValueDatas<'a> = arena.bump().alloc(RefCell::new(bumpalo::collections::Vec::new_in(arena.bump())));
   // the infos about the values are kept correct when the values move
   let region = ir_helpers::InfoRegion::new(arena);
@@ -224,10 +224,10 @@ where
   let is_start_standalone_line_ref = is_start_standalone_line.create_reference();
   let mut is_multi_line_condition = {
     if opts.force_use_new_lines {
-      Condition::new_true()
+      Condition::new_true(arena)
     } else if opts.prefer_hanging {
       if !multi_line_options.newline_at_start {
-        Condition::new_false()
+        Condition::new_false(arena)
       } else {
         get_is_multi_line_for_hanging(arena, value_datas, is_start_standalone_line_ref)
       }
@@ -268,6 +268,7 @@ where
   }
   let generated_values_items = inner_gen_result.into_rc_path();
   items.push_condition(Condition::new(
+    arena,
     "multiLineOrHanging",
     ConditionProperties {
       condition: is_multi_line,
@@ -349,14 +350,14 @@ where
     let mut last_lines_span: Option<LinesSpan> = None;
     let maintain_line_breaks = multi_line_options.maintain_line_breaks;
     let mut had_newline = false;
-    let first_line_number = LineNumber::new("firstValue");
+    let first_line_number = LineNumber::new(arena, "firstValue");
     let mut last_line_start_indent_level = None;
     let mut last_line_number = first_line_number;
 
     for (i, generated_value) in generated_values.enumerate() {
-      let start_line_number = if i == 0 { first_line_number } else { LineNumber::new("value") };
-      let start_is_start_of_line = IsStartOfLine::new("value");
-      let start_line_start_indent_level = LineStartIndentLevel::new("value");
+      let start_line_number = if i == 0 { first_line_number } else { LineNumber::new(arena, "value") };
+      let start_is_start_of_line = IsStartOfLine::new(arena, "value");
+      let start_line_start_indent_level = LineStartIndentLevel::new(arena, "value");
       value_datas.borrow_mut().push(GeneratedValueData {
         line_number: start_line_number,
         is_start_of_line: start_is_start_of_line,
@@ -390,6 +391,7 @@ where
         let blank_line_count = blank_line_count.min(max_blank_lines as usize);
         let generated_value = generated_value.items.into_rc_path();
         items.push_condition(Condition::new(
+          arena,
           "multiLineOrHangingCondition",
           ConditionProperties {
             condition: is_multi_line,
@@ -476,6 +478,7 @@ where
                   }
                   .into_rc_path();
                   items.push_condition(Condition::new(
+                    arena,
                     "valueHangingIndent",
                     ConditionProperties {
                       condition: *condition,
@@ -521,6 +524,7 @@ where
 
 fn get_is_start_standalone_line(arena: &Arena, start_cn: ColumnNumber, start_lscn: LineStartColumnNumber) -> Condition<'_> {
   Condition::new(
+    arena,
     "isStartStandaloneLine",
     ConditionProperties {
       condition: arena.alloc_resolver(move |condition_context| {
@@ -537,6 +541,7 @@ fn get_is_start_standalone_line(arena: &Arena, start_cn: ColumnNumber, start_lsc
 
 fn get_is_multi_line_for_hanging<'a>(arena: &'a Arena, value_datas: ValueDatas<'a>, is_start_standalone_line_ref: ConditionReference) -> Condition<'a> {
   Condition::new(
+    arena,
     "isMultiLineForHanging",
     ConditionProperties {
       condition: arena.alloc_resolver(move |condition_context| {
@@ -570,6 +575,7 @@ fn get_is_multi_line_for_multi_line<'a>(
 ) -> Condition<'a> {
   let last_result: &Cell<bool> = arena.bump().alloc(Cell::new(false));
   let mut condition = Condition::new(
+    arena,
     "isMultiLineForMultiLine",
     ConditionProperties {
       condition: arena.alloc_resolver(move |condition_context| {

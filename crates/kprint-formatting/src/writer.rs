@@ -356,7 +356,7 @@ impl<'a> Writer<'a> {
 
   fn push_item(&mut self, item: WriteItem<'a>) {
     let previous = self.state.items.take();
-    let graph_node = self.arena.alloc_write_item_graph_node(GraphNode::new(item, previous));
+    let graph_node = self.arena.alloc_write_item_graph_node(GraphNode::new(self.arena, item, previous));
     self.state.items = Some(graph_node);
 
     #[cfg(feature = "tracing")]
