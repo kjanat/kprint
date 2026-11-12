@@ -816,55 +816,16 @@ fn canonicalize_path(path: impl AsRef<Path>) -> io::Result<CanonicalizedPathBuf>
   }
 }
 
-const CACHE_DIR_ENV_VAR_NAME: &str = "DPRINT_CACHE_DIR";
-
 static CACHE_DIR: Lazy<io::Result<CanonicalizedPathBuf>> = Lazy::new(|| {
-  #[allow(clippy::disallowed_methods)]
-  let cache_dir = get_cache_dir_internal(|var_name| std::env::var(var_name).ok())?;
+  let cache_dir = super::cache_dir::resolve()?;
   #[allow(clippy::disallowed_methods)]
   std::fs::create_dir_all(&cache_dir)?;
   canonicalize_path(cache_dir)
 });
 
-fn get_cache_dir_internal(get_env_var: impl Fn(&str) -> Option<String>) -> io::Result<PathBuf> {
-  if let Some(dir_path) = get_env_var(CACHE_DIR_ENV_VAR_NAME)
-    && !dir_path.trim().is_empty()
-  {
-    let dir_path = PathBuf::from(dir_path);
-    // seems dangerous to allow a relative path as this directory may be deleted
-    return if !dir_path.is_absolute() {
-      Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("The {} environment variable must specify an absolute path.", CACHE_DIR_ENV_VAR_NAME),
-      ))
-    } else {
-      Ok(dir_path)
-    };
-  }
-
-  match dirs::cache_dir() {
-    Some(dir) => Ok(dir.join("dprint").join("cache")),
-    None => Err(io::Error::new(io::ErrorKind::NotFound, "Expected to find cache directory.")),
-  }
-}
-
 #[cfg(test)]
 mod test {
   use super::*;
-
-  #[test]
-  fn should_get_cache_dir_based_on_env_var() {
-    let default_dir = dirs::cache_dir().unwrap().join("dprint").join("cache");
-    let value = if cfg!(target_os = "windows") {
-      "C:/.dprint-cache"
-    } else {
-      "/home/david/.dprint-cache"
-    };
-    assert_eq!(get_cache_dir_internal(|_| Some(value.to_string())).unwrap().to_string_lossy(), value);
-    assert_eq!(get_cache_dir_internal(|_| Some("".to_string())).unwrap(), default_dir);
-    assert_eq!(get_cache_dir_internal(|_| Some("  ".to_string())).unwrap(), default_dir);
-    assert_eq!(get_cache_dir_internal(|_| None).unwrap(), default_dir);
-  }
 
   /// Asks git's own fsmonitor daemon for changes over its pipe, which answers
   /// a token it doesn't know with its own and that everything changed.
@@ -883,15 +844,6 @@ mod test {
     let _ignore = git(&["fsmonitor--daemon", "stop"]);
     let response = result.unwrap();
     assert!(response.starts_with(b"builtin:"), "{}", String::from_utf8_lossy(&response));
-  }
-
-  #[test]
-  fn should_error_when_cache_dir_env_var_relative() {
-    let result = get_cache_dir_internal(|_| Some("./dir".to_string())).err();
-    assert_eq!(
-      result.unwrap().to_string(),
-      "The DPRINT_CACHE_DIR environment variable must specify an absolute path."
-    );
   }
 
   #[test]

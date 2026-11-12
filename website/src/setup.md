@@ -63,7 +63,39 @@ See [global configuration](/global-config)
 
 ## Custom Cache Directory
 
-By default, dprint stores information in the current system user's cache directory (`~/.cache/dprint` on Linux, `~/Library/Caches/dprint` on Mac, and `%LOCALAPPDATA%/dprint` on Windows) such as cached plugins and incremental formatting information. If you would like to store the cache in a custom location, then specify a `DPRINT_CACHE_DIR` environment variable. Note that this directory may be periodically deleted by the CLI, so if you set it please make sure it's set correctly and you're ok with the custom directory being deleted.
+kprint keeps compiled plugins and incremental formatting data in its own cache:
+
+- Linux: `$XDG_CACHE_HOME/kprint/cache`, or `~/.cache/kprint/cache` by default.
+- macOS: `~/Library/Caches/kprint/cache`.
+- Windows: `%LOCALAPPDATA%/kprint/cache`.
+
+Set `KPRINT_CACHE_DIR` to an absolute path to override the location.
+`DPRINT_CACHE_DIR` remains a compatibility fallback when `KPRINT_CACHE_DIR` is
+unset or blank. An explicit override takes precedence over Cloudflare detection.
+`kprint clear-cache` removes the selected directory, so use a dedicated directory.
+The default cache is separate from dprint; existing dprint caches are left in place.
+
+### Cloudflare builds
+
+When `WORKERS_CI=1` or `CF_PAGES=1`, kprint places its cache in a dedicated
+`.kprint` subdirectory of the project's package-manager cache:
+
+| Package manager | kprint cache                   |
+| --------------- | ------------------------------ |
+| npm             | `~/.npm/.kprint`               |
+| Yarn            | `~/.cache/yarn/.kprint`        |
+| pnpm            | `~/.pnpm-store/.kprint`        |
+| Bun             | `~/.bun/install/cache/.kprint` |
+
+kprint looks for `packageManager` in `package.json` or a lockfile, starting in the
+current directory and searching parent directories. If neither identifies a
+package manager, it uses `npm_config_user_agent`, then defaults to npm.
+
+These parent directories are listed in the [Workers Builds cache documentation](https://developers.cloudflare.com/workers/ci-cd/builds/build-caching/)
+and [Pages cache documentation](https://developers.cloudflare.com/pages/configuration/build-caching/).
+Enable build caching in the Cloudflare project's settings for reuse between
+builds. Cloudflare controls cache detection, retention and eviction. kprint
+only clears its own `.kprint` subdirectory, preserving package-manager data.
 
 ## Proxy
 
