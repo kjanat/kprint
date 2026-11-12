@@ -3065,10 +3065,7 @@ mod test {
       })
       .build();
     let error_message = run_test_cli(vec!["init", "--yes"], &environment).err().unwrap();
-    assert_eq!(
-      error_message.to_string(),
-      format!("Configuration file '{}' already exists.", Path::new(".config").join("dprint.json").display())
-    );
+    assert_eq!(error_message.to_string(), "Configuration file '.config/dprint.json' already exists.");
     assert!(!environment.path_exists("/dprint.json"));
   }
 

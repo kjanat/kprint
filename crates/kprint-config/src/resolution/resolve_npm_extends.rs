@@ -206,12 +206,6 @@ impl NpmExtendsResolver {
         ..package.clone()
       });
     }
-    let metadata_url = url::Url::parse(&format!("https://registry.npmjs.org/{name}"))?;
-    if let Ok((_, metadata)) = environment.download_file_err_404(&metadata_url).await
-      && let Ok(packument) = serde_json::from_slice::<serde_json::Value>(&metadata.content)
-    {
-      crate::utils::warn_if_npm_deprecated(&packument, name, version, environment);
-    }
     let file_name = name.rsplit('/').next().unwrap();
     let url = url::Url::parse(&format!("https://registry.npmjs.org/{name}/-/{file_name}-{version}.tgz"))?;
     let file = crate::utils::resolve_path_source_to_file_with_cache_mode(
@@ -235,6 +229,19 @@ impl NpmExtendsResolver {
         tarball_checksum,
         expected
       );
+    }
+    if file.is_first_download || self.reload {
+      // Deprecation is advisory. Cached configurations remain usable offline,
+      // and a registry outage must not delay a fresh configuration indefinitely.
+      let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+      let _ = crate::utils::run_before_deadline(deadline, async {
+        let metadata_url = url::Url::parse(&format!("https://registry.npmjs.org/{name}"))?;
+        let (_, metadata) = environment.download_file_err_404(&metadata_url).await?;
+        let packument = serde_json::from_slice::<serde_json::Value>(&metadata.content)?;
+        crate::utils::warn_if_npm_deprecated(&packument, name, version, environment);
+        Ok::<_, anyhow::Error>(())
+      })
+      .await;
     }
     // Content-address the extraction so a refreshed package cannot reuse
     // files extracted from different bytes or an unrecorded old directory.
@@ -1101,6 +1108,35 @@ mod tests {
     assert!(join_package_path("a/index.json", "/other.json").is_err());
     assert!(join_package_path("a/index.json", "..\\other.json").is_err());
     assert!(join_package_path("a/index.json", "C:/other.json").is_err());
+  }
+
+  #[test]
+  fn cached_registry_configs_do_not_fetch_deprecation_metadata() {
+    let environment = TestEnvironmentBuilder::new().build();
+    add_registry_package(&environment, "cached-config", "1.0.0", &[("package/dprint.json", "{}")]);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(environment.cwd());
+      let metadata = "https://registry.npmjs.org/cached-config";
+      let package = "npm:cached-config@1.0.0";
+      NpmExtendsResolver::default().resolve(package, &base, &environment).await.unwrap();
+      assert_eq!(environment.remote_file_download_count(metadata), 1);
+      environment.add_unresponsive_remote_file(metadata);
+      crate::utils::run_before_deadline(
+        std::time::Instant::now() + std::time::Duration::from_secs(1),
+        NpmExtendsResolver::default().resolve(package, &base, &environment),
+      )
+      .await
+      .unwrap()
+      .unwrap();
+      assert_eq!(environment.remote_file_download_count(metadata), 1);
+      environment.remove_unresponsive_remote_file(metadata);
+      let resolver = NpmExtendsResolver {
+        reload: true,
+        ..Default::default()
+      };
+      resolver.resolve(package, &base, &environment).await.unwrap();
+      assert_eq!(environment.remote_file_download_count(metadata), 2);
+    });
   }
 
   #[test]

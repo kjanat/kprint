@@ -6842,7 +6842,14 @@ text_formatted"
         .build();
       run_test_cli(vec!["fmt"], &environment).unwrap();
       assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
-      assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+      // Native compilation may finish during this run when the suite is busy.
+      let messages = environment.take_stderr_messages();
+      assert!(
+        messages
+          .iter()
+          .all(|message| message.starts_with("Compiling test-plugin ") || message.starts_with("Compiled test-plugin ")),
+        "{messages:?}"
+      );
       assert_eq!(environment.read_file("/src/file.txt").unwrap(), "text_formatted");
       assert_eq!(environment.read_file("/src/excluded/file.txt").unwrap(), "text");
       assert_eq!(environment.read_file("/dist/file.txt").unwrap(), "text");
@@ -6985,7 +6992,13 @@ text_formatted"
       .build();
     run_test_cli(vec!["fmt", "--config", "project/.config/dprint.json"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
-    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    let messages = environment.take_stderr_messages();
+    assert!(
+      messages
+        .iter()
+        .all(|message| message.starts_with("Compiling test-plugin ") || message.starts_with("Compiled test-plugin ")),
+      "{messages:?}"
+    );
     assert_eq!(environment.read_file("/project/src/file.txt").unwrap(), "text");
     assert_eq!(environment.read_file("/project/.config/src/file.txt").unwrap(), "text_formatted");
     assert_eq!(environment.read_file("/project/other/file.txt").unwrap(), "text_formatted");

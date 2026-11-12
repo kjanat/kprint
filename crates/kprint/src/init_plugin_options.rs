@@ -36,16 +36,21 @@ impl<TEnvironment: Environment> PluginResolverOptionsLoader<TEnvironment> {
 
   /// The plugin's config schema, which is best-effort because the options
   /// can still be listed from the plugin's resolved config without it.
-  async fn load_schema(&self, schema_url: &str) -> Option<serde_json::Value> {
+  async fn load_schema(&self, schema_url: &str, budget: std::time::Duration) -> Option<serde_json::Value> {
     if schema_url.is_empty() {
       return None;
     }
-    let result = async {
+    // The downloader copies this execution deadline into its blocking task,
+    // so dropping the prompt future cannot leave an unbounded download behind.
+    let deadline = std::time::Instant::now() + budget;
+    let result = crate::utils::run_before_deadline(deadline, async {
       let url = Url::parse(schema_url)?;
       let (_, file) = self.environment.download_file_err_404(&url).await?;
       Ok::<_, anyhow::Error>(serde_json::from_slice::<serde_json::Value>(&file.content)?)
-    }
-    .await;
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|result| result);
     match result {
       Ok(schema) => Some(schema),
       Err(err) => {
@@ -77,7 +82,7 @@ impl<TEnvironment: Environment> InitPluginOptionsLoader for PluginResolverOption
       Ok(serde_json::Value::Object(defaults)) => defaults,
       _ => Default::default(),
     };
-    let schema = self.load_schema(&schema_url).await;
+    let schema = self.load_schema(&schema_url, std::time::Duration::from_secs(3)).await;
     Ok(get_settings_options(schema.as_ref(), &defaults))
   }
 }
@@ -231,6 +236,23 @@ mod test {
   use super::*;
   use pretty_assertions::assert_eq;
   use serde_json::json;
+
+  #[test]
+  fn schema_download_obeys_its_execution_deadline() {
+    use crate::environment::TestEnvironmentBuilder;
+    let environment = TestEnvironmentBuilder::new().build();
+    let url = "https://plugins.dprint.dev/stalled-schema.json";
+    environment.add_unresponsive_remote_file(url);
+    environment.clone().run_in_runtime(async move {
+      let resolver = Rc::new(PluginResolver::new(environment.clone(), crate::plugins::PluginCache::new(environment.clone())));
+      let loader = PluginResolverOptionsLoader::new(environment.clone(), resolver);
+      let started = std::time::Instant::now();
+      assert!(loader.load_schema(url, std::time::Duration::from_millis(25)).await.is_none());
+      assert!(started.elapsed() < std::time::Duration::from_secs(1));
+      assert_eq!(environment.remote_file_download_count(url), 1);
+      environment.clear_logs();
+    });
+  }
 
   fn option(name: &str, kind: SettingsOptionKind, default_value: Option<serde_json::Value>, description: Option<&str>) -> SettingsOption {
     SettingsOption {
