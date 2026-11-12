@@ -88,19 +88,25 @@ pub struct SetupCommand {
 }
 
 impl CommandConfiguration {
-  pub fn matches_exts_or_filenames(&self, path: &Path) -> bool {
-    if let Some(filename) = path.file_name() {
-      let filename = filename.to_string_lossy().to_lowercase();
-      for ext in &self.file_extensions {
-        if filename.ends_with(ext) {
-          return true;
-        }
-      }
-      self.file_names.iter().any(|name| name == &filename)
-    } else {
-      false
-    }
+  pub fn matches_exts_or_filenames(&self, path: &Path, real_path: &Path) -> bool {
+    let matches_extension = path.file_name().is_some_and(|filename| {
+      let filename = filename.to_string_lossy();
+      self.file_extensions.iter().any(|ext| ends_with_ignore_case(&filename, ext))
+    });
+    matches_extension
+      || real_path.file_name().is_some_and(|filename| {
+        let filename = filename.to_string_lossy();
+        self.file_names.iter().any(|name| eq_ignore_case(name, &filename))
+      })
   }
+}
+
+fn eq_ignore_case(a: &str, b: &str) -> bool {
+  a.to_lowercase() == b.to_lowercase()
+}
+
+fn ends_with_ignore_case(text: &str, suffix: &str) -> bool {
+  text.to_lowercase().ends_with(&suffix.to_lowercase())
 }
 
 /// A command's `associations` glob, which matches paths relative to the
@@ -359,11 +365,11 @@ fn resolve_serve(
     .args
     .iter()
     .chain(invocation.env.values())
-    .any(|value| uses_variable(value, "file_path"))
+    .any(|value| ["file_path", "file_path_with_ext", "ext"].iter().any(|variable| uses_variable(value, variable)))
   {
     diagnostics.push(ConfigurationDiagnostic {
       property_name: names.command.clone(),
-      message: "A served command formats every file, so its arguments and environment can't use {{file_path}}. It gets each file's path in its request."
+      message: "A served command formats every file, so its arguments and environment can't use {{file_path}}, {{file_path_with_ext}}, or {{ext}}. It gets each file's path in its request."
         .to_string(),
     });
   }
@@ -763,6 +769,26 @@ mod tests {
   }
 
   #[test]
+  fn served_commands_reject_every_per_file_variable_in_arguments_and_environment() {
+    for variable in ["file_path", "file_path_with_ext", "ext"] {
+      let template = format!("{{{{ {variable} }}}}");
+      for invocation in [
+        json!({"executable":"fmt", "args":[template]}),
+        json!({"executable":"fmt", "env":{"FILE":template}}),
+      ] {
+        let result = Configuration::resolve(
+          parse_config(json!({"commands":[{"command":invocation,"exts":["txt"],"serve":true}]})),
+          &Default::default(),
+          &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+        );
+        assert_eq!(result.diagnostics.len(), 1, "{variable}");
+        assert_eq!(result.diagnostics[0].property_name, "commands[0].command");
+        assert!(result.diagnostics[0].message.contains("A served command formats every file"));
+      }
+    }
+  }
+
+  #[test]
   fn reports_what_a_served_command_cant_have() {
     for (command, property, message) in [
       (
@@ -778,12 +804,12 @@ mod tests {
       (
         json!({ "command": "fmt --path {{file_path}}", "exts": ["txt"], "serve": true }),
         "commands[0].command",
-        "A served command formats every file, so its arguments and environment can't use {{file_path}}. It gets each file's path in its request.",
+        "A served command formats every file, so its arguments and environment can't use {{file_path}}, {{file_path_with_ext}}, or {{ext}}. It gets each file's path in its request.",
       ),
       (
         json!({ "command": { "executable": "fmt", "env": { "FILE": "{{file_path}}" } }, "exts": ["txt"], "serve": true }),
         "commands[0].command",
-        "A served command formats every file, so its arguments and environment can't use {{file_path}}. It gets each file's path in its request.",
+        "A served command formats every file, so its arguments and environment can't use {{file_path}}, {{file_path_with_ext}}, or {{ext}}. It gets each file's path in its request.",
       ),
     ] {
       run_diagnostics_test(

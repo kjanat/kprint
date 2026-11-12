@@ -4837,6 +4837,39 @@ text2"
   }
 
   #[test]
+  fn incremental_reformats_when_local_plugin_bytes_change_without_a_version_change() {
+    let environment = TestEnvironmentBuilder::new()
+      .add_local_wasm_plugin()
+      .with_default_config(|config| {
+        config.add_local_wasm_plugin();
+      })
+      .write_file("/file.txt", "text")
+      .initialize()
+      .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
+    let run = || {
+      environment.clear_logs();
+      run_test_cli(vec!["fmt", "--incremental", "--log-level=debug"], &environment).unwrap();
+      environment.take_stdout_messages();
+      environment
+        .take_stderr_messages()
+        .iter()
+        .any(|message| message.contains("No change: /file.txt"))
+    };
+    assert!(!run());
+    assert!(run());
+    let plugin_path = "/plugins/test-plugin.wasm";
+    let mut bytes = environment.read_file_bytes(plugin_path).unwrap();
+    // A valid custom section changes the artifact while preserving the
+    // plugin's reported name, version, configuration, and formatting behavior.
+    bytes.extend_from_slice(&[0, 3, 1, b'x', 1]);
+    environment.write_file_bytes(plugin_path, &bytes).unwrap();
+    assert!(!run(), "A different plugin artifact must invalidate incremental results");
+    assert!(run(), "The unchanged replacement should reuse its own incremental results");
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_formatted");
+  }
+
+  #[test]
   fn should_keep_the_incremental_file_apart_from_upstream_dprint() {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .with_default_config(|c| {

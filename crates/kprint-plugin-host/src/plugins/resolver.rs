@@ -26,17 +26,33 @@ use crate::utils::AsyncMutex;
 
 pub struct PluginWrapper {
   was_set_up: bool,
+  formatting_identity: super::FormattingIdentity,
   plugin: Box<dyn Plugin>,
   initialized_plugin: AsyncMutex<Option<Rc<dyn InitializedPlugin>>>,
 }
 
 impl PluginWrapper {
   pub fn new(plugin: Box<dyn Plugin>) -> Self {
+    let formatting_identity = match plugin.built_in() {
+      Some(built_in) => super::FormattingIdentity::BuiltIn {
+        name: built_in.name,
+        revision: built_in.cache_revision,
+      },
+      None => super::FormattingIdentity::InProcess {
+        name: plugin.info().name.clone(),
+        version: plugin.info().version.clone(),
+      },
+    };
     Self {
+      formatting_identity,
       plugin,
       was_set_up: false,
       initialized_plugin: Default::default(),
     }
+  }
+
+  pub fn formatting_identity(&self) -> &super::FormattingIdentity {
+    &self.formatting_identity
   }
 
   pub fn was_set_up(&self) -> bool {
@@ -320,6 +336,7 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
         match create_plugin(&self.plugin_cache, self.environment.clone(), &plugin_reference, &self.wasm_module_creator).await {
           Ok(created) => Ok(Rc::new(PluginWrapper {
             was_set_up: created.was_set_up,
+            formatting_identity: created.formatting_identity,
             ..PluginWrapper::new(created.plugin)
           })),
           Err(err) => {

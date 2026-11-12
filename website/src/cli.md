@@ -478,7 +478,7 @@ This may be useful for finding files that are taking a long time to format and m
 Plugin artifacts are grouped by cache format, operating system, architecture and Wasmtime version:
 
 ```text
-plugins/v12/<os>-<arch>/wasmtime-<version>/<compatibility-key>/
+plugins/v13/<os>-<arch>/wasmtime-<version>/<compatibility-key>/
   <plugin-name>-<version>-<source-hash>-<content-hash>.wasm
   <plugin-name>-<version>-<source-hash>-<content-hash>.cwasm
 ```

@@ -3693,9 +3693,8 @@ lineWidth = 80
     /// The base configuration `resolve` extends.
     const LOCAL_BASE: &str = r#"{ "exec": { "commands": [{ "command": "local-base", "exts": ["md"] }] } }"#;
 
-    /// Runs the exec plugin a configuration references as the process plugin,
-    /// rather than the built-in exec.
-    fn use_the_exec_process_plugin(environment: &TestEnvironment) {
+    /// The removed switch cannot change routing or weaken remote allowlists.
+    fn set_retired_exec_switch(environment: &TestEnvironment) {
       environment.set_env_var("DPRINT_BUILTIN_EXEC", Some("0"));
     }
 
@@ -3816,10 +3815,10 @@ lineWidth = 80
       assert_eq!(result.exec, served.exec);
       assert_eq!(result.messages, served.messages);
       assert!(!result.messages.contains(&get_warn_non_wasm_plugins_message()));
-      // as the process plugin, it is one
-      let result = resolve_in(other_version, use_the_exec_process_plugin);
-      assert_eq!(result.plugins, Vec::<String>::new());
-      assert_eq!(result.messages, vec![get_warn_non_wasm_plugins_message()]);
+      let result = resolve_in(other_version, set_retired_exec_switch);
+      assert_eq!(result.exec, served.exec);
+      assert_eq!(result.messages, served.messages);
+      assert_eq!(result.plugins, served.plugins);
     }
 
     #[test]
@@ -4110,7 +4109,7 @@ lineWidth = 80
     fn applies_a_nested_configurations_play_with_fire_to_the_remote_commands_it_inherits() {
       let inherit = |nested_exec: &str| {
         let nested_config = format!(r#"{{ "inherit": true{} }}"#, nested_exec);
-        // with a property the exec plugin 0.7.3 doesn't have
+        // with a property outside the host input contract
         let remote_config = remote_config(r#""shell": "bash","#);
         resolve_in_every_format(
           &[
@@ -4261,16 +4260,9 @@ lineWidth = 80
       );
     }
 
-    const UNCHECKABLE_NOTE: &str = concat!(
-      "Note: The exec commands in remote configuration are ignored for security reasons, as the programs they run are only ",
-      "checked against \"playWithFire\" for the exec plugin 0.7.3, and this configuration uses npm:@dprint/exec@0.8.0/plugin.json. ",
-      "To run them, specify \"playWithFire\": true in the exec configuration of a local configuration file."
-    );
-
     #[test]
     fn checks_the_programs_of_remote_commands_for_every_exec_reference() {
-      // the built-in exec serves them all, and reads its commands like the
-      // exec plugin 0.7.3
+      // Every alias uses the same host contract and allowlist checks.
       for plugin in [EXEC_PLUGIN, "npm:@dprint/exec@0.8.0/plugin.json", "npm:@dprint/exec"] {
         let result = resolve(
           &format!(
@@ -4296,66 +4288,44 @@ lineWidth = 80
     }
 
     #[test]
-    fn only_checks_the_programs_of_remote_commands_for_the_exec_process_plugin_it_knows() {
-      let resolve_using = |plugin: &str, play_with_fire: &str| {
-        resolve_with_base_in(
+    fn retired_exec_switch_preserves_remote_program_allowlists() {
+      for plugin in [EXEC_PLUGIN, "npm:@dprint/exec@0.8.0/plugin.json", "npm:@dprint/exec"] {
+        let result = resolve_with_base_in(
           &format!(
-            r#"{{ "extends": "{}", "plugins": ["{}"], "exec": {{ "playWithFire": {} }} }}"#,
-            REMOTE_URL, plugin, play_with_fire
+            r#"{{ "extends": "{}", "plugins": ["{}"], "exec": {{ "playWithFire": ["tombi"] }} }}"#,
+            REMOTE_URL, plugin
           ),
           &remote_config(""),
           LOCAL_BASE,
-          use_the_exec_process_plugin,
+          set_retired_exec_switch,
         )
-        .unwrap()
-      };
-      // the release that reads its commands like the built-in exec
-      let result = resolve_using(EXEC_PLUGIN, r#"["tombi"]"#);
-      assert_eq!(result.exec.properties.commands, vec!["tombi format -".to_string()]);
-
-      // another version might read them another way
-      for plugin in ["npm:@dprint/exec@0.8.0/plugin.json", "npm:@dprint/exec"] {
-        let result = resolve_using(plugin, r#"["tombi"]"#);
-        assert_eq!(result.exec.properties.commands, Vec::<String>::new(), "{}", plugin);
+        .unwrap();
+        assert_eq!(result.exec.properties.commands, vec!["tombi format -".to_string()]);
         assert_eq!(result.plugins, vec![plugin.to_string()]);
+        assert_eq!(result.messages.len(), 1);
+        assert!(result.messages[0].contains("programs not listed"));
       }
-      let result = resolve_using("npm:@dprint/exec@0.8.0/plugin.json", r#"["tombi"]"#);
-      // the remote configuration's exec plugin is a process plugin too
-      assert_eq!(result.messages, vec![get_warn_non_wasm_plugins_message(), UNCHECKABLE_NOTE.to_string()]);
-      // which "playWithFire": true doesn't need to
-      let result = resolve_using("npm:@dprint/exec@0.8.0/plugin.json", "true");
-      assert_eq!(result.exec.properties.commands, ALL_REMOTE_COMMANDS.to_vec());
     }
 
     #[test]
-    fn only_checks_the_programs_of_inherited_remote_commands_for_the_exec_process_plugin_it_knows() {
-      // the ancestor uses another version of the exec plugin, and the nested
-      // configuration only allows some programs
+    fn retired_exec_switch_preserves_inherited_program_allowlists() {
       let ancestor = format!(
         r#"{{ "extends": "{}", "plugins": ["npm:@dprint/exec@0.8.0/plugin.json"], "exec": {{ "playWithFire": true }} }}"#,
         REMOTE_URL
       );
-      let resolve_in = |set_up: fn(&TestEnvironment)| {
-        resolve_inheriting_in(
-          &ancestor,
-          "{}",
-          &remote_config(""),
-          r#"{ "inherit": true, "exec": { "playWithFire": ["tombi"] } }"#,
-          set_up,
-        )
-      };
-      // as the process plugin
-      let result = resolve_in(use_the_exec_process_plugin);
-      assert_eq!(result.exec, Exec::default());
-      assert_eq!(result.plugins, vec!["npm:@dprint/exec@0.8.0/plugin.json".to_string()]);
-      assert_eq!(result.messages, vec![UNCHECKABLE_NOTE.to_string()]);
-      // the built-in exec checks them
-      let result = resolve_in(|_| {});
+      let result = resolve_inheriting_in(
+        &ancestor,
+        "{}",
+        &remote_config(""),
+        r#"{ "inherit": true, "exec": { "playWithFire": ["tombi"] } }"#,
+        set_retired_exec_switch,
+      );
       assert_eq!(result.exec.properties.commands, vec!["tombi format -".to_string()]);
-      assert_eq!(result.messages, Vec::<String>::new());
+      assert_eq!(result.plugins, vec!["npm:@dprint/exec@0.8.0/plugin.json".to_string()]);
+      assert!(result.messages.is_empty());
     }
 
-    /// A remote configuration with exec properties the exec plugin 0.7.3
+    /// A remote configuration with exec properties the host
     /// doesn't have (ex. ones a later version might add), at the root, in an
     /// override and in a command, next to ones it has that don't decide what
     /// runs.
@@ -4405,7 +4375,7 @@ lineWidth = 80
         format!(
           concat!(
             "Note: The exec \"{}\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, ",
-            "as the exec plugin 0.7.3 doesn't have it, so kprint can't tell what it does. ",
+            "as kprint does not recognize the property. ",
             "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
           ),
           key
@@ -4437,8 +4407,8 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands ",
-            "the exec plugin 0.7.3 reads, which only run with \"playWithFire\": true: shell: the exec plugin 0.7.3 doesn't have it"
+            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that can't be checked against the program allowlist, ",
+            "which only run with \"playWithFire\": true: shell: the built-in exec does not recognize this property"
           )
           .to_string(),
           ignored_property("shell"),
@@ -4639,8 +4609,8 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands the exec plugin 0.7.3 reads, ",
-            "which only run with \"playWithFire\": true: serve: the exec plugin 0.7.3 doesn't have it"
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that can't be checked against the program allowlist, ",
+            "which only run with \"playWithFire\": true: serve: program allowlists do not support persistent commands"
           )
           .to_string()
         ]
@@ -4675,9 +4645,9 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 3 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands the exec plugin 0.7.3 reads, ",
-            "which only run with \"playWithFire\": true: command: the exec plugin 0.7.3 only reads a command line, ",
-            "setupCommand: the exec plugin 0.7.3 only reads a command line"
+            "Note: Ignored 3 exec command(s) in remote configuration (https://dprint.dev/exec.json) that can't be checked against the program allowlist, ",
+            "which only run with \"playWithFire\": true: command: program allowlists require a command line, ",
+            "setupCommand: program allowlists require a command line"
           )
           .to_string()
         ]
@@ -4716,7 +4686,7 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands the exec plugin 0.7.3 reads, ",
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that can't be checked against the program allowlist, ",
             "which only run with \"playWithFire\": true: cacheKeyFiles: invalid type: string \"x\", expected a sequence, ",
             "or that read files on this machine to key their cache (\"cacheKeyFiles\"), which only \"playWithFire\": true allows: /etc/passwd, ../secret"
           )

@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -39,7 +40,7 @@ pub trait InProcessHandler: 'static {
     global_config: GlobalConfiguration,
     base_dir: &CanonicalizedPathBuf,
   ) -> PluginResolveConfigurationResult<Self::Configuration>;
-  async fn format(&self, request: FormatRequest<Self::Configuration>) -> FormatResult;
+  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf) -> FormatResult;
 }
 
 /// Runs an [`InProcessHandler`] inside the dprint process.
@@ -163,14 +164,17 @@ impl<THandler: InProcessHandler> InitializedPlugin for InitializedInProcessPlugi
     };
     self
       .handler
-      .format(FormatRequest {
-        file_path: request.file_path,
-        file_bytes: request.file_text,
-        config_id: request.config.id,
-        config,
-        range: request.range,
-        token: request.token,
-      })
+      .format(
+        FormatRequest {
+          file_path: request.file_path,
+          file_bytes: request.file_text,
+          config_id: request.config.id,
+          config,
+          range: request.range,
+          token: request.token,
+        },
+        request.real_file_path,
+      )
       .await
   }
 

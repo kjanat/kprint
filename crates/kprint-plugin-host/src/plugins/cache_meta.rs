@@ -18,7 +18,7 @@ use std::hash::Hasher;
 /// should invalidate existing entries. Folded into each entry's signature so a
 /// bump simply orphans old entries (they stay on disk until `clear-cache`)
 /// rather than busting the whole cache.
-const PLUGIN_CACHE_SCHEMA_VERSION: usize = 12;
+const PLUGIN_CACHE_SCHEMA_VERSION: usize = 13;
 
 /// Increment when cached plugin metadata needs to be read from the plugin again.
 pub const PLUGIN_INFO_VERSION: u32 = 1;
@@ -72,6 +72,10 @@ pub struct PluginCacheMeta {
   /// before it was recorded.
   #[serde(skip_serializing_if = "Option::is_none", default)]
   pub source_checksum: Option<String>,
+  /// Digest of the source and, for process plugins, the selected archive.
+  /// Independent of paths, timestamps, compiler, and CPU compatibility.
+  #[serde(default)]
+  pub formatting_checksum: String,
   /// The file name of the module of the Wasm plugin build this one replaced,
   /// which is kept so a process that read the entry before (ex. `dprint lsp`)
   /// still loads the build it read about. It's removed once the next build
@@ -319,6 +323,7 @@ mod test {
       },
       executable_sub_path: None,
       local_stamps: None,
+      formatting_checksum: "formatting-checksum".into(),
       source_checksum: None,
       previous_module_file_name: None,
     }
@@ -333,7 +338,7 @@ mod test {
     assert_ne!(plugins_dir(&environment), first);
     // by component, as the separator is the OS's
     let has_component = |name: &str| first.components().any(|component| component.as_os_str() == name);
-    assert!(has_component("v12"));
+    assert!(has_component(&format!("v{PLUGIN_CACHE_SCHEMA_VERSION}")));
     assert!(has_component("wasmtime-43.0.2"));
     let mut meta = make_meta("signature");
     meta.info.name = "../../escape".to_string();

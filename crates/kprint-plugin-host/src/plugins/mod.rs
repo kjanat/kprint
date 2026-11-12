@@ -24,7 +24,6 @@ pub use resolution_cache::PluginResolutionCache;
 pub use resolver::*;
 pub use types::*;
 
-pub use implementations::EXEC_COMMANDS_RELEASE;
 pub use implementations::FormatEngine;
 pub use implementations::WASM_COMPILE_WORKER_ARG;
 pub use implementations::WASM_PLUGIN_THREAD_STACK_SIZE;
@@ -34,9 +33,7 @@ pub use implementations::compile_wasm_supervised;
 pub use implementations::exec_input;
 #[cfg(windows)]
 pub use implementations::find_with_path_ext;
-pub use implementations::is_builtin_exec_reference;
 pub use implementations::is_exec_plugin_reference;
-pub use implementations::knows_exec_plugin_commands;
 pub use implementations::run_wasm_compile_worker;
 pub use implementations::wasm_precompile_compatibility_hash;
 pub use npm_resolution::FetchNpmLatestInfo;

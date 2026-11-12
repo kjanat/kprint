@@ -657,6 +657,7 @@ async fn try_resolve_process_plugin_per_platform_tarball(
   use crate::plugins::implementations::parse_process_plugin_file;
 
   let plugin_file = parse_process_plugin_file(plugin_json_bytes).context("Failed to parse process plugin manifest (plugin.json)")?;
+  crate::plugins::implementations::reject_external_exec(&plugin_file.name)?;
   let os_path = get_process_plugin_os_path(&plugin_file, environment)?;
 
   if !os_path.reference.starts_with("npm:") {
@@ -892,6 +893,18 @@ async fn node_modules_missing_message(specifier: &NpmSpecifier, environment: &im
 mod tests {
   use super::*;
   use kprint_platform::environment::*;
+
+  #[tokio::test]
+  async fn rejects_external_exec_before_resolving_platform_tarball() {
+    let environment = crate::environment::TestEnvironment::new();
+    let manifest = crate::test_helpers::TestProcessPluginFileBuilder::default().name("dprint-plugin-exec").build();
+    let error = try_resolve_process_plugin_per_platform_tarball(manifest.text().as_bytes(), &environment)
+      .await
+      .err()
+      .unwrap();
+    assert!(error.to_string().contains("External exec plugins are no longer supported"));
+    assert!(environment.take_stderr_messages().is_empty());
+  }
 
   #[test]
   fn bail_if_disallowed_reference_only_allows_in_package_relative_paths() {

@@ -89,7 +89,7 @@ impl InProcessHandler for ExecHandler {
       config_schema_paths: Vec::new(),
       config_local_schemas_use_root: false,
       config_reference_paths: Vec::new(),
-      supports_range_formatting: None,
+      supports_range_formatting: Some(false),
       allow_plugin_override_config: None,
       config_relative_path_bases: Default::default(),
     }
@@ -129,7 +129,7 @@ impl InProcessHandler for ExecHandler {
     }
   }
 
-  async fn format(&self, request: FormatRequest<Self::Configuration>) -> FormatResult {
+  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf) -> FormatResult {
     if request.range.is_some() {
       // we don't support range formatting for this plugin
       return Ok(None);
@@ -137,6 +137,7 @@ impl InProcessHandler for ExecHandler {
 
     format_bytes(
       request.file_path,
+      real_file_path,
       request.file_bytes,
       request.config,
       request.token.clone(),
@@ -149,6 +150,7 @@ impl InProcessHandler for ExecHandler {
 
 pub async fn format_bytes(
   file_path: PathBuf,
+  real_file_path: PathBuf,
   original_file_bytes: Vec<u8>,
   config: Arc<Configuration>,
   token: Arc<dyn CancellationToken>,
@@ -175,7 +177,7 @@ pub async fn format_bytes(
   }
 
   let mut file_bytes: Cow<[u8]> = Cow::Borrowed(&original_file_bytes);
-  for command in select_commands(&config, &file_path)? {
+  for command in select_commands(&config, &file_path, &real_file_path)? {
     // run the command's setup once before formatting with it for the first time
     if let Some(setup_command) = &command.setup_command {
       match setup_state
@@ -191,7 +193,7 @@ pub async fn format_bytes(
       return Ok(None);
     }
 
-    let (args, env) = maybe_substitute_variables(&file_path, &config, command)?;
+    let (args, env) = maybe_substitute_variables(&file_path, &real_file_path, &config, command)?;
     let executable = setup_state.resolve_executable(&command.executable, &command.cwd, &env);
 
     if let Some(serve) = command.serve {
@@ -203,7 +205,7 @@ pub async fn format_bytes(
         serve,
       };
       let request = ServedRequest {
-        file_path: &file_path,
+        file_path: &real_file_path,
         text: &file_bytes,
         line_width: config.line_width,
         indent_width: config.indent_width,
@@ -337,7 +339,7 @@ pub async fn format_bytes(
   })
 }
 
-fn select_commands<'a>(config: &'a Configuration, file_path: &Path) -> Result<Vec<&'a CommandConfiguration>, FormatError> {
+fn select_commands<'a>(config: &'a Configuration, file_path: &Path, real_file_path: &Path) -> Result<Vec<&'a CommandConfiguration>, FormatError> {
   if !config.is_valid {
     return Err(FormatError::new("Cannot format because the configuration was not valid."));
   }
@@ -346,10 +348,10 @@ fn select_commands<'a>(config: &'a Configuration, file_path: &Path) -> Result<Ve
 
   for command in &config.commands {
     if let Some(associations) = &command.associations {
-      if associations.matches(file_path) {
+      if associations.matches(real_file_path) {
         binaries.push(command);
       }
-    } else if binaries.is_empty() && command.matches_exts_or_filenames(file_path) {
+    } else if binaries.is_empty() && command.matches_exts_or_filenames(file_path, real_file_path) {
       binaries.push(command);
       break;
     }
@@ -823,11 +825,13 @@ fn read_stderr_end(mut readable: impl std::io::Read, sender: Sender<Vec<u8>>) ->
 
 fn maybe_substitute_variables(
   file_path: &Path,
+  real_file_path: &Path,
   config: &Configuration,
   command: &CommandConfiguration,
 ) -> Result<(Vec<String>, BTreeMap<String, String>), FormatError> {
   let values = TemplateValues {
-    file_path,
+    file_path: real_file_path,
+    file_path_with_ext: file_path,
     line_width: config.line_width,
     use_tabs: config.use_tabs,
     indent_width: config.indent_width,
@@ -888,7 +892,7 @@ mod test {
     .unwrap();
     let config = Configuration::resolve(config, &Default::default(), &CanonicalizedPathBuf::new_for_testing("/project")).config;
     let selected = |path: &str| {
-      select_commands(&config, std::path::Path::new(path))
+      select_commands(&config, std::path::Path::new(path), std::path::Path::new(path))
         .unwrap()
         .into_iter()
         .map(|command| command.executable.as_str())
@@ -898,6 +902,29 @@ mod test {
     assert_eq!(selected("/project/README.md"), vec!["root", "all"]);
     assert_eq!(selected("/project/sub/docs/a.md"), vec!["all"]);
     assert_eq!(selected("/project/sub/README.md"), vec!["all"]);
+  }
+
+  #[test]
+  fn matches_shebang_extensions_but_real_names_and_associations() {
+    let logical = std::path::Path::new("/scripts/build.dprint-ext-added.sh");
+    let real = std::path::Path::new("/scripts/build");
+    for selector in [
+      serde_json::json!({"exts": ["SH"]}),
+      serde_json::json!({"fileNames": ["BUILD"]}),
+      serde_json::json!({"associations": "scripts/build"}),
+    ] {
+      let mut command = selector;
+      command["command"] = serde_json::json!("formatter");
+      let config = resolve(serde_json::json!({"commands": [command]}));
+      assert_eq!(select_commands(&config, logical, real).unwrap().len(), 1);
+    }
+    let config = resolve(serde_json::json!({"commands": [
+      {"command": "formatter", "exts": ["SH"], "fileNames": ["BUILD"]}
+    ]}));
+    for path in ["/scripts/building", "/scripts/fish", "/scripts/build.sh.bak"] {
+      let path = std::path::Path::new(path);
+      assert!(select_commands(&config, path, path).unwrap().is_empty());
+    }
   }
 
   #[cfg(unix)]
@@ -912,6 +939,7 @@ mod test {
     token: Arc<dyn CancellationToken>,
   ) -> Result<Option<String>, String> {
     format_bytes(
+      PathBuf::from("file.txt"),
       PathBuf::from("file.txt"),
       text.as_bytes().to_vec(),
       config.clone(),
@@ -1077,6 +1105,7 @@ mod test {
     for (path, text) in files {
       let result = format_bytes(
         PathBuf::from(path),
+        PathBuf::from(path),
         text.into_bytes(),
         config.clone(),
         Arc::new(NullCancellationToken),
@@ -1093,7 +1122,7 @@ mod test {
     assert_eq!(
       (super::super::CACHE_REVISION, made),
       (
-        2,
+        3,
         vec![
           "a.up: \"TEXT\\r\\nNO NEWLINE\"".to_string(),
           "a.chain: \"z\\n\"".to_string(),
@@ -1141,6 +1170,7 @@ mod test {
     let file_path = r#"/dir/a&b <"c"> 'd'.txt"#;
     let config = resolve(serde_json::json!({ "commands": [{ "command": "printf %s {{file_path}}", "exts": ["txt"] }] }));
     let formatted = format_bytes(
+      PathBuf::from(file_path),
       PathBuf::from(file_path),
       b"text".to_vec(),
       config,
@@ -1771,6 +1801,7 @@ mod relative_program_test {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let output = runtime
       .block_on(format_bytes(
+        PathBuf::from("file.txt"),
         PathBuf::from("file.txt"),
         b"text".to_vec(),
         Arc::new(result.config),

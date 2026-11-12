@@ -162,21 +162,7 @@ impl PluginWithConfig {
   /// This is used for the "incremental" feature to tell if a plugin has changed state.
   pub fn incremental_hash(&self, hasher: &mut impl Hasher) {
     use std::hash::Hash;
-    // list everything in here that would affect formatting, with the strings'
-    // `Hash`, which ends them, so where one ends is part of the hash
-    match self.plugin.built_in() {
-      // released with dprint, so its cache revision says how it formats, not
-      // dprint's version (which changes for unrelated reasons)
-      Some(built_in) => {
-        "dprint built-in".hash(hasher);
-        built_in.name.hash(hasher);
-        built_in.cache_revision.hash(hasher);
-      }
-      None => {
-        self.info().name.hash(hasher);
-        self.info().version.hash(hasher);
-      }
-    }
+    self.plugin.formatting_identity().hash(hasher);
 
     // serialize the config keys in order to prevent the hash from changing
     let sorted_config = self.format_config.plugin.iter().collect::<BTreeMap<_, _>>();
@@ -311,6 +297,7 @@ impl PluginWithConfig {
 
 pub struct InitializedPluginWithConfigFormatRequest {
   pub file_path: PathBuf,
+  pub real_file_path: PathBuf,
   pub file_bytes: Vec<u8>,
   pub range: FormatRange,
   pub override_config: ConfigKeyMap,
@@ -401,6 +388,7 @@ impl InitializedPluginWithConfig {
       .instance
       .format_text(InitializedPluginFormatRequest {
         file_path: request.file_path,
+        real_file_path: request.real_file_path,
         file_text: request.file_bytes,
         range: request.range,
         config: self.plugin.format_config.clone(),
@@ -732,6 +720,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
             let result = initialized_plugin
               .format_text(InitializedPluginWithConfigFormatRequest {
                 file_path: plugin_file_path.clone(),
+                real_file_path: real_file_path.clone(),
                 file_bytes: file_text.clone(),
                 range: range.clone(),
                 override_config: plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config),
@@ -1620,7 +1609,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   // resolve the plugins
   let mut plugins = filter_duplicate_plugin_names(plugin_resolver.resolve_plugins(config.plugins.sources.clone()).await?);
   // Configuration resolution has already filtered remote commands and applied
-  // inheritance. An explicit exec plugin keeps its selected version and order.
+  // inheritance. An explicit exec alias determines its formatter-chain order.
   if config.plugins.config.contains_key("exec") && !plugins.iter().any(|plugin| plugin.info().config_key == "exec") {
     plugins.push(plugin_resolver.resolve_builtin_exec().await);
   }
@@ -1633,8 +1622,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   for plugin in plugins.into_iter() {
     let all_config = get_plugin_config_map(&plugin, &mut config_map)?;
     let trusted_config = get_plugin_config_map(&plugin, &mut trusted_config_map)?;
-    let uses_exec_policy = plugin.info().config_key == "exec"
-      && (plugin.info().name == "dprint-plugin-exec" || plugin.built_in().is_some_and(|built_in| built_in.serves_plugin == "dprint-plugin-exec"));
+    let uses_exec_policy = plugin.info().config_key == "exec" && plugin.built_in().is_some_and(|built_in| built_in.name == "exec");
     let trusted_only = !plugin.is_sandboxed() && !uses_exec_policy;
     let plugin_config = if trusted_only {
       if all_config != trusted_config && plugin_resolver.should_warn_untrusted_config(&plugin.info().config_key) {
@@ -1918,7 +1906,7 @@ mod test {
     assert_eq!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN, "0.59.0")));
     // its cache revision changes when it formats differently
     assert_ne!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN_REVISED, "0.58.0")));
-    // a loaded plugin is still identified by its name and version
+    // caller-supplied in-process plugins use their name and version
     let loaded = |version| TestPlugin::new("built-in", "built-in", vec!["txt"], vec![]).with_version(version);
     assert_ne!(hash(loaded("1.0.0")), hash(loaded("1.0.1")));
     assert_ne!(hash(loaded("1.0.0")), hash(built_in(&BUILT_IN, "1.0.0")));
