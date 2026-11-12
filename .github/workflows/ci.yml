@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [master, the-big-split]
-    paths-ignore: [deployment/**, website/**]
+    paths-ignore: [website/**]
   pull_request:
 
 permissions: { contents: read }
@@ -120,6 +120,17 @@ jobs:
           deno task --cwd crates/kprint-development/trace_analyzer build
           git diff --exit-code -- crates/kprint-development/trace_analyzer/app.js
 
+  npm-release:
+    name: npm release validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+      - run: deno task --cwd deployment/npm check
+      - run: deno task --cwd deployment/npm test
+
   build:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -129,7 +140,7 @@ jobs:
       profile: debug
 
   ci:
-    needs: [changes, lint, boundaries, trace-analyzer, build]
+    needs: [changes, lint, boundaries, trace-analyzer, npm-release, build]
     if: always()
     runs-on: ubuntu-slim
     timeout-minutes: 5

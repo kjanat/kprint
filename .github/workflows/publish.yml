@@ -8,17 +8,19 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
-      version:
-        description: Version
-        type: string
       nightly:
-        description: Publish a nightly of the default branch instead (the version is ignored)
+        description: Publish a nightly of the default branch
         type: boolean
         default: false
       dry_run:
         description: "Dry run (build and test npm, but skip publishing)"
         type: boolean
         default: true
+      beepboop_execution_id:
+        description: Beepboop execution (required for a stable release)
+        type: string
+      beepboop_title:
+        type: string
 permissions:
   id-token: write
   contents: read
@@ -37,16 +39,46 @@ jobs:
       ref: ${{ steps.plan.outputs.ref }}
       targets: ${{ steps.plan.outputs.targets }}
     steps:
+      - uses: kjanat/beepboop/actions/begin@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        id: beepboop
+        with:
+          execution-id: ${{ inputs.beepboop_execution_id }}
+          stream: main
+          operation: promote
+        if: inputs.beepboop_execution_id != ''
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { persist-credentials: false }
+        with:
+          ref: ${{ steps.beepboop.outputs.context && fromJSON(steps.beepboop.outputs.context).sourceSha || github.sha }}
+          persist-credentials: false
       - id: plan
         env:
           NIGHTLY: ${{ inputs.nightly || false }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.version }}
+          RELEASE_CONTEXT: ${{ steps.beepboop.outputs.context }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
           PRERELEASE: ${{ github.event.release.prerelease || false }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == schedule || "${NIGHTLY}" == true ]]; then
+          if [[ -n "${RELEASE_CONTEXT}" ]]; then
+            [[ "${NIGHTLY}" == false && "${DRY_RUN}" == false ]]
+            version="$(jq -er '.version' <<< "${RELEASE_CONTEXT}")"
+            sha="$(jq -er '.sourceSha' <<< "${RELEASE_CONTEXT}")"
+            jq -e --arg version "${version}" '.operation == "promote" and .draftRelease.tag == $version' <<< "${RELEASE_CONTEXT}"
+            [[ "$(git rev-parse HEAD)" == "${sha}" ]]
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}" --jq '.commit.verification.verified' | grep -qx true
+            npm_tag=latest
+            [[ "${version}" == *-* ]] && npm_tag=next
+            {
+              echo channel=managed
+              echo publish=true
+              echo "version=${version}"
+              echo "npm_tag=${npm_tag}"
+              echo docker_tags=
+              echo "ref=${sha}"
+              echo "targets=$(jq -c . .github/build-matrix.json)"
+            } >> "${GITHUB_OUTPUT}"
+          elif [[ "${GITHUB_EVENT_NAME}" == schedule || "${NIGHTLY}" == true ]]; then
             base="$(sed -nE '0,/^version *= *"([^"]*)"/s//\1/p' crates/kprint/Cargo.toml)"
             sha="$(git rev-parse HEAD)"
             # plain semver, without the fork's `-kjanat`, like the releases on
@@ -67,7 +99,7 @@ jobs:
             } >> "${GITHUB_OUTPUT}"
             echo "Nightly ${version} (last: ${last:-none}, publish: ${publish})"
           else
-            [[ -n "${RELEASE_TAG}" ]] || { echo 'No release version.' >&2; exit 1; }
+            [[ "${GITHUB_EVENT_NAME}" == release && -n "${RELEASE_TAG}" ]] || { echo 'Start stable releases through Beepboop; manual dispatch supports nightlies only.' >&2; exit 1; }
             # Older release tags include the fork suffix, unlike image tags.
             semver="${RELEASE_TAG%-kjanat}"
             docker_tags="${semver}"
@@ -75,7 +107,7 @@ jobs:
               docker_tags+=$'\n'"${semver%.*}"$'\nlatest'
             fi
             {
-              echo channel=release
+              echo channel=distribution
               echo publish=true
               echo "version=${RELEASE_TAG}"
               echo npm_tag=
@@ -113,12 +145,12 @@ jobs:
   publish-package-managers:
     name: Homebrew and Scoop
     needs: plan
-    if: needs.plan.outputs.channel == 'release' && !github.event.release.prerelease
+    if: needs.plan.outputs.channel == 'distribution' && !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: { contents: read }
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.version }}
+      TAG: ${{ needs.plan.outputs.version }}
       MANIFESTS: manifests
     steps:
       - name: Checkout
@@ -139,7 +171,7 @@ jobs:
   publish-aur:
     name: AUR ${{ matrix.package }}
     needs: plan
-    if: needs.plan.outputs.channel == 'release' && !github.event.release.prerelease
+    if: needs.plan.outputs.channel == 'distribution' && !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions: { contents: read }
@@ -148,7 +180,7 @@ jobs:
       fail-fast: false
       matrix: { package: [kprint-bin, kprint] }
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.version }}
+      TAG: ${{ needs.plan.outputs.version }}
       PKGBUILD: deployment/aur/${{ matrix.package }}/PKGBUILD
     steps:
       - name: Checkout
@@ -177,26 +209,32 @@ jobs:
           commit_message: Update to ${{ env.TAG }}
   build-npm:
     name: npm build
-    needs: [plan, nightly-build]
-    # the nightly build is skipped for a release
-    if: always() && !cancelled() && needs.plan.outputs.publish == 'true' && contains(fromJSON('["success", "skipped"]'), needs.nightly-build.result)
+    needs:
+      - plan
+      - nightly-build
+      - release-binaries
+    # Stable and nightly builds supply artifacts from this run.
+    if: always() && !cancelled() && needs.plan.outputs.publish == 'true' && ((needs.plan.outputs.channel == 'managed' && needs.release-binaries.result == 'success') || (needs.plan.outputs.channel == 'nightly' && needs.nightly-build.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.plan.outputs.version }}
-      ZIPS: ${{ needs.plan.outputs.channel == 'nightly' && 'zips' || '' }}
+      ZIPS: zips
+      EXACT_VERSION: ${{ needs.plan.outputs.channel == 'managed' && '1' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { ref: "${{ needs.plan.outputs.ref || github.sha }}", persist-credentials: false }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.plan.outputs.channel == 'nightly'
         with: { pattern: kprint-*, merge-multiple: true, path: zips }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - name: Install the build's dependencies
         run: deno install --entrypoint deployment/npm/build.ts
+      - name: Require every stable platform before packaging
+        if: needs.plan.outputs.channel == 'managed'
+        run: deno run --allow-read deployment/npm/release.ts assets zips
       - name: Build npm packages
-        run: deno run -A deployment/npm/build.ts "${VERSION}" ${ZIPS:+--zips "${ZIPS}"}
+        run: deno run -A deployment/npm/build.ts "${VERSION}" ${ZIPS:+--zips "${ZIPS}"} ${EXACT_VERSION:+--exact-version}
       - name: Tar the npm packages (keeps file modes)
         run: tar cf deployment/npm/dist.tar -C deployment/npm --exclude='node_modules' dist
       - name: Upload the npm packages
@@ -208,6 +246,7 @@ jobs:
   test-npm:
     name: "npm test (${{ matrix.runner }})"
     needs:
+      - plan
       - build-npm
     # a skipped nightly build skips this too without always()
     if: always() && !cancelled() && needs.build-npm.result == 'success'
@@ -220,6 +259,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -316,11 +358,22 @@ jobs:
     if: always() && !cancelled() && !(inputs.dry_run || false) && needs.test-npm.result == 'success'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write
     timeout-minutes: 15
     steps:
+      - uses: kjanat/beepboop/actions/begin@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        id: beepboop
+        with:
+          execution-id: ${{ inputs.beepboop_execution_id }}
+          stream: main
+          operation: promote
+        if: needs.plan.outputs.channel == 'managed'
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -340,13 +393,86 @@ jobs:
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           NPM_TAG: ${{ needs.plan.outputs.npm_tag }}
-        run: deno run -A deployment/npm/build.ts "${VERSION}" --publish-only ${NPM_TAG:+--tag "${NPM_TAG}"}
+          EXACT_VERSION: ${{ needs.plan.outputs.channel == 'managed' && '1' || '' }}
+        run: deno run -A deployment/npm/build.ts "${VERSION}" --publish-only --report "${RUNNER_TEMP}/npm-publications.json" ${EXACT_VERSION:+--exact-version} ${NPM_TAG:+--tag "${NPM_TAG}"}
+      - name: Read verified npm publications
+        id: publications
+        if: needs.plan.outputs.channel == 'managed'
+        run: printf 'json=%s\n' "$(jq -c . "${RUNNER_TEMP}/npm-publications.json")" >> "${GITHUB_OUTPUT}"
+      - uses: kjanat/beepboop/actions/report@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        if: needs.plan.outputs.channel == 'managed'
+        with:
+          execution-id: ${{ inputs.beepboop_execution_id }}
+          publications: ${{ steps.publications.outputs.json }}
   docker:
     name: Docker
     needs: [plan, nightly-build]
-    if: always() && !cancelled() && !(inputs.dry_run || false) && needs.plan.outputs.publish == 'true' && contains(fromJSON('["success", "skipped"]'), needs.nightly-build.result)
+    if: always() && !cancelled() && !(inputs.dry_run || false) && needs.plan.outputs.publish == 'true' && contains(fromJSON('["success", "skipped"]'), needs.nightly-build.result) && needs.plan.outputs.channel != 'managed'
     permissions: { contents: read, packages: write }
     uses: $/.github/workflows/docker.yml
     with:
       tags: ${{ needs.plan.outputs.docker_tags }}
-      release_tag: ${{ needs.plan.outputs.channel == 'release' && needs.plan.outputs.version || '' }}
+      release_tag: ${{ needs.plan.outputs.channel == 'distribution' && needs.plan.outputs.version || '' }}
+  release-binaries:
+    name: Release binaries
+    needs: plan
+    if: needs.plan.outputs.channel == 'managed'
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: $/.github/workflows/binaries.yml
+    with:
+      source_sha: ${{ needs.plan.outputs.ref }}
+      version: ${{ needs.plan.outputs.version }}
+  finalize-release:
+    name: Finalize GitHub release
+    needs:
+      - plan
+      - release-binaries
+      - publish-npm
+    if: always() && !cancelled() && needs.plan.outputs.channel == 'managed' && needs.release-binaries.result == 'success' && needs.publish-npm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: kjanat/beepboop/actions/begin@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        id: beepboop
+        with:
+          execution-id: ${{ inputs.beepboop_execution_id }}
+          stream: main
+          operation: promote
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+      - name: Verify draft assets before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.ref }}
+        run: |
+          gh release view "${RELEASE_TAG}" --json isDraft,targetCommitish,assets > "${RUNNER_TEMP}/release.json"
+          deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}"
+      - uses: kjanat/beepboop/actions/token@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        id: bot
+        with:
+          execution-id: ${{ inputs.beepboop_execution_id }}
+          permission-contents: write
+      - uses: kjanat/beepboop/actions/publish-refs@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        env:
+          ${{ insert }}: ${{ fromJSON(steps.bot.outputs.gitId) }}
+        with:
+          token: ${{ steps.bot.outputs.token }}
+      - uses: kjanat/beepboop/actions/publish-release@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        with:
+          execution-id: ${{ inputs.beepboop_execution_id }}
+run-name: ${{ inputs.beepboop_title || github.workflow }}
+concurrency:
+  group: ${{ format('package-publish-{0}', inputs.beepboop_execution_id || github.event.release.tag_name || 'nightly') }}
+  cancel-in-progress: false

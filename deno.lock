@@ -48,6 +48,7 @@
     "jsr:@std/text@^1.0.19": "1.1.0",
     "jsr:@std/toml@1.0.11": "1.0.11",
     "jsr:@std/toml@^1.0.3": "1.0.11",
+    "jsr:@std/yaml@1": "1.2.0",
     "jsr:@std/yaml@1.2.0": "1.2.0",
     "jsr:@std/yaml@^1.0.5": "1.2.0",
     "jsr:@zip-js/zip-js@2.7.53": "2.7.53",
@@ -1477,6 +1478,7 @@
         "dependencies": [
           "jsr:@david/dax@0.45.0",
           "jsr:@std/cli@1",
+          "jsr:@std/yaml@1",
           "npm:@types/decompress@4.2.7",
           "npm:decompress@4.2.1"
         ]

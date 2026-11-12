@@ -1,45 +1,43 @@
-name: Release
+name: Prepare release
+run-name: "${{ inputs.beepboop_title || github.workflow }}"
 on:
   workflow_dispatch:
     inputs:
-      releaseKind:
-        description: Kind of release
-        default: minor
-        type: choice
-        options:
-          - patch
-          - minor
+      beepboop_execution_id:
+        description: Beepboop preparation execution
+        type: string
         required: true
-permissions: {}
+      beepboop_title:
+        type: string
+        required: false
+permissions:
+  contents: read
+  id-token: write
 jobs:
-  rust:
-    name: release
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions: { contents: write }
+    timeout-minutes: 20
     steps:
-      - name: Clone repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { token: "${{ secrets.GH_DPRINTBOT_PAT }}" }
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
-      - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
-      - name: Bump version and tag
-        env:
-          GITHUB_TOKEN: "${{ secrets.GH_DPRINTBOT_PAT }}"
-          GH_WORKFLOW_ACTOR: "${{ github.actor }}"
-          RELEASE_KIND: "${{ github.event.inputs.releaseKind }}"
-          f: crates/kprint/Cargo.toml
-        run: git config user.email "${GITHUB_ACTOR}@users.noreply.github.com";
-          git config user.name "${GITHUB_ACTOR}";
-          v=$(yq .package.version "${f}");
-          IFS=.- read -r a b c _ <<<"${v}";
-          [[ "${RELEASE_KIND}" = minor ]] && b=$((b+1)) c=0 || c=$((c+1));
-          v="${a}.${b}.${c}";
-          sed -i -E "0,/^version( *)= *\"[^\"]*\"/s//version\1= \"${v}\"/" "${f}";
-          [[ "$(yq .package.version "${f}")" = "${v}" ]];
-          cargo update --workspace;
-          git add .;
-          git commit -m "${v}";
-          git push -u origin HEAD;
-          git tag "${v}";
-          git push origin "${v}"
+      - uses: kjanat/beepboop/actions/begin@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        id: beepboop
+        with:
+          execution-id: "${{ inputs.beepboop_execution_id }}"
+          stream: main
+          operation: prepare
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: "${{ fromJSON(steps.beepboop.outputs.context).sourceSha }}"
+          persist-credentials: false
+      - uses: kjanat/beepboop/actions/prepare@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        with:
+          context: "${{ steps.beepboop.outputs.context }}"
+          mode: apply
+      - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621
+      - name: Regenerate the workspace lockfile
+        run: cargo update --workspace
+      - name: Validate the prepared manifests and lockfile
+        run: "cargo metadata --locked --format-version 1 --no-deps | jq '{workspace_members, workspace_root}'"
+      - uses: kjanat/beepboop/actions/prepare@e879d3e0443f4fe2e9bca6af75b7ac2e1876cce7 # v1
+        with:
+          context: "${{ steps.beepboop.outputs.context }}"
+          mode: submit

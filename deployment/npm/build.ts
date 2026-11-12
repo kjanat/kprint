@@ -5,6 +5,7 @@ import { parseArgs } from "@std/cli/parse-args";
 import decompress from "decompress";
 import { fmtPackage, mainPackage, platformDir, platformPackage, scope } from "./names.ts";
 import targets from "./targets.json" with { type: "json" };
+import { packedPackage, type Publication, publishVerified, readPackage } from "./publish.ts";
 
 interface Package {
   zipFileName: string;
@@ -14,12 +15,12 @@ interface Package {
 }
 
 const args = parseArgs(Deno.args, {
-  boolean: ["publish", "publish-only"],
+  boolean: ["publish", "publish-only", "exact-version"],
   // `zips`: a directory with the release zips (ex. a CI run's artifacts) to
   // package instead of the release's. Targets without a zip there aren't
   // packaged. `tag`: the npm dist-tag to publish to (ex. `nightly`).
   // `out`: the directory to build in, instead of `dist`.
-  string: ["zips", "tag", "out"],
+  string: ["zips", "tag", "out", "report"],
 });
 const allPackages: Package[] = targets.targets.map((target) => {
   const { os, cpu, libc } = target;
@@ -89,7 +90,7 @@ const version = resolveVersion();
 // The npm version: the tag without the fork's `-kjanat`, which tells its
 // releases from dprint's but makes every one a prerelease to npm. A nightly or
 // preview version (ex. `0.60.6-nightly.20261031.g1234567`) is kept.
-const npmVersion = version.replace(/-kjanat$/, "");
+const npmVersion = args["exact-version"] ? version : version.replace(/-kjanat$/, "");
 
 const zipsDir = args.zips == null ? undefined : $.path(args.zips);
 // what was built, when only publishing it
@@ -301,29 +302,42 @@ Install ${mainPackage} for the other commands (\`kprint check\`, \`kprint init\`
   }
 }
 
-// publish if necessary
-const tagArgs = args.tag == null ? [] : ["--tag", args.tag];
+// Publish platform packages before the facade and its fmt wrapper. Retries verify
+// existing immutable versions against the tarball built by this run.
 if (args.publish || args["publish-only"]) {
-  for (const pkg of packages) {
-    const pkgName = getPackageNameNoScope(pkg);
-    $.logStep(`Publishing ${getPackageName(pkg)}...`);
-    if (await checkPackagePublished(getPackageName(pkg))) {
-      $.logLight("  Already published.");
-      continue;
+  const tarballs = await Deno.makeTempDir({ prefix: "kprint-npm-" });
+  const publications: Publication[] = [];
+  try {
+    const directories = packages.map((pkg) => {
+      const dir = scopeDir.join(platformDir(getPackageNameNoScope(pkg)));
+      return { dir, name: getPackageName(pkg), executable: pkg.os !== "win32" };
+    });
+    for (
+      const { dir, name, executable } of [
+        ...directories,
+        { dir: dprintDir, name: mainPackage, executable: false },
+        { dir: fmtDir, name: fmtPackage, executable: false },
+      ]
+    ) {
+      if (executable) await $`chmod +x ${dir.join("kprint")}`;
+      const packed = await $`npm pack ${dir} --ignore-scripts --json --pack-destination ${tarballs}`.json<unknown>();
+      const pkg = packedPackage(packed, name, npmVersion);
+      $.logStep(`Publishing ${pkg.name}@${pkg.version}...`);
+      publications.push(
+        await publishVerified(
+          pkg,
+          () => readPackage(pkg.name, pkg.version),
+          async () => {
+            const tagArgs = args.tag == null ? [] : ["--tag", args.tag];
+            await $`npm publish ${$.path(tarballs).join(pkg.filename)} --provenance --access public ${tagArgs}`;
+          },
+        ),
+      );
     }
-    const pkgDir = scopeDir.join(platformDir(pkgName));
-    // ensure the binary is executable in the tarball
-    if (pkg.os !== "win32") {
-      await $`chmod +x ${pkgDir.join("kprint")}`;
-    }
-    await $`cd ${pkgDir} && npm publish --provenance --access public ${tagArgs}`;
+    if (args.report) await Deno.writeTextFile(args.report, JSON.stringify(publications));
+  } finally {
+    await Deno.remove(tarballs, { recursive: true });
   }
-
-  $.logStep(`Publishing ${mainPackage}...`);
-  await $`cd ${dprintDir} && npm publish --provenance --access public ${tagArgs}`;
-
-  $.logStep(`Publishing ${fmtPackage}...`);
-  await $`cd ${fmtDir} && npm publish --provenance --access public ${tagArgs}`;
 }
 
 async function sha256Hex(filePath: string) {
@@ -369,9 +383,4 @@ function resolveVersion() {
     throw new Error("Could not resolve version.");
   }
   return version;
-}
-
-async function checkPackagePublished(pkgName: string) {
-  const result = await $`npm info ${pkgName}@${npmVersion}`.quiet().noThrow();
-  return result.code === 0;
 }
