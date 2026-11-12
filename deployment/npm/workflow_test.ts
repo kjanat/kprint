@@ -16,13 +16,16 @@ async function runPlan(env: Record<string, string>) {
     await Deno.mkdir(`${directory}/bin`);
     await Deno.mkdir(`${directory}/crates/kprint`, { recursive: true });
     await Deno.mkdir(`${directory}/.github`);
+    await Deno.mkdir(`${directory}/deployment/npm`, { recursive: true });
+    await Deno.copyFile(new URL("./nightly.ts", import.meta.url), `${directory}/deployment/npm/nightly.ts`);
     await Deno.writeTextFile(`${directory}/crates/kprint/Cargo.toml`, "version = \"1.2.3\"\n");
     await Deno.writeTextFile(`${directory}/.github/build-matrix.json`, JSON.stringify(matrix));
     for (
       const [name, script] of Object.entries({
         git: `printf '%s\\n' '${sha}'`,
         gh: "printf \"%s\\n\" \"${TEST_VERIFIED:-true}\"",
-        npm: "[[ \"$*\" == \"view @kjanat/fmt@nightly version\" ]] && printf \"%s\\n\" \"${TEST_LAST_NIGHTLY:-}\"",
+        npm: `if [[ -n "\${TEST_LOOKUP_ERROR:-}" ]]; then echo '{"error":{"code":"'"$TEST_LOOKUP_ERROR"'"}}'; exit 1; fi
+if [[ -n "\${TEST_LAST_NIGHTLY:-}" ]]; then printf '"%s"\\n' "$TEST_LAST_NIGHTLY"; else echo '{"error":{"code":"E404"}}'; exit 1; fi`,
       })
     ) {
       await Deno.writeTextFile(`${directory}/bin/${name}`, `#!/bin/bash\n${script}\n`);
@@ -113,7 +116,7 @@ const nightlyTarballs = [
   ["16-kprint-kprint-1.2.3.tgz", "@kprint/kprint"],
 ];
 
-async function runNightly(listed: (directory: string) => Promise<Record<string, string>>) {
+async function runNightly(listed: (directory: string) => Promise<Record<string, string>>, lookupError?: string, failSecond = false) {
   const step = stepOf("publish-npm", "Publish the nightly to npm").run;
   if (step === undefined) throw new Error("The nightly step runs no script");
   const directory = await Deno.makeTempDir({ prefix: "kprint-nightly-test-" });
@@ -123,6 +126,7 @@ async function runNightly(listed: (directory: string) => Promise<Record<string, 
     await Deno.mkdir(`${directory}/listed/@kprint`, { recursive: true });
     await Deno.mkdir(`${directory}/listed/@kjanat`);
     await Deno.mkdir(tarballs, { recursive: true });
+    await Deno.copyFile(new URL("./nightly.ts", import.meta.url), `${directory}/deployment/npm/nightly.ts`);
     for (const [file, name] of nightlyTarballs) {
       const source = `${directory}/source/${file}/package`;
       await Deno.mkdir(source, { recursive: true });
@@ -139,11 +143,14 @@ async function runNightly(listed: (directory: string) => Promise<Record<string, 
       `${directory}/bin/npm`,
       `#!/bin/bash
 if [[ "$1" == view ]]; then
-  [[ -f "${directory}/listed/$2" ]] || { echo "npm error code E404" >&2; exit 1; }
-  cat "${directory}/listed/$2"
+  ${lookupError ? `echo '{"error":{"code":"${lookupError}"}}'; exit 1` : ""}
+  ${failSecond ? `if [[ "$2" == "@kprint/kprint-win32-x64@1.2.3" && -f "${directory}/failed" ]]; then echo '{"error":{"code":"E503"}}'; exit 1; fi` : ""}
+  [[ -f "${directory}/listed/$2" ]] || { echo '{"error":{"code":"E404"}}'; exit 1; }
+  printf '"%s"\\n' "$(cat "${directory}/listed/$2")"
   exit 0
 fi
 printf '%s\\n' "$*" >> "${directory}/calls"
+${failSecond ? `if [[ "$2" == *01-* ]]; then touch "${directory}/failed"; echo "npm subprocess failed" >&2; exit 7; fi` : ""}
 `,
     );
     await Deno.chmod(`${directory}/bin/npm`, 0o755);
@@ -158,6 +165,7 @@ printf '%s\\n' "$*" >> "${directory}/calls"
     const calls = await Deno.readTextFile(`${directory}/calls`).catch(() => "");
     return {
       code: result.code,
+      receipts: JSON.parse(await Deno.readTextFile(`${directory}/deployment/npm/publication-receipts.json`).catch(() => "null")),
       stdout: new TextDecoder().decode(result.stdout),
       stderr: new TextDecoder().decode(result.stderr),
       calls: calls.trim().split("\n").filter(Boolean),
@@ -221,4 +229,40 @@ Deno.test("finalization reads the draft release with the Beepboop token", () => 
   const verify = steps.findIndex((step) => step.name === "Verify draft assets before publishing");
   deepStrictEqual(token >= 0 && token < verify, true);
   deepStrictEqual(steps[verify]?.env?.GH_TOKEN, "${{ steps.bot.outputs.token }}");
+});
+
+Deno.test("nightly planning stops on registry and authentication failures", async () => {
+  for (const error of ["E503", "E401", "E403"]) {
+    const result = await runPlan({ NIGHTLY: "true", TEST_LOOKUP_ERROR: error });
+    deepStrictEqual(result.code, 1);
+    deepStrictEqual(result.output, "");
+    match(result.error, /npm lookup failed/);
+  }
+});
+
+Deno.test("nightly publication never uploads after a failed registry lookup", async () => {
+  for (const error of ["E503", "E401", "E403"]) {
+    const result = await runNightly(() => Promise.resolve({}), error);
+    deepStrictEqual(result.code, 1);
+    deepStrictEqual(result.calls, []);
+    match(result.stderr, /npm lookup failed/);
+  }
+});
+
+Deno.test("a failed npm subprocess preserves earlier receipts and fails the job", async () => {
+  const result = await runNightly(() => Promise.resolve({}), undefined, true);
+  deepStrictEqual(result.code, 1);
+  deepStrictEqual(result.calls.length, 2);
+  deepStrictEqual(result.receipts.packages.length, 1);
+  deepStrictEqual(result.receipts.packages[0].spec, "@kprint/kprint-freebsd-x64@1.2.3");
+  deepStrictEqual(result.receipts.packages[0].outcome, "accepted");
+});
+
+Deno.test("tested tarballs and partial nightly receipts retain the documented recovery window", () => {
+  const artifact = JSON.stringify(stepOf("build-npm", "Upload the npm tarballs"));
+  match(artifact, /"retention-days":30/);
+  const receipts = JSON.stringify(stepOf("publish-npm", "Preserve nightly publication receipts"));
+  match(receipts, /always\(\)/);
+  match(receipts, /"retention-days":30/);
+  match(receipts, /github.run_attempt/);
 });

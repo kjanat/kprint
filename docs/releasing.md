@@ -15,7 +15,7 @@ The stable npm version is exactly the version selected in Beepboop. Use a plain 
 
 ## Retrying a failed release
 
-Beepboop re-runs the failed jobs of a run whose npm packages its ledger can retry, up to the fourth run attempt. Use Beepboop's retry operation for anything else. Failed jobs resume against the same source commit. An already published version is accepted only when its registry integrity matches the tarball from the build; a mismatch stops the release. GitHub stays a draft until asset verification succeeds. Finalization can be retried if GitHub accepted publication before the workflow received its result.
+Beepboop re-runs the failed jobs of a run whose npm packages its ledger can retry, up to the fourth run attempt. Use Beepboop's retry operation for anything else. Failed jobs resume against the same source commit. The original tested `npm-tarballs` artifact is retained for 30 days from its build; retry publication within that window. After expiration, stop automatic recovery and recover the original tarballs with their original digests before continuing. Rebuilding a version with partial uploads is not a substitute for those inputs. An already published version is accepted only when its registry integrity matches the tarball from the build; a mismatch stops the release. GitHub stays a draft until asset verification succeeds. Finalization can be retried if GitHub accepted publication before the workflow received its result.
 
 The workflow requires all declared targets. Removing a supported target requires updating the build matrix, npm target descriptor, and Beepboop package/publication lists together.
 
@@ -29,3 +29,7 @@ actionlint .github/workflows/release.yml .github/workflows/binaries.yml .github/
 ```
 
 These checks validate the tarball order, the nightly upload order, complete binary assets, and the stable/nightly/distribution planning routes without publishing anything. The release workflow additionally runs the three-platform npm installation tests before npm publication.
+
+Nightly registry lookups distinguish E404 from registry and authentication failures. A failed lookup stops publication. After an ambiguous upload failure, the nightly publisher checks registry visibility five times with 52 seconds of backoff and accepts the version only if its integrity matches the tested tarball. A successful upload records acceptance immediately and continues without waiting for npm scanning. If reconciliation still cannot prove matching integrity, the job fails and an operator can retry later within the artifact retention window.
+
+Nightly receipts are written after each accepted or verified package and uploaded even when a later package fails. The receipt artifact is retained for 30 days and names the workflow attempt. Accepted receipts establish upload completion; they do not establish installability. The release operator owns investigation of nightlies that never become available. Managed releases retain Beepboop's separate registry verification and completion tracking.

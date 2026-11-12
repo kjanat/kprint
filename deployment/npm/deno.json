@@ -7,7 +7,7 @@
     "decompress": "npm:decompress@4.2.1"
   },
   "tasks": {
-    "check": "deno check build.ts bin.ts install.ts pack.ts release.ts",
-    "test": "deno test --allow-read --allow-write --allow-env=PATH --allow-run=bash release_test.ts pack_test.ts workflow_test.ts"
+    "check": "deno check build.ts bin.ts install.ts pack.ts release.ts nightly.ts",
+    "test": "deno test --allow-read --allow-write --allow-env=PATH --allow-run=bash release_test.ts pack_test.ts workflow_test.ts nightly_test.ts"
   }
 }

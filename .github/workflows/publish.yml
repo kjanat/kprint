@@ -50,6 +50,10 @@ jobs:
         with:
           ref: ${{ steps.beepboop.outputs.context && fromJSON(steps.beepboop.outputs.context).sourceSha || github.sha }}
           persist-credentials: false
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
       - id: plan
         env:
           NIGHTLY: ${{ inputs.nightly || false }}
@@ -86,7 +90,7 @@ jobs:
             version="${base%-kjanat}-nightly.$(date -u +%Y%m%d).g${sha:0:7}"
             # @kjanat/fmt uploads last, so its nightly of this commit means
             # every package of it is on npm
-            last="$(npm view @kjanat/fmt@nightly version 2> /dev/null || true)"
+            last="$(node deployment/npm/nightly.ts view @kjanat/fmt@nightly version)"
             publish=true
             [[ "${last}" == *".g${sha:0:7}" ]] && publish=false
             {
@@ -241,7 +245,7 @@ jobs:
         with:
           name: npm-tarballs
           path: deployment/npm/tarballs
-          retention-days: 1
+          retention-days: 30
   test-npm:
     name: "npm test (${{ matrix.runner }})"
     needs:
@@ -391,17 +395,15 @@ jobs:
         if: needs.plan.outputs.channel == 'nightly'
         env:
           NPM_TAG: ${{ needs.plan.outputs.npm_tag }}
-        run: |
-          for tarball in deployment/npm/tarballs/*.tgz; do
-            spec="$(tar -xzOf "${tarball}" package/package.json | jq -r '"\(.name)@\(.version)"')"
-            listed="$(npm view "${spec}" dist.integrity || true)"
-            if [[ -n "${listed}" ]]; then
-              [[ "${listed}" == "sha512-$(openssl dgst -sha512 -binary "${tarball}" | base64 -w0)" ]] || { echo "npm has a different ${spec}" >&2; exit 1; }
-              echo "npm already has ${spec}"
-              continue
-            fi
-            npm publish "${tarball}" --provenance --access public --tag "${NPM_TAG}"
-          done
+        run: node deployment/npm/nightly.ts publish deployment/npm/tarballs "${NPM_TAG}"
+      - name: Preserve nightly publication receipts
+        if: always() && needs.plan.outputs.channel == 'nightly'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: nightly-publication-receipts-${{ github.run_attempt }}
+          path: deployment/npm/publication-receipts.json
+          if-no-files-found: ignore
+          retention-days: 30
   docker:
     name: Docker
     needs: [plan, nightly-build]
