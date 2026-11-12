@@ -1,4 +1,5 @@
 {
+  "$schema": "./targets.schema.json",
   "scope": "@kprint",
   "versionSource": "crates/kprint/Cargo.toml#package.version",
   "facades": [
