@@ -237,10 +237,10 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
             });
           }
           ConfigMessage::Format(message_id, body, token) => {
-            self.context.pending_format_tokens.take(message_id);
             if !token.is_cancelled() {
               self.format(message_id, body, token).await;
             }
+            self.context.pending_format_tokens.take(message_id);
           }
         }
       }
@@ -287,6 +287,7 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
     };
 
     let token_storage_guard = self.context.cancellation_tokens.store_with_owned_guard(message_id, token.clone());
+    self.context.pending_format_tokens.take(message_id);
     let context = self.context.clone();
     let concurrency_limiter = self.concurrency_limiter.clone();
     let scope = self.plugins_scope.clone().unwrap();
@@ -1260,6 +1261,93 @@ mod test {
 
           environment.remove_unresponsive_remote_file(plugin_url);
           assert_eq!(check_file_handle.await.unwrap().unwrap(), true);
+          assert_eq!(
+            communicator
+              .format_text(&txt_file_path, "testing".to_string().into_bytes(), None, Default::default(), Default::default())
+              .await
+              .unwrap()
+              .unwrap(),
+            b"testing_formatted"
+          );
+
+          communicator.exit().await.unwrap();
+        });
+      }
+    });
+
+    let pid = std::process::id().to_string();
+    run_test_cli(vec!["editor-service", "--parent-pid", &pid], &environment).unwrap();
+    assert!(environment.take_stderr_messages().is_empty());
+
+    result.join().unwrap();
+  }
+
+  #[test]
+  fn should_cancel_the_first_format_while_resolving_config_for_editor_service() {
+    let plugin_url = "https://plugins.dprint.dev/test-plugin.wasm";
+    let txt_file_path = PathBuf::from("/file.txt");
+    let environment = TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file(&txt_file_path, "")
+      .build();
+    // resolving the config doesn't finish until the plugin is downloaded
+    environment.set_max_threads(1);
+    environment.add_unresponsive_remote_file(plugin_url);
+    let stdin = environment.stdin_writer();
+    let stdout = environment.stdout_reader();
+
+    let result = std::thread::spawn({
+      let environment = environment.clone();
+      move || {
+        TestEnvironment::new().run_in_runtime(async move {
+          let communicator = EditorServiceCommunicator::new(stdin, stdout);
+          let first_token = CancellationToken::new();
+          let check_file_finished = Rc::new(std::cell::Cell::new(false));
+          let check_file_handle = kprint_async_runtime::spawn({
+            let communicator = communicator.clone();
+            let txt_file_path = txt_file_path.clone();
+            let first_token = first_token.clone();
+            let check_file_finished = check_file_finished.clone();
+            async move {
+              let result = communicator
+                .format_text(&txt_file_path, b"wait_cancellation".to_vec(), None, Default::default(), first_token)
+                .await;
+              check_file_finished.set(true);
+              result
+            }
+          });
+
+          // give some time for the message to be sent
+          tokio::time::sleep(Duration::from_millis(50)).await;
+
+          // responds while the config is being resolved
+          communicator.is_alive().await.unwrap();
+          assert!(!check_file_finished.get());
+
+          first_token.cancel();
+          assert_eq!(check_file_handle.await.unwrap().unwrap(), None);
+
+          // a format can be cancelled while it's waiting on the config
+          let token = CancellationToken::new();
+          let format_handle = kprint_async_runtime::spawn({
+            let communicator = communicator.clone();
+            let txt_file_path = txt_file_path.clone();
+            let token = token.clone();
+            async move {
+              communicator
+                .format_text(&txt_file_path, "wait_cancellation".to_string().into_bytes(), None, Default::default(), token)
+                .await
+            }
+          });
+          tokio::time::sleep(Duration::from_millis(50)).await;
+          token.cancel();
+          assert_eq!(format_handle.await.unwrap().unwrap(), None);
+          communicator.is_alive().await.unwrap();
+
+          environment.remove_unresponsive_remote_file(plugin_url);
           assert_eq!(
             communicator
               .format_text(&txt_file_path, "testing".to_string().into_bytes(), None, Default::default(), Default::default())

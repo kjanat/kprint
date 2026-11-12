@@ -10,9 +10,17 @@ use anyhow::Result;
 use rand::RngCore;
 
 pub trait LogOutput {
+  fn permits_sleep(&self) -> bool {
+    true
+  }
   fn log_output(&self, text: &str);
 }
 impl LogOutput for LogFn {
+  // Metadata runs in-process with instruction fuel. Host sleeps cannot be
+  // interrupted by fuel, so metadata has no blocking clock capability.
+  fn permits_sleep(&self) -> bool {
+    false
+  }
   fn log_output(&self, text: &str) {
     self(text);
   }
@@ -362,6 +370,9 @@ macro_rules! define_wasi {
           return ERRNO_FAULT;
         }
         if let Some(duration) = sleep_duration {
+          if !duration.is_zero() && !caller.data().permits_sleep() {
+            return ERRNO_NOSYS;
+          }
           std::thread::sleep(duration);
         }
 
@@ -463,6 +474,40 @@ mod tests {
   use super::native::*;
   use super::*;
   use wasmtime::Val;
+
+  #[test]
+  fn interpreted_metadata_cannot_block_in_wasi_poll() {
+    let engine = wasmi::Engine::default();
+    let wasm = wat::parse_str(
+      r#"(module
+      (import "wasi_snapshot_preview1" "poll_oneoff" (func $poll (param i32 i32 i32 i32) (result i32)))
+      (memory (export "memory") 1)
+      (func $wait (export "get_plugin_info") (result i32)
+        (i64.store (i32.const 24) (i64.const -1))
+        (call $poll (i32.const 0) (i32.const 128) (i32.const 1) (i32.const 256)))
+      (func $start (export "_initialize")
+        (if (i32.ne (call $wait) (i32.const 52)) (then unreachable)))
+      (start $start))"#,
+    )
+    .unwrap();
+    let module = wasmi::Module::new(&engine, &wasm).unwrap();
+    let log: LogFn = std::sync::Arc::new(|_| {});
+    let mut store = wasmi::Store::new(&engine, log);
+    let mut linker = wasmi::Linker::new(&engine);
+    interpreted::add_wasi_imports(&mut linker).unwrap();
+    let start = Instant::now();
+    let instance = linker.instantiate_and_start(&mut store, &module).unwrap();
+    instance.get_typed_func::<(), ()>(&store, "_initialize").unwrap().call(&mut store, ()).unwrap();
+    assert_eq!(
+      instance
+        .get_typed_func::<(), i32>(&store, "get_plugin_info")
+        .unwrap()
+        .call(&mut store, ())
+        .unwrap(),
+      ERRNO_NOSYS
+    );
+    assert!(start.elapsed() < Duration::from_secs(1));
+  }
 
   /// The functions that get imported and then exported by a wrapper function
   /// in the test module along with their parameters.

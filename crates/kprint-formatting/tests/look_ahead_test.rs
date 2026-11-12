@@ -93,3 +93,27 @@ fn print_options() -> PrintOptions {
     new_line_text: "\n",
   }
 }
+
+#[test]
+fn lookahead_probe_uses_the_conditions_newline_forcing_state() {
+  assert_eq!(
+    format(
+      |arena| {
+        let column = ColumnNumber::new("afterForceNoNewLines");
+        let mut items = PrintItems::new(arena);
+        items.push_signal(Signal::StartForceNoNewLines);
+        items.push_condition(conditions::if_true(
+          "forcedWithFutureColumn",
+          arena.alloc_resolver(move |context| Some(context.resolved_column_number(column)? > 0 && context.is_forcing_no_newlines())),
+          "x".into_print_items(arena),
+        ));
+        items.push_signal(Signal::FinishForceNoNewLines);
+        items.push_str_runtime_width_computed("a");
+        items.push_info(column);
+        items
+      },
+      print_options()
+    ),
+    "xa"
+  );
+}

@@ -567,8 +567,10 @@ impl<'a> Printer<'a> {
     };
     // what it looks ahead at that still isn't resolved goes back to it once it is
     self.resolving_save_point.replace(save_point);
+    let current_forcing_depth = std::mem::replace(&mut self.force_no_newlines_depth, save_point.force_no_newlines_depth);
     let mut context = ConditionResolverContext::new(self, save_point.writer_state.writer_info(self.writer.indent_width()));
     let value = condition.resolve(&mut context);
+    self.force_no_newlines_depth = current_forcing_depth;
     self.resolving_save_point.take();
     let is_same_path = value.unwrap_or(false) == printed_value.unwrap_or(false);
     let is_same = if condition.is_stored {

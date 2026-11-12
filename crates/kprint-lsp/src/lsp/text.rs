@@ -311,10 +311,39 @@ impl RangeFormat {
 /// Gets the edits that change the text to the formatted text, which are only
 /// the ones within the range when there is one.
 pub fn get_range_utf16_edits(text: &str, formatted_text: &str, range: &FormatRange) -> Vec<Utf16TextEdit> {
-  let edits = get_utf16_edits(text, formatted_text);
+  let mut edits = get_utf16_edits(text, formatted_text);
   let Some(range) = range else {
     return edits;
   };
+  if edits.len() == 1 && edits[0].start == 0 && edits[0].end == text.encode_utf16().count() as u32 {
+    // The character diff may fall back to a document replacement. Recover
+    // independent changed lines, then trim unchanged characters in each hunk.
+    let diff = TextDiff::configure()
+      .deadline(Instant::now() + Duration::from_millis(500))
+      .diff_lines(text, formatted_text);
+    edits.clear();
+    let mut old_offset = 0;
+    let mut old = String::new();
+    let mut new = String::new();
+    for change in diff.iter_all_changes() {
+      match change.tag() {
+        ChangeTag::Equal => {
+          if !old.is_empty() || !new.is_empty() {
+            edits.push(trimmed_replacement(&old, &new, old_offset));
+            old_offset += old.encode_utf16().count() as u32;
+            old.clear();
+            new.clear();
+          }
+          old_offset += change.value().encode_utf16().count() as u32;
+        }
+        ChangeTag::Delete => old.push_str(change.value()),
+        ChangeTag::Insert => new.push_str(change.value()),
+      }
+    }
+    if !old.is_empty() || !new.is_empty() {
+      edits.push(trimmed_replacement(&old, &new, old_offset));
+    }
+  }
   let start = text[..range.start].encode_utf16().count() as u32;
   let end = start + text[range.clone()].encode_utf16().count() as u32;
   // an insertion after the range's last line break is on the next line
@@ -323,6 +352,22 @@ pub fn get_range_utf16_edits(text: &str, formatted_text: &str, range: &FormatRan
     .into_iter()
     .filter(|edit| edit.start >= start && edit.end <= end && !(ends_with_line_break && edit.start == end))
     .collect()
+}
+
+fn trimmed_replacement(old: &str, new: &str, offset: u32) -> Utf16TextEdit {
+  let prefix: usize = old.chars().zip(new.chars()).take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum();
+  let suffix: usize = old[prefix..]
+    .chars()
+    .rev()
+    .zip(new[prefix..].chars().rev())
+    .take_while(|(a, b)| a == b)
+    .map(|(c, _)| c.len_utf8())
+    .sum();
+  Utf16TextEdit {
+    start: offset + old[..prefix].encode_utf16().count() as u32,
+    end: offset + old[..old.len() - suffix].encode_utf16().count() as u32,
+    new_text: new[prefix..new.len() - suffix].to_string(),
+  }
 }
 
 /// Converts the edits of UTF-16 offsets to the edits of positions, which are
@@ -690,6 +735,26 @@ const C: char = \"メ メ\";
         },
       ]
     )
+  }
+
+  #[test]
+  fn range_keeps_expanded_minified_text_when_character_diff_falls_back() {
+    let before = "// before 😀\n// boundary\n";
+    let statement = "[1,2,3]";
+    let after = "\n// after\n";
+    let text = format!("{before}{statement}{after}");
+    let expanded = format!("[\n{}]", "  1,\n".repeat(20));
+    for outside_change in [false, true] {
+      let formatted = format!("{}{expanded}{after}", if outside_change { "// changed 😀\n// boundary\n" } else { before });
+      let edits = get_range_utf16_edits(&text, &formatted, &Some(before.len()..before.len() + statement.len() + 1));
+      assert!(!edits.is_empty());
+      let units: Vec<u16> = text.encode_utf16().collect();
+      let mut actual = units.clone();
+      for edit in edits.iter().rev() {
+        actual.splice(edit.start as usize..edit.end as usize, edit.new_text.encode_utf16());
+      }
+      assert_eq!(String::from_utf16(&actual).unwrap(), format!("{before}{expanded}{after}"));
+    }
   }
 
   #[test]
