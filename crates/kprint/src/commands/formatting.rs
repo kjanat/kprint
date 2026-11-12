@@ -7061,6 +7061,64 @@ text_formatted"
   }
 
   #[test]
+  fn should_inherit_ancestor_config_in_main_config() {
+    let file_path1 = "/file.txt";
+    let file_path2 = "/sub_dir/file.txt";
+    let file_path3 = "/sub_dir/nested/file.txt";
+    let file_path4 = "/sub_dir/other/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin().add_config_section("test-plugin", r#"{ "ending": "root" }"#);
+      })
+      .with_local_config("/sub_dir/dprint.json", |config| {
+        config.set_inherit(true).add_config_section("test-plugin", r#"{ "ending": "sub" }"#);
+      })
+      .with_local_config("/sub_dir/nested/dprint.json", |config| {
+        config.set_inherit(true);
+      })
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text")
+      .write_file(file_path3, "text")
+      .write_file(file_path4, "text")
+      .build();
+
+    // the config file in the cwd inherits the merged ancestor config (sub_dir, then root)
+    environment.set_cwd("/sub_dir/nested");
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text_sub");
+
+    // same when it's found in an ancestor directory of the cwd
+    environment.set_cwd("/sub_dir/other");
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path4).unwrap(), "text_sub");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text");
+  }
+
+  #[test]
+  fn should_inherit_ancestor_excludes_in_main_config() {
+    let file_path1 = "/sub_dir/file.txt";
+    let file_path2 = "/sub_dir/skip/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin().add_excludes("**/skip");
+      })
+      .with_local_config("/sub_dir/dprint.json", |config| {
+        config.set_inherit(true);
+      })
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text")
+      .set_cwd("/sub_dir")
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text");
+  }
+
+  #[test]
   fn should_format_line_ranges_for_stdin_fmt() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin().build();
     let run = |args: Vec<&str>, text: &str| {

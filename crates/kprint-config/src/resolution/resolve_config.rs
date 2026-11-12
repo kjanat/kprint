@@ -177,7 +177,7 @@ pub async fn resolve_config_from_args(args: &dyn ConfigOptions, environment: &im
           return Err(ResolveConfigError::Other(anyhow::anyhow!("Confirmation cancelled.")));
         }
       }
-      resolve_config_from_path_with_bytes(&resolved_config_path, environment).await?
+      resolve_config_with_ancestors_from_path_with_bytes(&resolved_config_path, environment).await?
     }
     None => {
       if !args.plugins().is_empty() {
