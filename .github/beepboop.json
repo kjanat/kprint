@@ -1,0 +1,174 @@
+{
+  "$schema": "https://beepboop.kjanat.dev/schema/v1.json",
+  "streams": {
+    "main": {
+      "packages": [
+        "pkg:npm/%40kprint/kprint",
+        "pkg:npm/%40kjanat/fmt",
+        "pkg:npm/%40kprint/kprint-freebsd-x64",
+        "pkg:npm/%40kprint/kprint-win32-x64",
+        "pkg:npm/%40kprint/kprint-win32-arm64",
+        "pkg:npm/%40kprint/kprint-darwin-x64",
+        "pkg:npm/%40kprint/kprint-darwin-arm64",
+        "pkg:npm/%40kprint/kprint-linux-x64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-x64-musl",
+        "pkg:npm/%40kprint/kprint-linux-arm64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-arm64-musl",
+        "pkg:npm/%40kprint/kprint-linux-riscv64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-musl",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-musl",
+        "pkg:npm/%40kprint/kprint-android-arm64",
+        "pkg:npm/%40kprint/kprint-android-x64"
+      ],
+      "versionScope": "one-for-stream",
+      "mustPublish": [
+        "pkg:github/kjanat/kprint",
+        "pkg:npm/%40kprint/kprint",
+        "pkg:npm/%40kjanat/fmt",
+        "pkg:npm/%40kprint/kprint-freebsd-x64",
+        "pkg:npm/%40kprint/kprint-win32-x64",
+        "pkg:npm/%40kprint/kprint-win32-arm64",
+        "pkg:npm/%40kprint/kprint-darwin-x64",
+        "pkg:npm/%40kprint/kprint-darwin-arm64",
+        "pkg:npm/%40kprint/kprint-linux-x64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-x64-musl",
+        "pkg:npm/%40kprint/kprint-linux-arm64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-arm64-musl",
+        "pkg:npm/%40kprint/kprint-linux-riscv64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-loong64-musl",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-glibc",
+        "pkg:npm/%40kprint/kprint-linux-ppc64-musl",
+        "pkg:npm/%40kprint/kprint-android-arm64",
+        "pkg:npm/%40kprint/kprint-android-x64"
+      ],
+      "versionSource": {
+        "kind": "tags",
+        "prefix": ""
+      },
+      "workflows": {
+        "binaries": {
+          "file": "binaries.yml",
+          "mode": "observe",
+          "ref": "refs/tags/*",
+          "publications": [
+            "pkg:github/kjanat/kprint"
+          ]
+        },
+        "publish": {
+          "file": "publish.yml",
+          "mode": "observe",
+          "ref": "refs/tags/*",
+          "publications": [
+            "pkg:npm/%40kprint/kprint",
+            "pkg:npm/%40kjanat/fmt",
+            "pkg:npm/%40kprint/kprint-freebsd-x64",
+            "pkg:npm/%40kprint/kprint-win32-x64",
+            "pkg:npm/%40kprint/kprint-win32-arm64",
+            "pkg:npm/%40kprint/kprint-darwin-x64",
+            "pkg:npm/%40kprint/kprint-darwin-arm64",
+            "pkg:npm/%40kprint/kprint-linux-x64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-x64-musl",
+            "pkg:npm/%40kprint/kprint-linux-arm64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-arm64-musl",
+            "pkg:npm/%40kprint/kprint-linux-riscv64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-loong64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-loong64-musl",
+            "pkg:npm/%40kprint/kprint-linux-ppc64-glibc",
+            "pkg:npm/%40kprint/kprint-linux-ppc64-musl",
+            "pkg:npm/%40kprint/kprint-android-arm64",
+            "pkg:npm/%40kprint/kprint-android-x64"
+          ]
+        },
+        "preview": {
+          "file": "preview.yml",
+          "mode": "observe",
+          "ref": "refs/heads/*",
+          "publications": []
+        }
+      }
+    },
+    "crates": {
+      "packages": [
+        "pkg:cargo/kprint-async-runtime",
+        "pkg:cargo/kprint-configuration",
+        "pkg:cargo/kprint-core-macros",
+        "pkg:cargo/kprint-development",
+        "pkg:cargo/kprint-formatting",
+        "pkg:cargo/kprint-git",
+        "pkg:cargo/kprint-owned-child",
+        "pkg:cargo/kprint-communication",
+        "pkg:cargo/kprint-plugin-types",
+        "pkg:cargo/kprint-host-api",
+        "pkg:cargo/kprint-process-plugin",
+        "pkg:cargo/kprint-wasm-plugin",
+        "pkg:cargo/kprint-core",
+        "pkg:cargo/kprint-platform",
+        "pkg:cargo/test-process-plugin",
+        "pkg:cargo/kprint-discovery",
+        "pkg:cargo/kprint-plugin-host",
+        "pkg:cargo/kprint-host",
+        "pkg:cargo/kprint-lsp",
+        "pkg:cargo/kprint"
+      ],
+      "versionScope": "per-package",
+      "mustPublish": [
+        "pkg:cargo/kprint-async-runtime",
+        "pkg:cargo/kprint-configuration",
+        "pkg:cargo/kprint-core-macros",
+        "pkg:cargo/kprint-development",
+        "pkg:cargo/kprint-formatting",
+        "pkg:cargo/kprint-git",
+        "pkg:cargo/kprint-owned-child",
+        "pkg:cargo/kprint-communication",
+        "pkg:cargo/kprint-plugin-types",
+        "pkg:cargo/kprint-host-api",
+        "pkg:cargo/kprint-process-plugin",
+        "pkg:cargo/kprint-wasm-plugin",
+        "pkg:cargo/kprint-core",
+        "pkg:cargo/kprint-platform",
+        "pkg:cargo/test-process-plugin",
+        "pkg:cargo/kprint-discovery",
+        "pkg:cargo/kprint-plugin-host",
+        "pkg:cargo/kprint-host",
+        "pkg:cargo/kprint-lsp",
+        "pkg:cargo/kprint"
+      ],
+      "workflows": {
+        "publish-crates": {
+          "file": "publish-crates.yml",
+          "mode": "observe",
+          "publications": [
+            "pkg:cargo/kprint-async-runtime",
+            "pkg:cargo/kprint-configuration",
+            "pkg:cargo/kprint-core-macros",
+            "pkg:cargo/kprint-development",
+            "pkg:cargo/kprint-formatting",
+            "pkg:cargo/kprint-git",
+            "pkg:cargo/kprint-owned-child",
+            "pkg:cargo/kprint-communication",
+            "pkg:cargo/kprint-plugin-types",
+            "pkg:cargo/kprint-host-api",
+            "pkg:cargo/kprint-process-plugin",
+            "pkg:cargo/kprint-wasm-plugin",
+            "pkg:cargo/kprint-core",
+            "pkg:cargo/kprint-platform",
+            "pkg:cargo/test-process-plugin",
+            "pkg:cargo/kprint-discovery",
+            "pkg:cargo/kprint-plugin-host",
+            "pkg:cargo/kprint-host",
+            "pkg:cargo/kprint-lsp",
+            "pkg:cargo/kprint"
+          ]
+        }
+      }
+    }
+  },
+  "managers": [
+    "cargo",
+    "npm",
+    "workflow"
+  ]
+}
