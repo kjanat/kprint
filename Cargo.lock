@@ -1888,6 +1888,7 @@ dependencies = [
  "serde_json",
  "sys_traits",
  "tar",
+ "tempfile",
  "tokio",
  "tree-fucker",
  "url",
