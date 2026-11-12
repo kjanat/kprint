@@ -440,19 +440,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
-      - name: Verify draft assets before publishing
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.plan.outputs.version }}
-          SOURCE_SHA: ${{ needs.plan.outputs.ref }}
-        run: |
-          gh release view "${RELEASE_TAG}" --json isDraft,targetCommitish,assets > "${RUNNER_TEMP}/release.json"
-          deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}"
       - uses: kjanat/beepboop/actions/token@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         id: bot
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
           permission-contents: write
+      - name: Verify draft assets before publishing
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.ref }}
+        run: |
+          gh release view "${RELEASE_TAG}" --json isDraft,targetCommitish,assets > "${RUNNER_TEMP}/release.json"
+          deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}"
       - uses: kjanat/beepboop/actions/publish-refs@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
         env:
           ${{ insert }}: ${{ fromJSON(steps.bot.outputs.gitId) }}

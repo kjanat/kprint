@@ -3,7 +3,7 @@ import { parse } from "@std/yaml";
 import matrix from "../../.github/build-matrix.json" with { type: "json" };
 
 interface Workflow {
-  jobs: Record<string, { needs?: string[]; steps: { id?: string; name?: string; run?: string }[] }>;
+  jobs: Record<string, { needs?: string[]; steps: { id?: string; name?: string; run?: string; env?: Record<string, string> }[] }>;
 }
 const workflow = parse(await Deno.readTextFile(new URL("../../.github/workflows/publish.yml", import.meta.url))) as Workflow;
 const plan = workflow.jobs.plan.steps.find((step) => step.id === "plan")!.run!;
@@ -149,4 +149,12 @@ Deno.test("a release publishes its npm tarballs through Beepboop's ledger", () =
 
 Deno.test("the GitHub release waits only for the binaries", () => {
   deepStrictEqual(workflow.jobs["finalize-release"]?.needs, ["plan", "release-binaries"]);
+});
+
+Deno.test("finalization reads the draft release with the Beepboop token", () => {
+  const steps = workflow.jobs["finalize-release"]?.steps ?? [];
+  const token = steps.findIndex((step) => step.id === "bot");
+  const verify = steps.findIndex((step) => step.name === "Verify draft assets before publishing");
+  deepStrictEqual(token >= 0 && token < verify, true);
+  deepStrictEqual(steps[verify]?.env?.GH_TOKEN, "${{ steps.bot.outputs.token }}");
 });
