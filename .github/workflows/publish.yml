@@ -39,7 +39,7 @@ jobs:
       ref: ${{ steps.plan.outputs.ref }}
       targets: ${{ steps.plan.outputs.targets }}
     steps:
-      - uses: kjanat/beepboop/actions/begin@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/begin@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         id: beepboop
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -358,7 +358,7 @@ jobs:
       id-token: write
     timeout-minutes: 15
     steps:
-      - uses: kjanat/beepboop/actions/begin@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/begin@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         id: beepboop
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -382,7 +382,7 @@ jobs:
           path: deployment/npm/tarballs
       - name: Publish to npm
         if: needs.plan.outputs.channel == 'managed'
-        uses: kjanat/beepboop/actions/publish@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+        uses: kjanat/beepboop/actions/publish@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
           npm-tarballs: deployment/npm/tarballs
@@ -428,7 +428,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: kjanat/beepboop/actions/begin@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/begin@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         id: beepboop
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -440,7 +440,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
-      - uses: kjanat/beepboop/actions/token@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/token@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         id: bot
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -453,12 +453,12 @@ jobs:
         run: |
           gh release view "${RELEASE_TAG}" --json isDraft,targetCommitish,assets > "${RUNNER_TEMP}/release.json"
           deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}"
-      - uses: kjanat/beepboop/actions/publish-refs@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/publish-refs@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         env:
           ${{ insert }}: ${{ fromJSON(steps.bot.outputs.gitId) }}
         with:
           token: ${{ steps.bot.outputs.token }}
-      - uses: kjanat/beepboop/actions/publish-release@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/publish-release@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
 run-name: ${{ inputs.beepboop_title || github.workflow }}

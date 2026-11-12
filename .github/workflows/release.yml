@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: kjanat/beepboop/actions/begin@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/begin@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         id: beepboop
         with:
           execution-id: "${{ inputs.beepboop_execution_id }}"
@@ -28,7 +28,7 @@ jobs:
         with:
           ref: "${{ fromJSON(steps.beepboop.outputs.context).sourceSha }}"
           persist-credentials: false
-      - uses: kjanat/beepboop/actions/prepare@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/prepare@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         with:
           context: "${{ steps.beepboop.outputs.context }}"
           mode: apply
@@ -37,7 +37,7 @@ jobs:
         run: cargo update --workspace
       - name: Validate the prepared manifests and lockfile
         run: "cargo metadata --locked --format-version 1 --no-deps | jq '{workspace_members, workspace_root}'"
-      - uses: kjanat/beepboop/actions/prepare@28908421da4b59ea08a54e8df0e875580680a806 # fix/publish-uploads-first
+      - uses: kjanat/beepboop/actions/prepare@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         with:
           context: "${{ steps.beepboop.outputs.context }}"
           mode: submit
