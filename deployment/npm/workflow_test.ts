@@ -22,7 +22,7 @@ async function runPlan(env: Record<string, string>) {
       const [name, script] of Object.entries({
         git: `printf '%s\\n' '${sha}'`,
         gh: "printf \"%s\\n\" \"${TEST_VERIFIED:-true}\"",
-        npm: "printf \"%s\\n\" \"${TEST_LAST_NIGHTLY:-}\"",
+        npm: "[[ \"$*\" == \"view @kjanat/fmt@nightly version\" ]] && printf \"%s\\n\" \"${TEST_LAST_NIGHTLY:-}\"",
       })
     ) {
       await Deno.writeTextFile(`${directory}/bin/${name}`, `#!/bin/bash\n${script}\n`);

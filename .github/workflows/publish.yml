@@ -84,8 +84,9 @@ jobs:
             # plain semver, without the fork's `-kjanat`, like the releases on
             # npm and ghcr.io
             version="${base%-kjanat}-nightly.$(date -u +%Y%m%d).g${sha:0:7}"
-            # the last nightly is of this commit, so there's nothing new
-            last="$(npm view @kprint/kprint@nightly version 2> /dev/null || true)"
+            # @kjanat/fmt uploads last, so its nightly of this commit means
+            # every package of it is on npm
+            last="$(npm view @kjanat/fmt@nightly version 2> /dev/null || true)"
             publish=true
             [[ "${last}" == *".g${sha:0:7}" ]] && publish=false
             {
