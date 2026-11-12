@@ -264,14 +264,7 @@ pub mod macros {
         let file_path = unsafe { FILE_PATH.get().take().expect("Expected the file path to be set.") };
         let file_bytes = take_from_shared_bytes();
 
-        let request = $crate::SyncFormatRequest::<$wasm_plugin_config> {
-          file_path: &file_path,
-          file_bytes,
-          config: &config,
-          config_id,
-          range,
-          token: &HostCancellationToken,
-        };
+        let request = $crate::SyncFormatRequest::<$wasm_plugin_config>::new(&file_path, file_bytes, config_id, &config, range, &HostCancellationToken);
         let formatted_text = unsafe { WASM_PLUGIN.get().format(request, format_with_host) };
         match formatted_text {
           Ok(None) => {

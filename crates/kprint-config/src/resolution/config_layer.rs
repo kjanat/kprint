@@ -31,6 +31,8 @@ use crate::utils::resolve_url_or_file_path_to_path_source;
 pub struct ConfigDocument<'a> {
   pub file: ResolvedFilePathWithTextRef<'a>,
   pub is_first_download: bool,
+  pub trusted: bool,
+  pub requires_checksum: bool,
   /// The configuration files that extend this one, nearest first, so the
   /// last is the configuration file being resolved.
   pub extended_by: &'a [PathSource],
@@ -53,6 +55,8 @@ pub struct LayerOrigin {
   /// Whether the file was downloaded for this run (ex. so a note about it is
   /// only shown once).
   pub is_first_download: bool,
+  pub trusted: bool,
+  pub requires_checksum: bool,
 }
 
 /// What a configuration file says about how the configuration is resolved,
@@ -73,14 +77,14 @@ pub struct ConfigReference {
   pub specifier: String,
   /// The file it refers to, resolved against the referring file.
   pub target: PathSource,
+  pub checksum: Option<String>,
 }
 
 impl LayerOrigin {
-  /// Whether the file is trusted the way a local file is: it's local, and so
-  /// is every file that extends it. A remote file could otherwise choose a
-  /// local one (ex. with `file://`) to say what it may not say itself.
+  /// Whether every reference from the local root is local or checksum-pinned.
+  /// An untrusted remote file cannot grant trust to files it extends.
   pub fn is_trusted(&self) -> bool {
-    self.source.is_local() && self.extended_by.iter().all(|source| source.is_local())
+    self.trusted
   }
 
   /// Adds where an error is: this configuration file, then the files that
@@ -101,6 +105,8 @@ impl ConfigDocument<'_> {
       source: self.file.source.clone(),
       extended_by: self.extended_by.to_vec(),
       is_first_download: self.is_first_download,
+      trusted: self.trusted,
+      requires_checksum: self.requires_checksum,
     };
     match self.read(environment) {
       Ok((directives, settings)) => Ok(ConfigLayer { origin, directives, settings }),
@@ -125,8 +131,12 @@ impl ConfigDocument<'_> {
       inherit: file.inherit.unwrap_or(false),
     };
     for specifier in templates.expand_all(file.extends.map(Vec::from).unwrap_or_default())? {
-      let target = resolve_url_or_file_path_to_path_source(&specifier, &base, environment)?;
-      directives.extends.push(ConfigReference { specifier, target });
+      let (path, checksum) = match specifier.rsplit_once('@') {
+        Some((path, hash)) if hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit()) => (path, Some(hash.to_ascii_lowercase())),
+        _ => (specifier.as_str(), None),
+      };
+      let target = resolve_url_or_file_path_to_path_source(path, &base, environment)?;
+      directives.extends.push(ConfigReference { specifier, target, checksum });
     }
 
     let mut settings = ConfigSettings::default();

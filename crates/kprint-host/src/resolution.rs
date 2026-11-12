@@ -634,6 +634,19 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     self.format_from(request, None)
   }
 
+  /// Whether every selected plugin supports ranges, with legacy plugins left unspecified.
+  pub fn supports_range_formatting(&self, file_path: &Path, bytes: &[u8]) -> Option<bool> {
+    let mut result = Some(true);
+    for name in self.plugin_name_maps.get_plugin_names_from_file_path_and_bytes(file_path, bytes) {
+      match self.plugins.get(name).and_then(|plugin| plugin.info().supports_range_formatting) {
+        Some(false) => return Some(false),
+        None => result = None,
+        Some(true) => {}
+      }
+    }
+    result
+  }
+
   /// The names of the plugins that format the code `plugin` embeds in the
   /// file at `outer_path`, when it asks the host to format it with `request`.
   pub fn embedded_format_plugin_names(&self, plugin: &Rc<PluginWithConfig>, outer_path: &Path, request: &HostFormatRequest) -> Vec<String> {
@@ -679,7 +692,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       let mut had_change = false;
       for plugin_name in plugin_names {
         let plugin = scope.get_plugin(&plugin_name);
-        let request_override_config = if from_sandbox && !plugin.plugin.is_sandboxed() {
+        let request_override_config = if from_sandbox && !plugin.plugin.is_sandboxed() && plugin.info().allow_plugin_override_config != Some(true) {
           global_config_only(&request.override_config)
         } else {
           request.override_config.clone()

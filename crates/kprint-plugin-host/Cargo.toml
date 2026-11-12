@@ -16,6 +16,7 @@ kprint-platform       = { workspace = true }
 kprint-plugin-types   = { workspace = true }
 kprint-process-plugin = { workspace = true }
 kprint-wasm-plugin    = { workspace = true }
+rand.workspace        = true
 
 anyhow       = { workspace = true }
 deno_semver  = { workspace = true }
@@ -41,6 +42,7 @@ kprint-test-support         = { workspace = true, features = ["plugins"] }
 pretty_assertions.workspace = true
 sys_traits                  = { workspace = true, features = ["memory"] }
 tempfile.workspace          = true
+wat                         = "1"
 
 # powerpc64/loongarch64 have no native Cranelift backend, and the Android sandbox
 # lacks the signal-based traps native code needs, so these compile to Pulley
@@ -49,17 +51,27 @@ tempfile.workspace          = true
 [target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies]
 [target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies."wasmtime"]
 workspace = true
-features  = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "pulley", "runtime", "std"]
+features  = ["addr2line", "anyhow", "cranelift", "demangle", "gc", "gc-drc", "parallel-compilation", "pulley", "runtime", "std"]
 
 # wasm plugin runtime (wasmtime). default features are disabled to keep the
 # binary small — we only need to compile and run modules synchronously;
-# component-model, async, winch, the wat parser, wasm GC, the on-disk cache and
+# component-model, async, winch, the wat parser, the on-disk cache and
 # the pooling allocator are all unused. `parallel-compilation` is kept: without
 # it Cranelift compiles a module's functions one at a time, which made the
 # uncached "Compiling <plugin>" step ~3.5x slower on a 4 core machine.
 # most targets: native Cranelift codegen.
 [target."cfg(not(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\")))".dependencies]
-wasmtime = { workspace = true, features = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "runtime", "std"] }
+wasmtime = { workspace = true, features = [
+  "addr2line",
+  "anyhow",
+  "cranelift",
+  "demangle",
+  "gc",
+  "gc-drc",
+  "parallel-compilation",
+  "runtime",
+  "std"
+] }
 
 [features]
 test-support = []

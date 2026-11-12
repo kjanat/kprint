@@ -39,6 +39,8 @@ impl api::SyncPluginHandler<Configuration> for Plugin {
       config_schema_paths: Vec::new(),
       config_local_schemas_use_root: false,
       config_reference_paths: Vec::new(),
+      supports_range_formatting: None,
+      allow_plugin_override_config: None,
       config_relative_path_bases: Default::default(),
     }
   }
@@ -56,6 +58,8 @@ impl api::SyncPluginHandler<Configuration> for Plugin {
     _request: api::SyncFormatRequest<Configuration>,
     _host: impl FnMut(api::SyncHostFormatRequest) -> api::FormatResult,
   ) -> api::FormatResult {
+    #[cfg(feature = "formatting")]
+    let _arena = _request.arena_pool.create_arena();
     Ok(None)
   }
 }

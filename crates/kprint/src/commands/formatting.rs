@@ -5517,6 +5517,7 @@ text_formatted"
   #[test]
   fn should_format_many_files() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin().build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
     for i in 0..100 {
       let file_path = format!("/file{}.txt", i);
       environment.write_file(&file_path, &format!("text{}", i)).unwrap();

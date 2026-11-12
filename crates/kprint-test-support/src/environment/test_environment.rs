@@ -155,6 +155,7 @@ pub struct TestEnvironment {
   stdout_messages: Arc<Mutex<Vec<String>>>,
   stderr_messages: Arc<Mutex<Vec<String>>>,
   remote_files: Arc<Mutex<HashMap<String, Result<Vec<u8>>>>>,
+  unresponsive_remote_files: Arc<Mutex<Vec<String>>>,
   remote_file_redirects: Arc<Mutex<HashMap<String, String>>>,
   /// How long each URL takes to respond, or `None` when it never does.
   remote_file_delays: Arc<Mutex<HashMap<String, Option<std::time::Duration>>>>,
@@ -215,6 +216,7 @@ impl TestEnvironment {
       stdout_messages: Default::default(),
       stderr_messages: Default::default(),
       remote_files: Default::default(),
+      unresponsive_remote_files: Default::default(),
       remote_file_redirects: Default::default(),
       remote_file_delays: Default::default(),
       remote_file_downloads: Default::default(),
@@ -314,6 +316,14 @@ impl TestEnvironment {
   }
 
   /// Makes the url respond with a 404 from now on.
+  pub fn add_unresponsive_remote_file(&self, url: &str) {
+    self.unresponsive_remote_files.lock().push(url.to_string());
+  }
+
+  pub fn remove_unresponsive_remote_file(&self, url: &str) {
+    self.unresponsive_remote_files.lock().retain(|u| u != url);
+  }
+
   pub fn remove_remote_file(&self, path: &str) {
     self.remote_files.lock().remove(path);
   }
@@ -636,6 +646,9 @@ impl SystemTimeNow for TestEnvironment {
 impl UrlDownloader for TestEnvironment {
   async fn download_file_no_redirects(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     *self.remote_file_downloads.lock().entry(url.to_string()).or_default() += 1;
+    while self.unresponsive_remote_files.lock().iter().any(|u| u == url.as_str()) {
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     let delay = self.remote_file_delays.lock().get(url.as_str()).copied();
     if let Some(delay) = delay {

@@ -212,13 +212,28 @@ impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
     }
     load_compiled_wasm_module_in_background(&self.environment, native_path, &self.wasm_module_creator)
       .await
-      .map(Some)
+      .map(|module| Some(module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info))))
   }
 
-  async fn load_interpreted(&self) -> Result<wasm::InterpretedModule> {
-    self
-      .load_from_cache(|environment, file_path| wasm::InterpretedModule::new(&environment.read_file_bytes(file_path)?))
-      .await
+  async fn load_interpreted(&self) -> Result<wasm::MetadataModule> {
+    let module = self
+      .load_from_cache(|environment, file_path| {
+        let bytes = environment.read_file_bytes(file_path)?;
+        match wasm::InterpretedModule::new(&bytes) {
+          Ok(module) => Ok(Ok(module)),
+          Err(err) => {
+            if wasm::WasmModuleCreator::default().validate_wasm_bytes(&bytes).is_err() {
+              return Err(err);
+            }
+            Ok(Err(bytes.len()))
+          }
+        }
+      })
+      .await?;
+    match module {
+      Ok(module) => Ok(module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info)).into()),
+      Err(len) => Ok(wasm::MetadataModule::Native(self.load_native().await?, len)),
+    }
   }
 
   /// Loads the native module compiled from the build's module, compiling it
@@ -227,7 +242,7 @@ impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
     let native_path = native_module_path(&self.file_path);
     if self.environment.path_exists(&native_path) {
       match load_compiled_wasm_module_in_background(&self.environment, native_path.clone(), &self.wasm_module_creator).await {
-        Ok(module) => return Ok(module),
+        Ok(module) => return Ok(module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info))),
         // ex. it was compiled for a CPU with different features, or by a
         // different wasm engine or rustc version, or the file is corrupt
         Err(err) => log_debug!(
@@ -256,6 +271,7 @@ impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
       move || wasm_module_creator.create_from_serialized(&compiled)
     })
     .await?
+    .map(|module| module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info)))
   }
 
   /// Loads from the build's module file with `load`.

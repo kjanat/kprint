@@ -313,6 +313,8 @@ mod test {
         config_schema_paths: Vec::new(),
         config_local_schemas_use_root: false,
         config_reference_paths: Vec::new(),
+        supports_range_formatting: None,
+        allow_plugin_override_config: None,
         config_relative_path_bases: Default::default(),
       },
       executable_sub_path: None,

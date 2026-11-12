@@ -62,7 +62,7 @@ pub type LogFn = Arc<dyn Fn(&str) + Send + Sync>;
 /// runs it (see `WasmHostState`).
 pub struct ImportObjectEnvironmentV4 {
   pub token: Arc<dyn CancellationToken>,
-  log: LogFn,
+  pub(super) log: LogFn,
   formatted_text_store: Vec<u8>,
   shared_bytes: Vec<u8>,
   error_text_store: String,
@@ -100,27 +100,19 @@ pub fn add_identity_imports(linker: &mut Linker) -> Result<()> {
 /// Returns the WASI error code, which is 0 on success.
 pub fn write_output(memory: &mut [u8], log: &LogFn, fd: u32, iovs_ptr: u32, iovs_len: u32, nwritten_ptr: u32) -> u32 {
   if !matches!(fd, 1 | 2) {
-    return 1; // unsupported fd
+    return 8;
   }
-  let mut total_written: u32 = 0;
-  for i in 0..iovs_len as usize {
-    let Some(iovec) = memory_range(memory, (iovs_ptr as usize).saturating_add(i.saturating_mul(8)), 8) else {
-      return 1;
-    };
-    let iovec = &memory[iovec];
-    let buf_addr = u32::from_le_bytes(iovec[0..4].try_into().unwrap());
-    let buf_len = u32::from_le_bytes(iovec[4..8].try_into().unwrap());
-    let Some(buf) = memory_range(memory, buf_addr as usize, buf_len as usize) else {
-      return 1;
-    };
-    log(&String::from_utf8_lossy(&memory[buf]));
-    total_written = total_written.saturating_add(buf_len);
-  }
-
-  let Some(nwritten) = memory_range(memory, nwritten_ptr as usize, 4) else {
-    return 1;
+  let (text, written) = match super::wasi::read_output(memory, iovs_ptr, iovs_len) {
+    Ok(output) => output,
+    Err(errno) => return errno as u32,
   };
-  memory[nwritten].copy_from_slice(&total_written.to_le_bytes());
+  let Some(nwritten) = memory_range(memory, nwritten_ptr as usize, 4) else {
+    return 21;
+  };
+  memory[nwritten].copy_from_slice(&written.to_le_bytes());
+  if !text.is_empty() {
+    log(&text);
+  }
   0
 }
 

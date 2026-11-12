@@ -39,7 +39,9 @@ use super::engine_choice::FormatRate;
 use super::instance::InitializedWasmPluginInstance;
 use super::instance::LogFn;
 use super::instance::create_host_state;
+#[cfg(test)]
 use super::interpreter::InterpretedModule;
+use super::interpreter::MetadataModule;
 use super::load_instance;
 use super::load_instance::WasmModule;
 use crate::environment::PluginEnvironment as Environment;
@@ -59,7 +61,7 @@ pub struct WasmPluginModules {
   /// Loads the module the interpreter runs, for the calls that come before
   /// formatting (its resolved configuration, the files it formats, ...) and
   /// to format when compiling doesn't pay off.
-  pub load_interpreted: LoadModule<InterpretedModule>,
+  pub load_interpreted: LoadModule<MetadataModule>,
   /// Loads the native module, compiling it first when needed.
   pub load_native: LoadModule<WasmModule>,
   /// Loads existing native code without compiling a missing or unusable cache.
@@ -143,7 +145,7 @@ impl<T: Clone> LazyModule<T> {
 }
 
 pub struct WasmPlugin<TEnvironment: Environment> {
-  interpreted: LazyModule<InterpretedModule>,
+  interpreted: LazyModule<MetadataModule>,
   formatting: Rc<Formatting<TEnvironment>>,
   wasm_module_path: PathBuf,
   resolution_cache: PluginResolutionCache,
@@ -295,6 +297,10 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
     // the calls before formatting need the interpreted module, so a plugin
     // whose module doesn't load fails here
     let interpreted = self.interpreted.get().await?;
+    if let Some(module) = interpreted.native_module() {
+      self.formatting.native.set(module.clone()).await;
+      self.formatting.invalid_native.set(false);
+    }
     let environment = self.environment.clone();
     let plugin_name = self.info().name.clone();
     let log: LogFn = {
@@ -316,16 +322,16 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
 /// Runs the calls that come before formatting in an interpreted instance of
 /// the plugin.
 struct Interpreter {
-  module: InterpretedModule,
+  module: MetadataModule,
   /// Gets what the plugin prints.
   log: LogFn,
   instance: parking_lot::Mutex<Option<Box<dyn InitializedWasmPluginInstance + Send>>>,
 }
 
 impl Interpreter {
-  fn new(module: InterpretedModule, log: LogFn) -> Self {
+  fn new(module: impl Into<MetadataModule>, log: LogFn) -> Self {
     Self {
-      module,
+      module: module.into(),
       log,
       instance: Default::default(),
     }

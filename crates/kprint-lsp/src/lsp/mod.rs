@@ -58,8 +58,10 @@ use self::config_completion::ConfigCompletions;
 use self::config_completion::is_config_uri;
 use self::documents::Documents;
 use self::text::LineIndex;
-use self::text::get_edits;
+use self::text::RangeFormat;
+use self::text::get_range_utf16_edits;
 use self::text::normalize_to_source_line_endings;
+use self::text::to_lsp_edits;
 use kprint_host::HostSession;
 
 mod client;
@@ -192,11 +194,17 @@ async fn handle_format_request<TEnvironment: Environment>(
     return Ok(None);
   }
 
+  let supports_range = scope.supports_range_formatting(&request.file_path, request.file_text.as_bytes());
+  if request.range.is_some() && supports_range == Some(false) {
+    log_debug!(environment, "A plugin does not support formatting a range: {}", request.file_path.display());
+    return Ok(None);
+  }
+  let range = RangeFormat::new(&request.file_text, request.range, supports_range == Some(true));
   let Some(result) = scope
     .format(HostFormatRequest {
       file_path: request.file_path,
       file_bytes: request.file_text.as_bytes().to_vec(),
-      range: request.range,
+      range: range.plugin_range,
       override_config: Default::default(),
       token: request.token,
     })
@@ -210,7 +218,10 @@ async fn handle_format_request<TEnvironment: Environment>(
     // imposing the plugin's configured newline kind (see #965)
     let new_text = normalize_to_source_line_endings(&request.file_text, new_text);
     let line_index = request.maybe_line_index.unwrap_or_else(|| LineIndex::new(&request.file_text));
-    Ok(Some(get_edits(&request.file_text, &new_text, &line_index)))
+    Ok(Some(to_lsp_edits(
+      get_range_utf16_edits(&request.file_text, &new_text, &range.edits_range),
+      &line_index,
+    )))
   })
   .await?
 }
@@ -839,20 +850,10 @@ mod test {
             .await;
           assert_eq!(
             result.unwrap().unwrap(),
-            vec![
-              TextEdit {
-                range: Range::new(Position::new(0, 1), Position::new(0, 1)),
-                new_text: "_formatted_proc".to_string()
-              },
-              TextEdit {
-                range: Range::new(Position::new(0, 3), Position::new(0, 3)),
-                new_text: "s_s".to_string()
-              },
-              TextEdit {
-                range: Range::new(Position::new(0, 7), Position::new(0, 7)),
-                new_text: "_formatted_process".to_string()
-              },
-            ]
+            vec![TextEdit {
+              range: Range::new(Position::new(0, 7), Position::new(0, 7)),
+              new_text: "_formatted_process".to_string()
+            }]
           );
 
           // cancellation via a drop

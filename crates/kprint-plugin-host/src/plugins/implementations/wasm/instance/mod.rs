@@ -24,6 +24,7 @@ use super::WasmInstance;
 
 mod v3;
 mod v4;
+pub(crate) mod wasi;
 
 pub type WasmHostFormatSender = tokio::sync::mpsc::UnboundedSender<(HostFormatRequest, std::sync::mpsc::Sender<FormatResult>)>;
 
@@ -370,6 +371,7 @@ pub fn create_identity_import_object(version: PluginSchemaVersion, engine: &Engi
     PluginSchemaVersion::V3 => v3::add_identity_imports(&mut linker)?,
     PluginSchemaVersion::V4 => v4::add_identity_imports(&mut linker)?,
   }
+  wasi::native::add_wasi_imports(&mut linker)?;
   Ok(linker)
 }
 
@@ -383,6 +385,7 @@ pub fn create_pools_import_object(
 ) -> Result<(Linker, WasmHostState)> {
   let mut linker = Linker::new(engine);
   add_native_host_functions(&mut linker, version)?;
+  wasi::native::add_wasi_imports(&mut linker)?;
   Ok((linker, create_host_state(version, log, host_format_sender)))
 }
 

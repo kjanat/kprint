@@ -64,6 +64,13 @@ Implementing a Wasm plugin is easier if you're using Rust as there are several h
          help_url: "".to_string(),          // fill this in
          config_schema_url: "".to_string(), // leave this empty for now
          update_url: None,                  // leave this empty for now
+         supports_range_formatting: None,   // Some(true) or Some(false) when known
+         allow_plugin_override_config: None,
+         config_files: None,
+         config_schema_paths: Vec::new(),
+         config_local_schemas_use_root: false,
+         config_reference_paths: Vec::new(),
+         config_relative_path_bases: Default::default(),
        }
      }
 
@@ -125,6 +132,29 @@ Implementing a Wasm plugin is easier if you're using Rust as there are several h
 To format code using a different plugin, call the `format_with_host(file_path, file_text)` function that is exposed via the `generate_plugin_code!()` macro.
 
 For example, this function is used by the markdown plugin to format code blocks.
+
+## WASI and formatting capabilities
+
+WASI preview 1 plugins must be built as reactors exporting `_initialize`.
+kprint calls the initializer before reading metadata or formatting. Plugins may
+use coarse clocks, random bytes, and bounded stdout/stderr logging. The sandbox
+provides empty arguments and environment variables, and no filesystem or network
+access. Unsupported WASI imports return an unsupported-operation error or trap.
+Modules using exception handling run with the native engine; other plugins can
+continue to use kprint's interpreter.
+
+Set `supportsRangeFormatting` in plugin metadata to `true` for range support or
+`false` to decline range requests. When absent, the LSP expands the selection to
+whole lines and keeps only edits within those lines for older plugins.
+
+Process plugins can set `allowPluginOverrideConfig` to `true` to accept non-global
+configuration overrides from sandboxed plugins. The default restricts those
+requests to global formatting options. Built-in exec retains that default.
+
+The formatter IR now uses explicit arenas. Pass the arena supplied to `format` to
+`PrintItems::new(arena)` and IR helpers, or create an arena from
+`request.arena_pool` with the SDK's `formatting` feature enabled. See the
+[formatting overview](overview.md) for the API and borrowing model.
 
 ## Schema Version 4 Overview
 

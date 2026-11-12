@@ -12,6 +12,7 @@ use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatResult;
 use kprint_process_plugin::ProcessPluginCommunicator;
 use kprint_process_plugin::ProcessPluginCommunicatorFormatRequest;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -31,6 +32,7 @@ struct InnerState {
 pub struct InitializedProcessPluginCommunicator<TEnvironment: Environment> {
   inner: AsyncMutex<InnerState>,
   restart_info: ProcessRestartInfo<TEnvironment>,
+  is_shutdown: Cell<bool>,
 }
 
 impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironment> {
@@ -47,6 +49,7 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
         communicator: Rc::new(communicator),
       }),
       restart_info,
+      is_shutdown: Cell::new(false),
     };
 
     Ok(initialized_communicator)
@@ -80,6 +83,7 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
   }
 
   pub async fn shutdown(&self) {
+    self.is_shutdown.set(true);
     self.get_inner().await.shutdown().await
   }
 
@@ -138,7 +142,7 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
       Err(err) => {
         // attempt to restart the communicator if this fails and it's no longer alive
         let mut inner = self.inner.lock().await;
-        if inner.communicator.is_process_alive().await {
+        if self.is_shutdown.get() || inner.communicator.is_process_alive().await {
           Err(err)
         } else {
           *inner = InnerState {
@@ -371,5 +375,62 @@ mod test {
         communicator.shutdown().await;
       }
     })
+  }
+  #[test]
+  fn should_not_restart_process_plugin_after_shutdown() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin().build();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let test_environment = environment.clone();
+    // run on another thread so a hang fails the test instead of blocking it forever
+    let handle = std::thread::spawn(move || {
+      test_environment.run_in_runtime({
+        let environment = test_environment.clone();
+        async move {
+          let communicator = Rc::new(InitializedProcessPluginCommunicator::new_test_plugin_communicator(environment.clone()).await);
+          let format_config = Arc::new(FormatConfig {
+            id: FormatConfigId::from_raw(1),
+            plugin: Default::default(),
+            global: Default::default(),
+            base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+          });
+
+          // start up a format that will never finish
+          let handle = kprint_async_runtime::spawn({
+            let communicator = communicator.clone();
+            async move {
+              communicator
+                .format_text(InitializedPluginFormatRequest {
+                  file_path: PathBuf::from("test.txt"),
+                  // special text that makes it wait for cancellation
+                  file_text: b"wait_cancellation".to_vec(),
+                  range: None,
+                  config: format_config,
+                  override_config: Default::default(),
+                  on_host_format: Rc::new(|_| future::ready(Ok(None)).boxed_local()),
+                  token: Arc::new(NullCancellationToken),
+                })
+                .await
+            }
+          });
+
+          // give it some time to start then shut down while it's in flight
+          tokio::time::sleep(Duration::from_millis(100)).await;
+          let inner_communicator = communicator.get_inner().await;
+          communicator.shutdown().await;
+
+          // the in-flight format should error without starting a new process
+          assert!(handle.await.unwrap().is_err());
+          assert!(Rc::ptr_eq(&inner_communicator, &communicator.get_inner().await));
+        }
+      });
+      tx.send(()).unwrap();
+    });
+    let completed = rx.recv_timeout(std::time::Duration::from_secs(10));
+    // a disconnect means the thread panicked, which joining it reports
+    assert!(
+      !matches!(completed, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+      "hung shutting down a process plugin with a format in flight"
+    );
+    handle.join().unwrap();
   }
 }

@@ -269,6 +269,8 @@ async fn resolve_config_file<TEnvironment: Environment>(
     file: config_path_and_text.as_file_path_with_text_ref(),
     is_first_download: config_path_and_text.is_first_download,
     extended_by: &[],
+    trusted: config_path_and_text.source.is_local(),
+    requires_checksum: false,
   }
   .parse(environment)?;
   let collected = collect_layers(root, environment).await?;
@@ -423,26 +425,30 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
   let mut collected_sources = HashSet::from([origin.source.clone()]);
   // where each reference that was read went, which differs for a redirect
   let mut read_targets = HashMap::<PathSource, PathSource>::new();
+  let mut checked_contexts = HashSet::new();
   let mut layers = vec![CollectedLayer { origin, settings }];
 
   while let Some(PendingReference { reference, referrer }) = pending.pop() {
     // a reference that was read before is to the file it went to then
     let target = read_targets.get(&reference.target).unwrap_or(&reference.target);
     ensure_not_cycle(&reference, target, &referrer)?;
-    if collected_sources.contains(target) {
-      continue;
+    if referrer.requires_checksum && reference.checksum.is_none() {
+      return Err(referrer.locate(anyhow::anyhow!(
+        "Expected a checksum for '{}' because it is extended by checksum-pinned configuration. Append @ followed by the file's SHA-256 checksum.",
+        reference.specifier
+      )));
     }
-    let file = match resolve_path_source_to_file_with_cache(reference.target.clone(), environment)
-      .await
-      .and_then(|file| file.into_text())
-    {
+    let file = match resolve_extended_file(&reference, environment).await {
       Ok(file) => file,
       Err(err) => return Err(referrer.locate(err)),
     };
     // the file may be somewhere else than the reference says (ex. a redirect)
     ensure_not_cycle(&reference, &file.source, &referrer)?;
-    read_targets.insert(reference.target, file.source.clone());
-    if !collected_sources.insert(file.source.clone()) {
+    read_targets.insert(reference.target.clone(), file.source.clone());
+    let is_new = collected_sources.insert(file.source.clone());
+    let trusted = referrer.is_trusted() && (reference.target.is_local() || reference.checksum.is_some());
+    let requires_checksum = referrer.requires_checksum || reference.checksum.is_some();
+    if !checked_contexts.insert((file.source.clone(), trusted, requires_checksum)) {
       continue;
     }
     let extended_by = std::iter::once(referrer.source.clone())
@@ -452,6 +458,8 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
       file: file.as_ref(),
       is_first_download: file.is_first_download,
       extended_by: &extended_by,
+      trusted,
+      requires_checksum,
     }
     .parse(environment)?;
     if directives.inherit {
@@ -460,10 +468,27 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
       )));
     }
     push_references(&mut pending, &origin, directives.extends);
-    layers.push(CollectedLayer { origin, settings });
+    if is_new {
+      layers.push(CollectedLayer { origin, settings });
+    }
   }
 
   Ok(CollectedLayers { inherit, layers })
+}
+
+async fn resolve_extended_file(reference: &ConfigReference, environment: &impl Environment) -> Result<crate::utils::ResolvedFilePathWithText> {
+  use crate::utils::RemoteCacheMode;
+  use crate::utils::resolve_path_source_to_file_with_cache_mode;
+  use crate::utils::verify_sha256_checksum;
+  let mut file = resolve_path_source_to_file_with_cache(reference.target.clone(), environment).await?;
+  if let Some(checksum) = &reference.checksum {
+    if verify_sha256_checksum(&file.content, checksum).is_err() && reference.target.is_remote() {
+      file = resolve_path_source_to_file_with_cache_mode(reference.target.clone(), environment, RemoteCacheMode::Reload).await?;
+    }
+    verify_sha256_checksum(&file.content, checksum)
+      .map_err(|err| anyhow::anyhow!("Invalid checksum for extended configuration '{}'.\n\n{:#}", reference.specifier, err))?;
+  }
+  file.into_text()
 }
 
 /// Removes what a remote configuration file isn't trusted to specify, since it
@@ -628,6 +653,81 @@ mod tests {
   use pretty_assertions::assert_eq;
 
   use super::*;
+
+  #[test]
+  fn checksum_pins_trust_remote_config_and_refresh_changed_cache() {
+    TestEnvironment::new().run_in_runtime(async {
+      let environment = TestEnvironment::new();
+      let url = "https://example.com/base.json";
+      let body = r#"{"excludes":["!**/*.txt"],"exec":{"commands":[{"command":"rustfmt","exts":["rs"]}]}}"#;
+      environment.add_remote_file_bytes(url, b"{}".to_vec());
+      resolve_path_source_to_file_with_cache(PathSource::new_remote(url::Url::parse(url).unwrap()), &environment)
+        .await
+        .unwrap();
+      environment.add_remote_file_bytes(url, body.as_bytes().to_vec());
+      let hash = crate::utils::get_sha256_checksum(body.as_bytes()).to_uppercase();
+      environment.write_file("/dprint.json", &format!(r#"{{"extends":"{url}@{hash}"}}"#)).unwrap();
+      let config = get_result("/dprint.json", &environment).await.unwrap();
+      assert_eq!(config.files.excludes, vec!["!**/*.txt".to_string()]);
+      let ConfigMapValue::PluginConfig(exec) = &config.plugins.config["exec"] else {
+        panic!()
+      };
+      assert!(exec.properties.contains_key("commands"));
+    });
+  }
+
+  #[test]
+  fn checksum_pins_reject_mismatch_even_for_duplicate_references() {
+    TestEnvironment::new().run_in_runtime(async {
+      let environment = TestEnvironment::new();
+      let body = "{}";
+      let good = crate::utils::get_sha256_checksum(body.as_bytes());
+      let bad = "0".repeat(64);
+      environment.add_remote_file_bytes("https://example.com/base.json", body.as_bytes().to_vec());
+      environment
+        .write_file(
+          "/dprint.json",
+          &format!(r#"{{"extends":["https://example.com/base.json@{good}","https://example.com/base.json@{bad}"]}}"#),
+        )
+        .unwrap();
+      let err = get_result("/dprint.json", &environment).await.unwrap_err();
+      assert!(err.to_string().contains("Invalid checksum"), "{err}");
+    });
+  }
+
+  #[test]
+  fn checksum_pins_require_pinned_descendants_including_local_files() {
+    TestEnvironment::new().run_in_runtime(async {
+      for child in ["https://example.com/child.json", "file:///child.json"] {
+        let environment = TestEnvironment::new();
+        let body = format!(r#"{{"extends":"{child}"}}"#);
+        let hash = crate::utils::get_sha256_checksum(body.as_bytes());
+        environment.add_remote_file_bytes("https://example.com/base.json", body.into_bytes());
+        environment
+          .write_file("/dprint.json", &format!(r#"{{"extends":"https://example.com/base.json@{hash}"}}"#))
+          .unwrap();
+        let err = get_result("/dprint.json", &environment).await.unwrap_err();
+        assert!(err.to_string().contains("Expected a checksum"), "{err}");
+      }
+    });
+  }
+
+  #[test]
+  fn untrusted_config_cannot_grant_trust_with_its_own_checksum() {
+    TestEnvironment::new().run_in_runtime(async {
+      let environment = TestEnvironment::new();
+      let body = r#"{"includes":["**/*.txt"]}"#;
+      let hash = crate::utils::get_sha256_checksum(body.as_bytes());
+      environment.add_remote_file_bytes("https://example.com/child.json", body.as_bytes().to_vec());
+      environment.add_remote_file_bytes("https://example.com/base.json", format!(r#"{{"extends":"child.json@{hash}"}}"#).into_bytes());
+      environment
+        .write_file("/dprint.json", r#"{"extends":"https://example.com/base.json"}"#)
+        .unwrap();
+      let config = get_result("/dprint.json", &environment).await.unwrap();
+      assert_eq!(config.files.includes, None);
+      assert_eq!(environment.take_stderr_messages().len(), 1);
+    });
+  }
 
   #[test]
   fn should_get_if_pattern_has_parent_dir_component() {

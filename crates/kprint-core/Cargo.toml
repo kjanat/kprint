@@ -29,7 +29,7 @@ kprint-core-macros = { path = "../kprint-core-macros", version = "0.1.0" }
 default       = ["formatting"]
 async_runtime = ["dep:kprint-async-runtime", "kprint-plugin-types?/async_runtime"]
 communication = ["async_runtime", "dep:kprint-communication"]
-formatting    = ["dep:kprint-formatting"]
+formatting    = ["dep:kprint-formatting", "kprint-wasm-plugin?/formatting"]
 process       = ["communication", "dep:kprint-owned-child", "dep:kprint-plugin-types", "dep:kprint-process-plugin"]
 tracing       = ["formatting", "kprint-formatting/tracing"]
 wasm          = ["dep:kprint-plugin-types", "dep:kprint-wasm-plugin"]
