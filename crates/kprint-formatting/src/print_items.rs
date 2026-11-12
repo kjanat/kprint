@@ -38,7 +38,16 @@ impl<'a> PrintItems<'a> {
 
   #[inline]
   fn push_item_internal(&mut self, item: PrintItem<'a>) {
-    let node = self.arena.alloc_print_node_cell(PrintNodeCell::new(item));
+    match &item {
+      PrintItem::RcPath(path) => assert_same_arena(self.arena, path.arena),
+      PrintItem::Condition(condition) => {
+        for path in [condition.true_path, condition.false_path].into_iter().flatten() {
+          assert_same_arena(self.arena, path.arena);
+        }
+      }
+      _ => {}
+    }
+    let node = self.arena.alloc_print_node_cell(PrintNodeCell::new(self.arena, item));
     if let Some(first_node) = &self.first_node {
       let new_last_node = node.get_last_next().unwrap_or(node);
       self.last_node.as_ref().unwrap_or(first_node).set_next(Some(node));
@@ -50,6 +59,7 @@ impl<'a> PrintItems<'a> {
   }
 
   pub fn extend(&mut self, items: PrintItems<'a>) {
+    assert_same_arena(self.arena, items.arena);
     if let Some(first_node) = items.first_node {
       if let Some(current_first_node) = &self.first_node {
         self.last_node.as_ref().unwrap_or(current_first_node).set_next(Some(first_node));
@@ -240,7 +250,8 @@ pub trait IntoPrintItems<'a> {
 }
 
 impl<'a> IntoPrintItems<'a> for PrintItems<'a> {
-  fn into_print_items(self, _arena: &'a Arena) -> PrintItems<'a> {
+  fn into_print_items(self, arena: &'a Arena) -> PrintItems<'a> {
+    assert_same_arena(self.arena, arena);
     self
   }
 }
@@ -490,12 +501,14 @@ impl<'a> PrintNode<'a> {
 
 /// A fast implementation of RefCell<PrintNode> that avoids runtime checks on borrows.
 pub struct PrintNodeCell<'a> {
+  arena: &'a Arena,
   value: UnsafeCell<PrintNode<'a>>,
 }
 
 impl<'a> PrintNodeCell<'a> {
-  pub(super) fn new(item: PrintItem<'a>) -> PrintNodeCell<'a> {
+  pub(super) fn new(arena: &'a Arena, item: PrintItem<'a>) -> PrintNodeCell<'a> {
     PrintNodeCell {
+      arena,
       value: UnsafeCell::new(PrintNode::new(item)),
     }
   }
@@ -1000,6 +1013,9 @@ impl<'a> Condition<'a> {
   }
 
   fn new_internal(_name: &'static str, properties: ConditionProperties<'a>) -> Self {
+    if let (Some(true_path), Some(false_path)) = (&properties.true_path, &properties.false_path) {
+      assert_same_arena(true_path.arena, false_path.arena);
+    }
     Self {
       id: thread_state::next_condition_id(),
       is_stored: false,
@@ -1278,4 +1294,8 @@ impl WriterInfo {
   pub fn line_and_column(&self) -> (u32, u32) {
     (self.line_number, self.column_number)
   }
+}
+
+fn assert_same_arena(left: &Arena, right: &Arena) {
+  assert!(std::ptr::eq(left, right), "Print items must belong to the same arena.");
 }

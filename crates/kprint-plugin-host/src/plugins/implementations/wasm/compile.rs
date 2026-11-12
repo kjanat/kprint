@@ -76,20 +76,49 @@ pub fn compile_with_steps(wasm_bytes: &[u8], optimize: bool, on_step: &mut dyn F
   };
 
   // load the plugin and get the info
-  on_step(WasmSetupStep::Instantiate);
-  fn plugin_info(module: &super::WasmModule) -> Result<kprint_plugin_types::PluginInfo> {
+  fn plugin_info(module: &super::WasmModule, on_step: &mut dyn FnMut(WasmSetupStep)) -> Result<kprint_plugin_types::PluginInfo> {
     let linker = create_identity_import_object(module.version(), module.engine())?;
     let mut store = module.new_store(WasmHostState::Empty);
+    on_step(WasmSetupStep::Instantiate);
     let instance = load_instance(&mut store, module, &linker)?;
-    create_wasm_plugin_instance(store, instance)?.plugin_info()
+    let mut instance = create_wasm_plugin_instance(store, instance)?;
+    on_step(WasmSetupStep::PluginInfo);
+    instance.plugin_info()
   }
-  on_step(WasmSetupStep::PluginInfo);
-  let plugin_info = match plugin_info(&module) {
+  let plugin_info = match plugin_info(&module, on_step) {
     Ok(info) => info,
-    Err(err) => match plugin_info(&module.clone().with_initializes_on_start(true)) {
+    Err(err) => match plugin_info(&module.clone().with_initializes_on_start(true), on_step) {
       Ok(info) if super::load_instance::plugin_initializes_on_start(&info) => info,
       _ => return Err(err),
     },
   };
   Ok(CompilationResult { bytes, plugin_info })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn reports_instantiation_before_plugin_info_on_retry() {
+    let wasm = wat::parse_str(
+      r#"(module
+      (memory (export "memory") 1)
+      (func (export "dprint_plugin_version_4"))
+      (func (export "_initialize") unreachable))"#,
+    )
+    .unwrap();
+    let mut steps = Vec::new();
+    assert!(compile_with_steps(&wasm, true, &mut |step| steps.push(step)).is_err());
+    assert_eq!(
+      steps,
+      vec![
+        WasmSetupStep::Compile,
+        WasmSetupStep::Serialize,
+        WasmSetupStep::Instantiate,
+        WasmSetupStep::Instantiate,
+        WasmSetupStep::PluginInfo
+      ]
+    );
+  }
 }

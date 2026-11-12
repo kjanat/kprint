@@ -395,6 +395,25 @@ mod test {
   use super::*;
 
   #[test]
+  fn native_metadata_exports_have_an_execution_deadline() {
+    let wasm = wat::parse_str(
+      r#"(module
+      (memory (export "memory") 1)
+      (func (export "dprint_plugin_version_4"))
+      (func (export "get_shared_bytes_ptr") (result i32) (i32.const 0))
+      (func (export "get_license_text") (result i32) (loop $again (br $again)) (i32.const 0)))"#,
+    )
+    .unwrap();
+    let module = super::super::load_instance::WasmModuleCreator::default().create_from_wasm_bytes(&wasm).unwrap();
+    let metadata = MetadataModule::Native(module, wasm.len());
+    let mut instance = metadata.instantiate(Arc::new(|_| {})).unwrap();
+    let start = std::time::Instant::now();
+    let error = instance.license_text().unwrap_err();
+    assert!(format!("{error:#}").contains("interrupt"), "{error:#}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+  }
+
+  #[test]
   fn wasi_reactor_initializes_metadata_and_formatting_instances() {
     let wasm = wat::parse_str(
       r#"(module

@@ -312,6 +312,9 @@ impl NativeExports {
 
   fn call_with_results(&mut self, name: &str, params: &[u32], results: &mut [wasmtime::Val]) -> Result<()> {
     let func = self.function(name)?;
+    if matches!(self.store.data(), WasmHostState::Empty) {
+      self.store.set_epoch_deadline(super::load_instance::METADATA_EPOCH_TICKS);
+    }
     let mut values = [wasmtime::Val::I32(0); MAX_EXPORT_PARAMS];
     for (value, param) in values.iter_mut().zip(params) {
       *value = wasmtime::Val::I32(*param as i32);

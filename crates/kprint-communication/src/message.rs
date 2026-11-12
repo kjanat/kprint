@@ -10,6 +10,7 @@ pub trait Message: std::fmt::Debug + Send + Sync + 'static {
 struct SingleThreadMessageWriterOptions<TWrite: Write + Unpin> {
   pub writer: MessageWriter<TWrite>,
   pub panic_on_write_fail: bool,
+  pub on_write_fail: Option<Box<dyn FnOnce() + Send>>,
 }
 
 /// Writes messages on a separate thread.
@@ -22,6 +23,7 @@ impl<TMessage: Message> SingleThreadMessageWriter<TMessage> {
     Self::new(SingleThreadMessageWriterOptions {
       writer,
       panic_on_write_fail: true,
+      on_write_fail: None,
     })
   }
 
@@ -29,6 +31,16 @@ impl<TMessage: Message> SingleThreadMessageWriter<TMessage> {
     Self::new(SingleThreadMessageWriterOptions {
       writer,
       panic_on_write_fail: false,
+      on_write_fail: None,
+    })
+  }
+
+  /// Reports failures from the actual writer thread, even if no more messages are sent.
+  pub fn with_failure_handler<TWrite: Write + Unpin + Send + 'static>(writer: MessageWriter<TWrite>, on_write_fail: impl FnOnce() + Send + 'static) -> Self {
+    Self::new(SingleThreadMessageWriterOptions {
+      writer,
+      panic_on_write_fail: false,
+      on_write_fail: Some(Box::new(on_write_fail)),
     })
   }
 
@@ -40,6 +52,9 @@ impl<TMessage: Message> SingleThreadMessageWriter<TMessage> {
       move || {
         while let Ok(result) = rx.recv() {
           if let Err(err) = result.write(&mut opts.writer) {
+            if let Some(on_write_fail) = opts.on_write_fail.take() {
+              on_write_fail();
+            }
             if opts.panic_on_write_fail {
               panic!("{:#}", err);
             } else {

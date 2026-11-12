@@ -23,7 +23,7 @@ These are referred to as "print items" in the code and are collected in a `Print
 Strings that the printer should print. For example `"async"`. There are a few ways to add them:
 
 - `items.push_sc(sc!("async"))` - Preferred for text known at compile time. The `sc!` macro from the [`kprint-core-macros`](https://crates.io/crates/kprint-core-macros) crate computes the width at compile time (ASCII only).
-- `items.push_str_runtime_width_computed("async")` - A `&'static str` whose width is computed at runtime.
+- `items.push_str_runtime_width_computed("async")` - A borrowed `&'a str` that lives at least as long as the arena, whose width is computed at runtime.
 - `items.push_str(text)` - A borrowed string that gets copied into the printer's allocator.
 - `items.push_string(text)` - An owned `String`.
 - `items.push_space()` - A single space.
@@ -138,7 +138,7 @@ The printer never checks the contents of the provided strings—it only looks at
 1. Never use a tab in a string. Instead, use `Signal::Tab` (see _Signals_ above). Tabs increase the column width based on the indent width and need to be treated differently.
 2. Never use a newline in a string. Instead use `Signal::NewLine`.
 
-Strings that include newlines or tabs should be broken up when generating the IR (ex. template literals in JavaScript may contain those characters). The `ir_helpers::gen_from_string(text)` and `ir_helpers::gen_from_raw_string(text)` (ignores indentation) helpers do this.
+Strings that include newlines or tabs should be broken up when generating the IR (ex. template literals in JavaScript may contain those characters). The `ir_helpers::gen_from_string(arena, text)` and `ir_helpers::gen_from_raw_string(arena, text)` (ignores indentation) helpers do this.
 
 The printer will enforce these rules in debug builds.
 

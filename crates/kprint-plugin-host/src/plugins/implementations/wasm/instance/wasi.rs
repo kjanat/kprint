@@ -13,6 +13,9 @@ pub trait LogOutput {
   fn permits_sleep(&self) -> bool {
     true
   }
+  fn is_cancelled(&self) -> bool {
+    false
+  }
   fn log_output(&self, text: &str);
 }
 impl LogOutput for LogFn {
@@ -26,6 +29,16 @@ impl LogOutput for LogFn {
   }
 }
 impl LogOutput for WasmHostState {
+  fn is_cancelled(&self) -> bool {
+    match self {
+      Self::Empty => false,
+      Self::V3(state) => state.token.is_cancelled(),
+      Self::V4(state) => state.token.is_cancelled(),
+    }
+  }
+  fn permits_sleep(&self) -> bool {
+    !matches!(self, Self::Empty)
+  }
   fn log_output(&self, text: &str) {
     if let Self::V4(state) = self {
       (state.log)(text);
@@ -39,6 +52,7 @@ const ERRNO_SUCCESS: i32 = 0;
 const ERRNO_BADF: i32 = 8;
 const ERRNO_FAULT: i32 = 21;
 const ERRNO_INVAL: i32 = 28;
+const ERRNO_INTR: i32 = 27;
 const ERRNO_NOSYS: i32 = 52;
 const ERRNO_SPIPE: i32 = 70;
 
@@ -373,7 +387,20 @@ macro_rules! define_wasi {
           if !duration.is_zero() && !caller.data().permits_sleep() {
             return ERRNO_NOSYS;
           }
-          std::thread::sleep(duration);
+          if duration > Duration::from_secs(1) {
+            return ERRNO_NOSYS;
+          }
+          let started = Instant::now();
+          loop {
+            if caller.data().is_cancelled() {
+              return ERRNO_INTR;
+            }
+            let remaining = duration.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+              break;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
+          }
         }
 
         let result = write_memory(&mut caller, events_ptr, &events);
@@ -610,6 +637,23 @@ mod tests {
     assert_eq!(module.call("poll_oneoff", &[i(65500), i(200), i(1), i(300)]), ERRNO_FAULT);
     assert_eq!(module.call("poll_oneoff", &[i(0), i(200), i(0), i(300)]), ERRNO_INVAL);
     assert_eq!(module.call("poll_oneoff", &[i(0), i(200), i(-1), i(300)]), ERRNO_INVAL);
+  }
+
+  #[test]
+  fn formatting_sleep_is_bounded_and_checks_cancellation() {
+    let mut module = TestModule::with_memory();
+    module.write_memory(0, &create_clock_subscription(1, CLOCK_MONOTONIC, u64::MAX, 0));
+    assert_eq!(module.call("poll_oneoff", &[i(0), i(200), i(1), i(300)]), ERRNO_NOSYS);
+    #[derive(Debug)]
+    struct Cancelled;
+    impl kprint_plugin_types::CancellationToken for Cancelled {
+      fn is_cancelled(&self) -> bool {
+        true
+      }
+    }
+    module.store.data_mut().set_token(std::sync::Arc::new(Cancelled));
+    module.write_memory(0, &create_clock_subscription(1, CLOCK_MONOTONIC, 500_000_000, 0));
+    assert_eq!(module.call("poll_oneoff", &[i(0), i(200), i(1), i(300)]), ERRNO_INTR);
   }
 
   #[test]
@@ -901,7 +945,12 @@ mod tests {
       wat.push(')');
       let wasm = wat::parse_str(wat)?;
       let module = Module::new(&engine, wasm)?;
-      let mut store = Store::new(&engine, WasmHostState::Empty);
+      let state = super::super::create_host_state(
+        super::super::PluginSchemaVersion::V4,
+        std::sync::Arc::new(|_| {}),
+        tokio::sync::mpsc::unbounded_channel().0,
+      );
+      let mut store = Store::new(&engine, state);
       let mut linker = Linker::new(&engine);
       add_wasi_imports(&mut linker)?;
       add_unsupported_wasi_imports(&mut linker, &mut store, &module)?;

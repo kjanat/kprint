@@ -164,7 +164,7 @@ impl<'a> InfoRegion<'a> {
       if let Some(start) = last_start.get()
         && context.writer_info.line_number == start.line_number
       {
-        single_line_width.set(Some(context.writer_info.column_number - start.column_number));
+        single_line_width.set(context.writer_info.column_number.checked_sub(start.column_number));
       }
     })
   }

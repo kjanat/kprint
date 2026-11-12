@@ -133,7 +133,11 @@ struct EditorService<'a, TEnvironment: Environment> {
 impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
   pub fn new(args: &'a CliArgs, environment: &'a TEnvironment, plugin_resolver: &'a Rc<PluginResolver<TEnvironment>>) -> Self {
     let stdout = environment.stdout();
-    let writer = SingleThreadMessageWriter::for_stdin(MessageWriter::new(stdout));
+    let output_closed = CancellationToken::new();
+    let writer = SingleThreadMessageWriter::with_failure_handler(MessageWriter::new(stdout), {
+      let output_closed = output_closed.clone();
+      move || output_closed.cancel()
+    });
     let max_cores = environment.max_threads();
     let concurrency_limiter = Rc::new(Semaphore::new(std::cmp::max(1, max_cores - 1)));
 
@@ -146,7 +150,7 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
         id_generator: Default::default(),
         cancellation_tokens: Default::default(),
         pending_format_tokens: Default::default(),
-        output_closed: Default::default(),
+        output_closed,
         writer,
       }),
       concurrency_limiter,
@@ -1052,22 +1056,19 @@ mod test {
     }
 
     TestEnvironment::new().run_in_runtime(async move {
+      let output_closed = CancellationToken::new();
       let context = super::EditorContext {
         id_generator: Default::default(),
         cancellation_tokens: Default::default(),
         pending_format_tokens: Default::default(),
-        writer: SingleThreadMessageWriter::for_stdin(MessageWriter::new(ClosedWriter)),
-        output_closed: Default::default(),
+        writer: SingleThreadMessageWriter::with_failure_handler(MessageWriter::new(ClosedWriter), {
+          let output_closed = output_closed.clone();
+          move || output_closed.cancel()
+        }),
+        output_closed,
       };
-      // the first message fails to be written on the writer thread
-      // and then the messages after that can't be sent
-      for _ in 0..500 {
-        super::send_response_body(&context, EditorMessageBody::Success(0));
-        if context.output_closed.is_cancelled() {
-          break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-      }
+      super::send_response_body(&context, EditorMessageBody::Success(0));
+      tokio::time::timeout(Duration::from_secs(5), context.output_closed.cancelled()).await.unwrap();
       assert!(context.output_closed.is_cancelled());
     });
   }

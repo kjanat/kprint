@@ -5,7 +5,7 @@
 
 //! Building blocks for writing a code formatter: generate print items (IR) and print them.
 //!
-//! See [the overview](https://github.com/dprint/dprint/blob/main/docs/overview.md) for how it works and an example.
+//! See [the overview](https://github.com/kjanat/kprint/blob/master/docs/overview.md) for how it works and an example.
 
 pub mod actions;
 pub mod condition_helpers;

@@ -104,7 +104,10 @@ impl WasmModule {
   /// Creates a store backed by the same engine as this module so that the
   /// module and the store it's instantiated in always use the same backend.
   pub fn new_store(&self, data: WasmHostState) -> Store {
-    Store::new(&self.engine, data)
+    let metadata = matches!(data, WasmHostState::Empty);
+    let mut store = Store::new(&self.engine, data);
+    store.set_epoch_deadline(if metadata { METADATA_EPOCH_TICKS } else { u64::MAX / 2 });
+    store
   }
 }
 
@@ -206,6 +209,9 @@ pub const MAX_WASM_STACK_SIZE: usize = 1024 * 1024;
 /// recoverable trap) before exhausting the native stack (a crash).
 pub const WASM_PLUGIN_THREAD_STACK_SIZE: usize = MAX_WASM_STACK_SIZE + 3 * 1024 * 1024;
 
+/// Each metadata export gets three seconds of wall-clock execution.
+pub(super) const METADATA_EPOCH_TICKS: u64 = 30;
+
 fn new_engine(optimize: bool) -> wasmtime::Engine {
   let mut config = Config::new();
   // optimize plugins for speed. compiling without optimizations is only a
@@ -220,11 +226,21 @@ fn new_engine(optimize: bool) -> wasmtime::Engine {
     let pulley_target = if cfg!(target_endian = "big") { "pulley64be" } else { "pulley64" };
     config.target(pulley_target).expect("failed to set pulley target");
   }
+  config.epoch_interruption(true);
   config.table_lazy_init(false);
   #[cfg(not(windows))]
   config.native_unwind_info(false);
   config.max_wasm_stack(MAX_WASM_STACK_SIZE);
-  Engine::new(&config).expect("failed to create wasmtime engine")
+  let engine = Engine::new(&config).expect("failed to create wasmtime engine");
+  let weak = engine.weak();
+  std::thread::spawn(move || {
+    loop {
+      std::thread::sleep(std::time::Duration::from_millis(100));
+      let Some(engine) = weak.upgrade() else { break };
+      engine.increment_epoch();
+    }
+  });
+  engine
 }
 
 // a mapped file can't be replaced on Windows, which is why modules are only

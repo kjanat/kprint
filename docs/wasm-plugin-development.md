@@ -145,15 +145,17 @@ continue to use kprint's interpreter.
 
 Set `supportsRangeFormatting` in plugin metadata to `true` for range support or
 `false` to decline range requests. When absent, the LSP expands the selection to
-whole lines and keeps only edits within those lines for older plugins.
+whole lines and keeps only edits within those lines for older plugins. Plugins that
+cannot handle range requests must also check `request.range` and return `Ok(None)`
+when it is present, since other clients can still send a range.
 
 Process plugins can set `allowPluginOverrideConfig` to `true` to accept non-global
 configuration overrides from sandboxed plugins. The default restricts those
 requests to global formatting options. Built-in exec retains that default.
 
-The formatter IR now uses explicit arenas. Pass the arena supplied to `format` to
-`PrintItems::new(arena)` and IR helpers, or create an arena from
-`request.arena_pool` with the SDK's `formatting` feature enabled. See the
+The formatter IR now uses explicit arenas. With the SDK's `formatting` feature
+enabled, create an arena with `let arena = request.arena_pool.create_arena();` in
+`format`, then pass `&arena` to `PrintItems::new` and IR helpers. See the
 [formatting overview](overview.md) for the API and borrowing model.
 
 ## Schema Version 4 Overview

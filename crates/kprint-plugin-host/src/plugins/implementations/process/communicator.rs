@@ -142,7 +142,8 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
       Err(err) => {
         // attempt to restart the communicator if this fails and it's no longer alive
         let mut inner = self.inner.lock().await;
-        if self.is_shutdown.get() || inner.communicator.is_process_alive().await {
+        let is_alive = inner.communicator.is_process_alive().await;
+        if self.is_shutdown.get() || is_alive {
           Err(err)
         } else {
           *inner = InnerState {

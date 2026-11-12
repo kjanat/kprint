@@ -284,6 +284,13 @@ impl<'a> Writer<'a> {
   pub fn new_line(&mut self) {
     if self.state.last_was_not_trailing_space {
       self.pop_item();
+      while self
+        .state
+        .items
+        .is_some_and(|node| matches!(node.item, WriteItem::Indent(_) | WriteItem::Align(_)))
+      {
+        self.pop_item();
+      }
       self.state.last_was_not_trailing_space = false;
     }
 
