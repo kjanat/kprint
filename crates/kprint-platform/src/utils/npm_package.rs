@@ -1,7 +1,10 @@
+use crate::utils::replace_control_chars;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use flate2::read::GzDecoder;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use tar::Archive;
@@ -197,4 +200,34 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
   }
   result
+}
+
+thread_local! {
+  static WARNED_DEPRECATED_NPM_PACKAGES: RefCell<HashSet<String>> = Default::default();
+}
+
+/// Warns when a packument says a version was deprecated, using the message its
+/// publisher left (ex. that the package was renamed). Warns once per version
+/// since resolving a version and then downloading it both read the packument.
+pub fn warn_if_npm_deprecated(packument: &serde_json::Value, name: &str, version: &str, environment: &impl crate::environment::OutputEnvironment) {
+  let Some(message) = deprecation_message(packument, version) else {
+    return;
+  };
+  let package = format!("{}@{}", name, version);
+  if WARNED_DEPRECATED_NPM_PACKAGES.with_borrow_mut(|warned| warned.insert(package.clone())) {
+    // the message is whatever the publisher wrote, so don't let it send escape
+    // sequences to the terminal
+    log_warn!(environment, "npm package {} is deprecated: {}", package, replace_control_chars(message));
+  }
+}
+
+/// The message a version was deprecated with, or `None` if it isn't deprecated.
+/// An empty message is how npm un-deprecates a version.
+fn deprecation_message<'a>(packument: &'a serde_json::Value, version: &str) -> Option<&'a str> {
+  packument
+    .get("versions")?
+    .get(version)?
+    .get("deprecated")?
+    .as_str()
+    .filter(|message| !message.is_empty())
 }

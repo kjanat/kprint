@@ -206,6 +206,12 @@ impl NpmExtendsResolver {
         ..package.clone()
       });
     }
+    let metadata_url = url::Url::parse(&format!("https://registry.npmjs.org/{name}"))?;
+    if let Ok((_, metadata)) = environment.download_file_err_404(&metadata_url).await
+      && let Ok(packument) = serde_json::from_slice::<serde_json::Value>(&metadata.content)
+    {
+      crate::utils::warn_if_npm_deprecated(&packument, name, version, environment);
+    }
     let file_name = name.rsplit('/').next().unwrap();
     let url = url::Url::parse(&format!("https://registry.npmjs.org/{name}/-/{file_name}-{version}.tgz"))?;
     let file = crate::utils::resolve_path_source_to_file_with_cache_mode(
@@ -1095,6 +1101,28 @@ mod tests {
     assert!(join_package_path("a/index.json", "/other.json").is_err());
     assert!(join_package_path("a/index.json", "..\\other.json").is_err());
     assert!(join_package_path("a/index.json", "C:/other.json").is_err());
+  }
+
+  #[test]
+  fn warns_when_an_extended_npm_configuration_is_deprecated() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{"extends": "npm:deprecated-config@1.0.0"}"#)
+      .build();
+    add_registry_package(&environment, "deprecated-config", "1.0.0", &[("package/dprint.json", "{}")]);
+    environment.add_remote_file_bytes(
+      "https://registry.npmjs.org/deprecated-config",
+      serde_json::json!({
+        "versions": {"1.0.0": {"deprecated": "Use the replacement config"}}
+      })
+      .to_string()
+      .into_bytes(),
+    );
+    environment.clone().run_in_runtime(async move {
+      resolve_config("/dprint.json", &environment).await.unwrap();
+      let messages = environment.take_stderr_messages();
+      assert_eq!(messages.len(), 1);
+      assert!(messages[0].contains("deprecated-config@1.0.0 is deprecated: Use the replacement config"));
+    });
   }
 
   #[test]

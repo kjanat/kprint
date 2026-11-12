@@ -1,8 +1,6 @@
-use crate::utils::replace_control_chars;
+use crate::utils::warn_if_npm_deprecated as warn_if_deprecated;
 pub(crate) use kprint_platform::utils::extract_tarball_replacing;
 pub(crate) use kprint_platform::utils::extract_tarball_to_dir;
-use std::cell::RefCell;
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -356,36 +354,6 @@ fn latest_version_from_packument(packument: &serde_json::Value, name: &str) -> R
     .and_then(|v| v.as_str())
     .map(|s| s.to_string())
     .ok_or_else(|| anyhow::anyhow!("Missing dist-tags.latest for {}", name))
-}
-
-thread_local! {
-  static WARNED_DEPRECATED_NPM_PACKAGES: RefCell<HashSet<String>> = Default::default();
-}
-
-/// Warns when a packument says a version was deprecated, using the message its
-/// publisher left (ex. that the package was renamed). Warns once per version
-/// since resolving a version and then downloading it both read the packument.
-fn warn_if_deprecated(packument: &serde_json::Value, name: &str, version: &str, environment: &impl Environment) {
-  let Some(message) = deprecation_message(packument, version) else {
-    return;
-  };
-  let package = format!("{}@{}", name, version);
-  if WARNED_DEPRECATED_NPM_PACKAGES.with_borrow_mut(|warned| warned.insert(package.clone())) {
-    // the message is whatever the publisher wrote, so don't let it send escape
-    // sequences to the terminal
-    log_warn!(environment, "npm package {} is deprecated: {}", package, replace_control_chars(message));
-  }
-}
-
-/// The message a version was deprecated with, or `None` if it isn't deprecated.
-/// An empty message is how npm un-deprecates a version.
-fn deprecation_message<'a>(packument: &'a serde_json::Value, version: &str) -> Option<&'a str> {
-  packument
-    .get("versions")?
-    .get(version)?
-    .get("deprecated")?
-    .as_str()
-    .filter(|message| !message.is_empty())
 }
 
 /// Picks the plugin file a package ships at its root, preferring `plugin.wasm`
