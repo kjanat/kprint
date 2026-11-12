@@ -496,6 +496,34 @@ Some plugins format code embedded in a file by handing it back to dprint, ex. th
 - An override's `"embedded"` applies to the code in the files the override matches. The last matching override that names the code's file extension wins, otherwise the plugin's own `"embedded"` does.
 - `"extends"` merges `"embedded"` by file extension, with the extending config's entries taking precedence.
 
+### Shell examples and placeholders
+
+A shell formatter treats `<dialect>` as shell redirection syntax. For example,
+formatting `shellcheck -s <dialect> -f gcc -` may move those redirections and make
+the documentation's placeholder unreadable. Use `text` fences for pseudo-code,
+or put `<!-- dprint-ignore -->` immediately before a code fence to preserve that
+individual block.
+
+To keep shell syntax highlighting while preserving all shell examples, disable
+embedded shell formatting in the Markdown configuration:
+
+```json
+{
+  "markdown": {
+    "embedded": { "sh": [], "bash": [] }
+  }
+}
+```
+
+This also works in a local configuration that extends a shared configuration
+with a shell plugin. Standalone shell files still use that plugin. Other embedded
+languages retain their configured formatting behavior. For only selected
+Markdown files, put the same `embedded` setting in a matching Markdown override.
+
+Shell blocks without an explicit opt-out continue to use the configured shell
+formatter. The host does not guess whether valid redirection syntax represents
+a documentation placeholder.
+
 ## Extending a Different Configuration File
 
 You may extend other configuration files by specifying an `extends` property. This may be a file path, URL, or relative path (remote configuration may extend other configuration files via a relative path).

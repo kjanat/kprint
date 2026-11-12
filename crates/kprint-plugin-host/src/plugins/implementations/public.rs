@@ -33,6 +33,7 @@ pub struct SetupPluginResult {
   /// Stored in the cache meta so the file path can be re-derived on a hit
   /// without re-extracting. `None` for wasm plugins.
   pub executable_sub_path: Option<String>,
+  pub archive_checksum: Option<String>,
 }
 
 /// Where a freshly set-up plugin's artifact should be written. Both paths are
@@ -102,6 +103,7 @@ pub(crate) async fn read_cached_plugin_info<TEnvironment: Environment>(
 pub struct CreatedPlugin {
   pub plugin: Box<dyn Plugin>,
   pub was_set_up: bool,
+  pub formatting_identity: crate::plugins::FormattingIdentity,
 }
 
 pub async fn create_plugin<TEnvironment: Environment>(
@@ -167,6 +169,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
       };
       Ok(CreatedPlugin {
         was_set_up: cache_item.was_set_up,
+        formatting_identity: cache_item.formatting_identity,
         plugin: Box::new(wasm::WasmPlugin::new(cache_item.info, modules, cache_item.resolution_cache, environment)),
       })
     }
@@ -187,6 +190,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
       let executable_path = super::process::get_test_safe_executable_path(&cache_item.info.version, cache_item.file_path, &environment);
       Ok(CreatedPlugin {
         was_set_up: cache_item.was_set_up,
+        formatting_identity: cache_item.formatting_identity,
         plugin: Box::new(process::ProcessPlugin::new(environment, executable_path, cache_item.info)),
       })
     }

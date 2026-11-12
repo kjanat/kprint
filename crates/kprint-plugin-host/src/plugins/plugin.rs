@@ -24,6 +24,23 @@ use super::PluginResolutionCache;
 use crate::environment::CanonicalizedPathBuf;
 use crate::plugins::PluginSourceReference;
 
+/// Identifies formatting behavior independently of compiled-code compatibility.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum FormattingIdentity {
+  BuiltIn {
+    name: &'static str,
+    revision: u32,
+  },
+  Artifact {
+    checksum: String,
+  },
+  /// Caller-supplied in-process plugins have no downloaded artifact.
+  InProcess {
+    name: String,
+    version: String,
+  },
+}
+
 /// A formatter that ships inside dprint instead of being loaded as a plugin.
 ///
 /// It's released with dprint, so it has no version, update URL or schema URL

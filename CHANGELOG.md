@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound package-manager manifest reads and reject symlinked automatic cache directories. Select the cache per environment and document project-specific cache clearing.
+- Include Wasm contents and process-plugin distributions in incremental formatting identity, independently of compiled-code compatibility.
+- Document how to preserve Markdown shell examples with placeholders using embedded-formatting opt-outs, text fences, or ignore comments.
+
 - Add npm packages in `extends`, explicit `--reload` controls, an `install` command, CLI range formatting with `--lines`, and project configuration discovery under `.config/`.
 - Add init preferences, plugin option editing, file-type selection, plugin ordering, and insertion into existing JSON and TOML configurations.
 - Verify checksum-pinned remote configurations and restrict process-plugin configuration to trusted layers while preserving kprint's exec program allowlists.

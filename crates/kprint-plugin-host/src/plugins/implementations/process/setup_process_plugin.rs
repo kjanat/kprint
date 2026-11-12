@@ -122,7 +122,9 @@ async fn setup_from_zip<TEnvironment: Environment>(
   }
 
   let plugin_executable_file_path = plugin_cache_dir_path.join(&executable_sub_path);
-  start_communicator_and_collect_info(plugin_executable_file_path, executable_sub_path, plugin_version, plugin_name, environment).await
+  let mut result = start_communicator_and_collect_info(plugin_executable_file_path, executable_sub_path, plugin_version, plugin_name, environment).await?;
+  result.archive_checksum = Some(crate::utils::get_sha256_checksum(zip_bytes));
+  Ok(result)
 }
 
 /// Extracts a per-platform npm tarball into the plugin cache directory. The
@@ -139,6 +141,7 @@ async fn setup_from_tarball<TEnvironment: Environment>(
   executable_sub_path: &str,
   environment: &TEnvironment,
 ) -> Result<SetupPluginResult> {
+  let archive_checksum = crate::utils::get_sha256_checksum(&tarball_bytes);
   let executable_path = plugin_cache_dir_path.join(executable_sub_path);
   let extract_env = environment.clone();
   let extract_dest = plugin_cache_dir_path.to_path_buf();
@@ -152,7 +155,9 @@ async fn setup_from_tarball<TEnvironment: Environment>(
       executable_sub_path,
     );
   }
-  start_communicator_and_collect_info(executable_path, executable_sub_path.to_string(), plugin_version, plugin_name, environment).await
+  let mut result = start_communicator_and_collect_info(executable_path, executable_sub_path.to_string(), plugin_version, plugin_name, environment).await?;
+  result.archive_checksum = Some(archive_checksum);
+  Ok(result)
 }
 
 /// Process plugins report their plugin info within milliseconds of starting,
@@ -178,6 +183,7 @@ pub(crate) async fn start_communicator_and_collect_info<TEnvironment: Environmen
           plugin_info,
           file_path: plugin_executable_file_path,
           executable_sub_path: Some(executable_sub_path),
+          archive_checksum: None,
         });
       }
       Ok(Err(err)) => format!("{:#}", err),

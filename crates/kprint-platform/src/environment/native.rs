@@ -1,6 +1,5 @@
 use anyhow::Result;
 use anyhow::bail;
-use once_cell::sync::Lazy;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::borrow::Cow;
@@ -63,6 +62,7 @@ pub struct NativeEnvironment<S: NativeServices> {
   services: S,
   version: String,
   system: Arc<Mutex<System>>,
+  cache_dir: CanonicalizedPathBuf,
 }
 
 impl<S: NativeServices> NativeEnvironment<S> {
@@ -70,13 +70,14 @@ impl<S: NativeServices> NativeEnvironment<S> {
     &self.services
   }
   pub fn new(services: S, version: impl Into<String>) -> Result<Self> {
-    if let Err(err) = (*CACHE_DIR).as_ref() {
-      bail!("Error creating cache directory: {:#}", err);
-    }
+    let cache_dir = super::cache_dir::resolve()
+      .and_then(|location| location.prepare())
+      .map_err(|err| anyhow::anyhow!("Error creating cache directory: {err:#}"))?;
     Ok(Self {
       services,
       version: version.into(),
       system: Default::default(),
+      cache_dir,
     })
   }
 
@@ -634,8 +635,7 @@ fn git_ipc_request(_socket_path: &Path, _message: &[u8]) -> io::Result<Vec<u8>> 
 
 impl<S: NativeServices> crate::environment::DirectoriesEnvironment for NativeEnvironment<S> {
   fn get_cache_dir(&self) -> CanonicalizedPathBuf {
-    // ok to unwrap because this would have errored in the constructor
-    (*CACHE_DIR.as_ref().unwrap()).clone()
+    self.cache_dir.clone()
   }
   fn get_config_dir(&self) -> Option<PathBuf> {
     dirs::config_dir()
@@ -818,13 +818,6 @@ fn canonicalize_path(path: impl AsRef<Path>) -> io::Result<CanonicalizedPathBuf>
     )),
   }
 }
-
-static CACHE_DIR: Lazy<io::Result<CanonicalizedPathBuf>> = Lazy::new(|| {
-  let cache_dir = super::cache_dir::resolve()?;
-  #[allow(clippy::disallowed_methods)]
-  std::fs::create_dir_all(&cache_dir)?;
-  canonicalize_path(cache_dir)
-});
 
 #[cfg(test)]
 mod test {

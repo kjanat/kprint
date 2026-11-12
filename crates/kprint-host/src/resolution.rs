@@ -162,21 +162,7 @@ impl PluginWithConfig {
   /// This is used for the "incremental" feature to tell if a plugin has changed state.
   pub fn incremental_hash(&self, hasher: &mut impl Hasher) {
     use std::hash::Hash;
-    // list everything in here that would affect formatting, with the strings'
-    // `Hash`, which ends them, so where one ends is part of the hash
-    match self.plugin.built_in() {
-      // released with dprint, so its cache revision says how it formats, not
-      // dprint's version (which changes for unrelated reasons)
-      Some(built_in) => {
-        "dprint built-in".hash(hasher);
-        built_in.name.hash(hasher);
-        built_in.cache_revision.hash(hasher);
-      }
-      None => {
-        self.info().name.hash(hasher);
-        self.info().version.hash(hasher);
-      }
-    }
+    self.plugin.formatting_identity().hash(hasher);
 
     // serialize the config keys in order to prevent the hash from changing
     let sorted_config = self.format_config.plugin.iter().collect::<BTreeMap<_, _>>();
@@ -1918,7 +1904,7 @@ mod test {
     assert_eq!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN, "0.59.0")));
     // its cache revision changes when it formats differently
     assert_ne!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN_REVISED, "0.58.0")));
-    // a loaded plugin is still identified by its name and version
+    // caller-supplied in-process plugins use their name and version
     let loaded = |version| TestPlugin::new("built-in", "built-in", vec!["txt"], vec![]).with_version(version);
     assert_ne!(hash(loaded("1.0.0")), hash(loaded("1.0.1")));
     assert_ne!(hash(loaded("1.0.0")), hash(built_in(&BUILT_IN, "1.0.0")));

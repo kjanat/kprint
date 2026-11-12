@@ -54,6 +54,7 @@ pub struct PluginCacheItem {
   pub resolution_cache: PluginResolutionCache,
   /// Identifies the build of the plugin (see [`PluginCache::cached_build_id`]).
   pub build_id: u64,
+  pub formatting_identity: super::FormattingIdentity,
 }
 
 /// What [`PluginCache::resolve_npm_for_add`] resolved: the plugin kind, the
@@ -586,6 +587,16 @@ where
       setup_result.file_path = named_path;
     }
 
+    let formatting_checksum = match plugin_kind {
+      PluginKind::Wasm => source_checksum.clone(),
+      PluginKind::Process => {
+        let archive_checksum = setup_result
+          .archive_checksum
+          .as_deref()
+          .context("Process plugin setup did not identify its archive")?;
+        get_sha256_checksum(format!("{source_checksum}:{archive_checksum}").as_bytes())
+      }
+    };
     let mut meta = PluginCacheMeta {
       info_version: PLUGIN_INFO_VERSION,
       source: cache_key.to_string(),
@@ -596,6 +607,7 @@ where
       executable_sub_path: setup_result.executable_sub_path,
       local_stamps,
       source_checksum: Some(source_checksum),
+      formatting_checksum,
       previous_module_file_name: None,
     };
     // The module of the build this one replaces is kept for processes that
@@ -632,6 +644,9 @@ where
       plugin_kind,
       resolution_cache: PluginResolutionCache::new(resolutions_path, artifact_id(&meta)),
       build_id: build_id(&meta),
+      formatting_identity: super::FormattingIdentity::Artifact {
+        checksum: meta.formatting_checksum.clone(),
+      },
     })
   }
 
@@ -640,7 +655,11 @@ where
   /// are unchanged. Returns `None` on any miss.
   fn cached_item(&self, source: &PathSource, hash: &str, cache_key: &str) -> Option<PluginCacheItem> {
     let meta = read_meta(hash, &self.environment)?;
-    if meta.source != cache_key || meta.signature != current_signature(&self.environment) || meta.info_version != PLUGIN_INFO_VERSION {
+    if meta.source != cache_key
+      || meta.signature != current_signature(&self.environment)
+      || meta.info_version != PLUGIN_INFO_VERSION
+      || meta.formatting_checksum.is_empty()
+    {
       return None;
     }
     if source.is_local() && !self.local_stamps_match(&meta) {
@@ -651,6 +670,9 @@ where
       file_path: meta.artifact_file_path(hash, &self.environment),
       resolution_cache: PluginResolutionCache::new(resolutions_path(hash, &self.environment), artifact_id(&meta)),
       build_id: build_id(&meta),
+      formatting_identity: super::FormattingIdentity::Artifact {
+        checksum: meta.formatting_checksum.clone(),
+      },
       info: meta.info,
       plugin_kind: meta.plugin_kind,
     })
@@ -815,8 +837,78 @@ mod test {
       executable_sub_path: None,
       local_stamps: None,
       source_checksum: None,
+      formatting_checksum: "formatting-checksum".into(),
       previous_module_file_name: None,
     }
+  }
+
+  #[tokio::test]
+  async fn formatting_identity_tracks_bytes_but_not_compiled_cache_compatibility() -> Result<()> {
+    let environment = TestEnvironment::new();
+    let url = "https://plugins.example.com/test.wasm";
+    environment.add_remote_file(url, WASM_PLUGIN_BYTES);
+    let cache = PluginCache::new(environment.clone());
+    let source = PluginSourceReference::new_remote_from_str(url);
+    let first = cache.get_plugin_cache_item(&source).await?;
+    let warm = cache.get_plugin_cache_item(&source).await?;
+    assert_eq!(first.formatting_identity, warm.formatting_identity);
+    environment.set_cpu_arch("different-compiled-cache");
+    let other_compiler = cache.get_plugin_cache_item(&source).await?;
+    assert_ne!(first.file_path, other_compiler.file_path);
+    assert_eq!(first.formatting_identity, other_compiler.formatting_identity);
+    let mut changed = WASM_PLUGIN_BYTES.to_vec();
+    changed.extend_from_slice(&[0, 3, 1, b'x', 1]);
+    environment.add_remote_file_bytes(url, changed);
+    let replaced = cache.forget_and_recreate(&source).await?;
+    assert_eq!(first.info.name, replaced.info.name);
+    assert_eq!(first.info.version, replaced.info.version);
+    assert_ne!(first.formatting_identity, replaced.formatting_identity);
+    environment.clear_logs();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn process_formatting_identity_includes_the_selected_archive() -> Result<()> {
+    use crate::test_helpers::create_test_npm_tarball;
+    let environment = TestEnvironment::new();
+    let cache = PluginCache::new(environment.clone());
+    let source = PathSource::new_remote("https://plugins.example.com/process.json".parse().unwrap());
+    let cache_key = cache.compute_cache_key(&source)?;
+    let hash = entry_hash(&cache_key, &environment);
+    let mut identities = Vec::new();
+    for sibling in [b"one".as_slice(), b"two", b"two"] {
+      let tarball_bytes = create_test_npm_tarball(&[
+        ("package/plugin", crate::test_helpers::PROCESS_PLUGIN_BINARY_BYTES.as_slice()),
+        ("package/data", sibling),
+      ]);
+      let item = cache
+        .setup_and_store(SetupAndStoreOptions {
+          hash: &hash,
+          cache_key: &cache_key,
+          resolved_source: &source,
+          file_bytes: b"same manifest".to_vec(),
+          plugin_kind: PluginKind::Process,
+          pre_resolved_tarball: Some(npm_resolution::PreResolvedProcessPluginTarball {
+            name: "test-process-plugin".into(),
+            version: "0.1.0".into(),
+            tarball_bytes,
+            executable_sub_path: "plugin".into(),
+          }),
+          local_stamps: None,
+        })
+        .await?;
+      identities.push(item.formatting_identity);
+    }
+    assert_ne!(
+      identities[0], identities[1],
+      "Sibling files in the process distribution affect formatting identity"
+    );
+    assert_eq!(
+      identities[1], identities[2],
+      "Re-extracting the same distribution preserves formatting identity"
+    );
+    environment.clear_logs();
+    Ok(())
   }
 
   #[tokio::test]

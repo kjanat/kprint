@@ -74,6 +74,11 @@ Set `KPRINT_CACHE_DIR` to an absolute path to override the location.
 unset or blank. An explicit override takes precedence over Cloudflare detection.
 `kprint clear-cache` removes the selected directory, so use a dedicated directory.
 The default cache is separate from dprint; existing dprint caches are left in place.
+An explicit `DPRINT_CACHE_DIR` or `KPRINT_CACHE_DIR` can intentionally select a
+shared or symlinked directory; `clear-cache` then removes that selected target.
+Automatically selected cache directories must be real directories. Their parent
+may be relocated through a symlink, but the final `cache` or `.kprint` directory
+may not itself be a symlink.
 
 ### Cloudflare builds
 
@@ -90,6 +95,16 @@ When `WORKERS_CI=1` or `CF_PAGES=1`, kprint places its cache in a dedicated
 kprint looks for `packageManager` in `package.json` or a lockfile, starting in the
 current directory and searching parent directories. If neither identifies a
 package manager, it uses `npm_config_user_agent`, then defaults to npm.
+Within each directory, a recognized `packageManager` takes precedence; lockfile
+precedence is Bun, pnpm, Yarn, then npm. Invalid, non-regular, or larger-than-1-MiB
+`package.json` files are skipped.
+
+Cache selection happens when each environment is created and stays fixed for
+that environment, including its clones. A new environment selects its own cache.
+Run `kprint clear-cache` with the same project directory and Cloudflare flags as
+the formatting run, or set `KPRINT_CACHE_DIR` to that cache's absolute path.
+Running it from another project can select a different package-manager cache;
+it only clears the selected directory.
 
 These parent directories are listed in the [Workers Builds cache documentation](https://developers.cloudflare.com/workers/ci-cd/builds/build-caching/)
 and [Pages cache documentation](https://developers.cloudflare.com/pages/configuration/build-caching/).
