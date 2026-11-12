@@ -874,8 +874,9 @@ ENVIRONMENT VARIABLES:
   DPRINT_WASM_FORMAT_ENGINE
                        How Wasm plugins without native code format: auto
                        (default), interpreter or native.
-  DPRINT_CACHE_DIR     Directory to store the dprint cache. Note that this
+  KPRINT_CACHE_DIR     Directory to store the kprint cache. Note that this
                        directory may be periodically deleted by the CLI.
+  DPRINT_CACHE_DIR     Compatibility fallback when KPRINT_CACHE_DIR is unset.
   DPRINT_CONFIG_DIR    Global config directory to store a global dprint.json file.
                        Defaults to the dprint sub folder in the system configuration
                        directory.
