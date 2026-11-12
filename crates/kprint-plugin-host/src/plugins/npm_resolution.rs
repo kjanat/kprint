@@ -467,8 +467,12 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
   // tarball decompression and file I/O can be slow
   let extract_dir = get_npm_extract_dir(&specifier.name, version, environment);
   kprint_platform::utils::extract_npm_tarball(
-    tarball_bytes, extract_dir.clone(), environment.clone(), kprint_platform::utils::NpmExtractionMode::Reuse,
-  ).await?;
+    tarball_bytes,
+    extract_dir.clone(),
+    environment.clone(),
+    kprint_platform::utils::NpmExtractionMode::Reuse,
+  )
+  .await?;
   let requested_path = specifier.path.clone();
   let specifier_clone = specifier.clone();
   let environment_clone = environment.clone();

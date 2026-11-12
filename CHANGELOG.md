@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Limit npm tarball extraction by entry size, total decompressed bytes, entry count, and deadline. Cancel extraction workers when their callers stop and remove partial staging data.
+
 - Match exec extensions and filenames case-insensitively. Preserve real paths for shebang-matched files, add `{{file_path_with_ext}}` and `{{ext}}`, and explicitly report that exec does not support range formatting. Invalidate the built-in exec formatting cache for the changed behavior.
 
 - Always use built-in exec for recognized references. Remove the external-exec switch and version-specific trust exceptions; reject local or self-hosted external exec manifests.

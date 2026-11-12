@@ -45,6 +45,8 @@ An unversioned package is resolved from `node_modules` beside the configuration 
 
 Append `@<sha256>` to a versioned reference to pin the package tarball. The checksum covers all files in that package. A trusted package that extends a different remote configuration must pin that reference separately. Tarballs are verified before extraction, and an incorrect checksum is rejected even when the package was already loaded.
 
+Downloaded npm configurations and plugins share extraction limits: 128 MiB per entry, 512 MiB of decompressed tar data, and 100,000 headers. Skipped entries, metadata, and padding count toward these limits. Extraction has a 30-second deadline, shortened by any earlier caller deadline. Cancelling the operation signals its worker to stop and remove staging data between reads and filesystem operations. An in-progress filesystem call must return before cleanup can finish. Sparse entries and contradictory PAX sizes are rejected. Existing extracted packages survive extraction failures.
+
 Remote process-plugin configuration is accepted only from trusted configuration layers. Local configuration and remote references pinned by a trusted parent can provide that configuration. Unpinned layers can still configure sandboxed WebAssembly plugins. Kprint's existing `playWithFire` program allowlists continue to govern its recognized exec plugin.
 
 An npm registry configuration can use an absolute HTTP(S) `configFile` URL for plugin-owned configuration. It cannot select a local file on the user's machine. Packages resolved from local `node_modules` retain local configuration behavior.
