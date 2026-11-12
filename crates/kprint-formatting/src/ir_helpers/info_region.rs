@@ -39,6 +39,7 @@ const MAX_CLEARS_BEFORE_ASSUMING: u32 = 8;
 /// but clearing in that case changes how existing code is formatted, so it isn't done.
 #[derive(Clone, Copy)]
 pub struct InfoRegion<'a> {
+  arena: &'a Arena,
   infos: &'a RefCell<bumpalo::collections::Vec<'a, Info>>,
   last_start: &'a Cell<Option<RegionStart>>,
   /// The line numbers resolved when the region started at each column it left.
@@ -71,6 +72,7 @@ struct RegionStart {
 impl<'a> InfoRegion<'a> {
   pub fn new(arena: &'a Arena) -> Self {
     Self {
+      arena,
       infos: arena.bump().alloc(RefCell::new(bumpalo::collections::Vec::new_in(arena.bump()))),
       last_start: arena.bump().alloc(Cell::new(None)),
       previous_starts: arena.bump().alloc(RefCell::new(bumpalo::collections::Vec::new_in(arena.bump()))),
@@ -83,12 +85,15 @@ impl<'a> InfoRegion<'a> {
   ///
   /// This can be done after generating the region's start, but must be done before printing.
   pub fn add(&self, info: impl Into<Info>) {
-    self.infos.borrow_mut().push(info.into());
+    let info = info.into();
+    self.arena.id.assert_matches(info.owner());
+    self.infos.borrow_mut().push(info);
   }
 
   /// Generates the items for the start of the region, which keep the infos correct
   /// when the region starts at a different position than before.
   pub fn gen_start(&self, arena: &'a Arena) -> PrintItems<'a> {
+    self.arena.id.assert_matches(arena.id);
     let infos = self.infos;
     let last_start = self.last_start;
     let previous_starts = self.previous_starts;

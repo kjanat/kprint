@@ -125,6 +125,7 @@ impl<'a> PrintItems<'a> {
   }
 
   pub fn push_condition(&mut self, condition: Condition<'a>) {
+    assert_same_arena(self.arena, condition.arena);
     let condition = self.arena.alloc_condition(condition);
     self.push_item_internal(PrintItem::Condition(condition));
   }
