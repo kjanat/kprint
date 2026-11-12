@@ -54,7 +54,7 @@ export async function publishVerified(
     verifyPackage(pkg, actual);
   }
   return {
-    id: `pkg:npm/${pkg.name.replace("@", "%40")}`,
+    id: `pkg:npm/${pkg.name.split("/").map(encodeURIComponent).join("/")}`,
     manager: "npm",
     name: pkg.name,
     version: pkg.version,
