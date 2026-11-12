@@ -2,10 +2,12 @@
   "imports": {
     "@david/dax": "jsr:@david/dax@0.45.0",
     "@std/cli": "jsr:@std/cli@^1.0.0",
+    "@std/yaml": "jsr:@std/yaml@^1.0.0",
     "@types/decompress": "npm:@types/decompress@4.2.7",
     "decompress": "npm:decompress@4.2.1"
   },
   "tasks": {
-    "check": "deno check build.ts bin.ts install.ts"
+    "check": "deno check build.ts bin.ts install.ts publish.ts release.ts",
+    "test": "deno test --allow-read --allow-write --allow-env=PATH --allow-run=bash release_test.ts publish_test.ts workflow_test.ts"
   }
 }
