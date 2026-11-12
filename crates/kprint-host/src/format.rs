@@ -1,3 +1,11 @@
+/// An inclusive range of 1-based line numbers (ex. `10-20`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineRange {
+  pub first: usize,
+  pub last: usize,
+}
+
+pub type LineRangesByPath = std::collections::HashMap<std::path::PathBuf, Vec<LineRange>>;
 use anyhow::Result;
 use anyhow::bail;
 use kprint_async_runtime::FutureExt;
@@ -266,6 +274,7 @@ pub async fn run_parallelized<F, TEnvironment: Environment>(
   environment: &TEnvironment,
   incremental_file: Option<Arc<IncrementalFile<TEnvironment>>>,
   ensure_stable_format: EnsureStableFormat,
+  line_ranges: Rc<LineRangesByPath>,
   f: F,
 ) -> Result<(), RunParallelizedError>
 where
@@ -323,6 +332,7 @@ where
       let file_errors = file_errors.clone();
       let environment = environment.clone();
       let incremental_file = incremental_file.clone();
+      let line_ranges = line_ranges.clone();
       let f = f.clone();
       let semaphores = semaphores.clone();
       let scope = scope.clone();
@@ -366,6 +376,7 @@ where
             let error_logger = error_logger.clone();
             let file_errors = file_errors.clone();
             let scope = scope.clone();
+            let line_ranges = line_ranges.clone();
             format_handles.push(kprint_async_runtime::spawn(async move {
               let long_format_token = CancellationToken::new();
               let stage = Rc::new(RefCell::new(FormatStage::StartingPlugins));
@@ -393,7 +404,18 @@ where
                   log_warn!(environment, "Finished formatting {} after {:.1}s.", display_path, start.elapsed().as_secs_f64());
                 }
               });
-              let result = run_for_file_path(environment, scope, plugins, &error_logger, file_path.clone(), ensure_stable_format, &stage, f).await;
+              let result = run_for_file_path(
+                environment,
+                scope,
+                plugins,
+                &error_logger,
+                file_path.clone(),
+                ensure_stable_format,
+                line_ranges.get(&file_path).map(Vec::as_slice).unwrap_or_default(),
+                &stage,
+                f,
+              )
+              .await;
               long_format_token.cancel();
               if let Err(err) = result {
                 match err {
@@ -533,6 +555,7 @@ where
     error_logger: &ErrorCountLogger<TEnvironment>,
     file_path: PathBuf,
     ensure_stable_format: EnsureStableFormat,
+    line_ranges: &[LineRange],
     stage: &Rc<RefCell<FormatStage>>,
     f: F,
   ) -> Result<(), RunForFilePathError>
@@ -553,13 +576,49 @@ where
     })
     .await??;
 
-    let (start_instant, formatted_text, _) =
-      run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &file_text, stage, 1).await?;
+    let plugin_file_path = scope.plugin_name_maps.get_plugin_file_path(&file_path, &file_text).into_owned();
+    let (start_instant, formatted_text) = if line_ranges.is_empty() {
+      let (start_instant, formatted_text, _) = run_single_pass_for_file_path(
+        environment.clone(),
+        scope.clone(),
+        plugins.clone(),
+        file_path.clone(),
+        &plugin_file_path,
+        &file_text,
+        None,
+        stage,
+        1,
+      )
+      .await?;
 
-    let formatted_text = if ensure_stable_format.0 && formatted_text != file_text {
-      get_stabilized_format_text(environment.clone(), scope, plugins, file_path.clone(), formatted_text, stage).await?
+      let formatted_text = if ensure_stable_format.0 && formatted_text != file_text {
+        get_stabilized_format_text(environment.clone(), scope, plugins, file_path.clone(), &plugin_file_path, formatted_text, stage).await?
+      } else {
+        formatted_text
+      };
+      (start_instant, formatted_text)
     } else {
-      formatted_text
+      let start = Instant::now();
+      let mut text = file_text.clone();
+      for line_range in merge_line_ranges(line_ranges).into_iter().rev() {
+        let Some(range) = get_line_range_byte_range(&text, line_range) else {
+          continue;
+        };
+        text = run_single_pass_for_file_path(
+          environment.clone(),
+          scope.clone(),
+          plugins.clone(),
+          file_path.clone(),
+          &plugin_file_path,
+          &text,
+          Some(range),
+          stage,
+          1,
+        )
+        .await?
+        .1;
+      }
+      (start, text)
     };
 
     stage.replace(FormatStage::Finishing);
@@ -568,11 +627,13 @@ where
     Ok(())
   }
 
+  #[allow(clippy::too_many_arguments)]
   async fn get_stabilized_format_text<TEnvironment: Environment>(
     environment: TEnvironment,
     scope: Rc<PluginsScope<TEnvironment>>,
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
+    plugin_file_path: &Path,
     mut formatted_text: Vec<u8>,
     stage: &Rc<RefCell<FormatStage>>,
   ) -> Result<Vec<u8>> {
@@ -585,7 +646,9 @@ where
         scope.clone(),
         plugins.clone(),
         file_path.clone(),
+        plugin_file_path,
         &formatted_text,
+        None,
         stage,
         count + 2,
       )
@@ -618,17 +681,21 @@ where
     }
   }
 
+  #[allow(clippy::too_many_arguments)]
   async fn run_single_pass_for_file_path<TEnvironment: Environment>(
     environment: TEnvironment,
     scope: Rc<PluginsScope<TEnvironment>>,
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
+    plugin_file_path: &Path,
     file_text: &[u8],
+    range: kprint_plugin_types::FormatRange,
     stage: &Rc<RefCell<FormatStage>>,
     pass: usize,
   ) -> Result<(Instant, Vec<u8>, Vec<String>)> {
     let start_instant = Instant::now();
     let original_text = file_text;
+    let mut range = range;
     let mut file_text = Cow::Borrowed(file_text);
     let mut changed_by = Vec::new();
     let plugins_len = plugins.len();
@@ -637,12 +704,12 @@ where
       let start_instant = Instant::now();
       let format_text_result = initialized_plugin
         .format_text(InitializedPluginWithConfigFormatRequest {
-          file_path: file_path.to_path_buf(),
+          file_path: plugin_file_path.to_path_buf(),
           file_bytes: file_text.to_vec(),
-          range: None,
+          range: range.clone(),
           override_config: plugin.get_config_file_overrides_for_path(&file_path),
           on_host_format: observe_host_format(
-            scope.create_host_format_callback(plugin.clone(), file_path.clone()),
+            scope.create_host_format_callback_for_path(plugin.clone(), file_path.clone(), file_path.clone(), plugin_file_path.to_path_buf()),
             &scope,
             plugin,
             &file_path,
@@ -663,6 +730,11 @@ where
         },
       );
       if let Some(text) = format_text_result? {
+        if i + 1 < plugins_len
+          && let Some(selected) = &mut range
+        {
+          *selected = crate::utils::translate_format_range(&file_text, &text, selected.clone())?;
+        }
         if text != *file_text {
           changed_by.push(plugin.info().config_key.clone());
         }
@@ -880,6 +952,38 @@ fn add_permits(semaphores: &[Rc<Semaphore>], amount: usize) {
       semaphore.add_permits(new_permits);
     }
   }
+}
+
+/// Sorts the line ranges and combines the ones that overlap or are adjacent.
+pub fn merge_line_ranges(line_ranges: &[LineRange]) -> Vec<LineRange> {
+  let mut sorted_ranges = line_ranges.to_vec();
+  sorted_ranges.sort_by_key(|r| (r.first, r.last));
+  let mut result: Vec<LineRange> = Vec::with_capacity(sorted_ranges.len());
+  for range in sorted_ranges {
+    match result.last_mut() {
+      Some(previous) if range.first <= previous.last.saturating_add(1) => {
+        previous.last = previous.last.max(range.last);
+      }
+      _ => result.push(range),
+    }
+  }
+  result
+}
+
+/// Gets the byte range from the start of the first line to the end of the
+/// last line (excluding its newline), clamping to the end of the text.
+/// Returns `None` when the first line is past the end of the text.
+pub fn get_line_range_byte_range(text: &[u8], line_range: LineRange) -> Option<std::ops::Range<usize>> {
+  let mut line_starts = std::iter::once(0).chain(text.iter().enumerate().filter(|(_, byte)| **byte == b'\n').map(|(i, _)| i + 1));
+  let start = line_starts.nth(line_range.first - 1).filter(|start| *start < text.len())?;
+  let end = match line_starts.nth(line_range.last - line_range.first) {
+    Some(next_line_start) => {
+      let end = next_line_start - 1;
+      if end > start && text[end - 1] == b'\r' { end - 1 } else { end }
+    }
+    None => text.len(),
+  };
+  Some(start..end)
 }
 
 #[cfg(test)]

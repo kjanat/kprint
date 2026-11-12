@@ -100,7 +100,7 @@ jobs:
       - name: Build renamed Wasm API and facade fixtures
         env: { RUSTFLAGS: "-C link-arg=--allow-undefined" }
         run: |
-          for feature in direct facade; do
+          for feature in direct facade direct,formatting facade,formatting; do
             cargo build --manifest-path crates/kprint-core/tests/fixtures/wasm-plugin/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features "${feature}"
           done
 

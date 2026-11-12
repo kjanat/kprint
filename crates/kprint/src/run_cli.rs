@@ -6,7 +6,6 @@ use crate::arg_parser::ParseArgsError;
 use crate::commands::CheckError;
 use crate::commands::InitConfigFileOptions;
 use crate::configuration::ResolveConfigError;
-use crate::environment::Environment;
 use crate::paths::NoFilesFoundError;
 use crate::plugins::PluginResolver;
 
@@ -108,7 +107,12 @@ impl From<CheckError> for AppError {
   }
 }
 
-pub async fn run_cli<TEnvironment: Environment>(args: &CliArgs, environment: &TEnvironment, plugin_resolver: &Rc<PluginResolver<TEnvironment>>) -> Result<()> {
+pub async fn run_cli<TEnvironment: crate::environment::InitEnvironment>(
+  args: &CliArgs,
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+) -> Result<()> {
+  plugin_resolver.set_reload_plugins(args.reload.plugins);
   match &args.sub_command {
     SubCommand::Help(help_text) => commands::output_help(args, environment, plugin_resolver, help_text).await,
     SubCommand::SubcommandHelp(help_text) => commands::output_subcommand_help(environment, help_text),
@@ -119,10 +123,20 @@ pub async fn run_cli<TEnvironment: Environment>(args: &CliArgs, environment: &TE
     SubCommand::ClearCache => commands::clear_cache(environment),
     SubCommand::Config(cmd) => match cmd {
       ConfigSubCommand::Init {
+        preferences,
         global,
         yes,
         minimum_dependency_age,
       } => {
+        if *preferences {
+          let loader = Rc::new(crate::configuration::PluginResolverOptionsLoader::new(
+            environment.clone(),
+            plugin_resolver.clone(),
+          ));
+          let result = crate::configuration::prompt_for_init_preferences(environment, Some(loader)).await;
+          plugin_resolver.clear_and_shutdown_initialized().await;
+          return result;
+        }
         commands::init_config_file(
           environment,
           plugin_resolver,
@@ -173,6 +187,7 @@ pub async fn run_cli<TEnvironment: Environment>(args: &CliArgs, environment: &TE
         )
         .await
       }
+      ConfigSubCommand::Install(cmd) => commands::install_plugins(cmd, args, environment, plugin_resolver).await,
       ConfigSubCommand::Edit => commands::edit_config_file(args, environment).await,
     },
     SubCommand::Version => commands::output_version(environment),

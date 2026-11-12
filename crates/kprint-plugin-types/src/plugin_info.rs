@@ -23,6 +23,12 @@ pub struct PluginInfo {
   /// Generally in the format: `https://plugins.dprint.dev/<org-or-user>/<repo>/latest.json`
   /// For example: <https://plugins.dprint.dev/dprint/dprint-plugin-typescript/latest.json>
   pub update_url: Option<String>,
+  /// Whether the plugin can format a selected range. Older plugins omit this.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub supports_range_formatting: Option<bool>,
+  /// Whether another plugin may override this process plugin's non-global settings.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub allow_plugin_override_config: Option<bool>,
   /// Set when the plugin reads a configuration file of its own (ex.
   /// `tombi.toml`), which dprint parses and passes to it: the paths
   /// relative to the configuration file's directory to use when its

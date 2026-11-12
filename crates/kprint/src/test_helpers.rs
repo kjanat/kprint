@@ -124,6 +124,7 @@ USAGE:
 SUBCOMMANDS:
   init               Initializes a configuration file in the current directory, or adds plugins to an existing one.
   add                Adds a plugin to the configuration file.
+  install            Downloads and installs configured plugins without formatting files.
   fmt                Formats the source files and writes the result to the file system.
   check              Checks for any files that haven't been formatted.
   config             Functionality related to the configuration file.
@@ -144,6 +145,7 @@ OPTIONS:
   -c, --config [<config>]             Path or url to JSON or TOML configuration file, the configuration text itself (a `{...}` object or TOML), or `-` to read it from stdin. Defaults to dprint.json(c), .dprint.json(c), dprint.toml or .dprint.toml in current or ancestor directory when not provided.
       --config-discovery[=<BOOLEAN>]  Sets the config discovery mode. Set to `false` to completely disable, `ignore-descendants` to avoid finding config files in child directories, or `global` to only use the global config file.
       --plugins <urls/files>...       List of urls or file paths of plugins to use. This overrides what is specified in the config file.
+      --reload[=<config|plugins>]     Checks for newer versions of remote configuration files and plugins instead of using the cached ones. Specify `config` or `plugins` to only check one of them.
   -L, --log-level <log-level>         Set log level [default: info] [possible values: debug, info, warn, error, silent]
 
 ENVIRONMENT VARIABLES:

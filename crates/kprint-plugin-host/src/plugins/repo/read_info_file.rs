@@ -22,6 +22,8 @@ pub struct InfoFile {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct InfoFilePluginInfo {
+  pub display_name: Option<String>,
+  pub never_preselect: bool,
   pub name: String,
   pub version: String,
   pub url: String,
@@ -54,6 +56,9 @@ pub struct InfoFileConfigItem {
 }
 
 impl InfoFilePluginInfo {
+  pub fn display_name(&self) -> &str {
+    self.display_name.as_deref().unwrap_or(&self.name)
+  }
   /// Resolves this plugin's npm package from the registry, when the info file
   /// says it's distributed on npm. `None` means it isn't, so its url is what
   /// belongs in a config file.
@@ -152,7 +157,11 @@ fn get_latest_plugin(value: JsonValue) -> Result<InfoFilePluginInfo> {
   let default_config = obj.take_object("defaultConfig").map(|o| jsonc_to_serde(JsonValue::Object(o)));
   let config_items = obj.take_array("configItems").map(parse_config_items).unwrap_or_default();
 
+  let display_name = obj.take_string("displayName").map(|name| name.into_owned());
+  let never_preselect = obj.take("neverPreselect").is_some_and(|value| is_truthy(&value));
   Ok(InfoFilePluginInfo {
+    display_name,
+    never_preselect,
     name,
     version,
     url,
@@ -246,6 +255,16 @@ fn get_array<'a>(value: &mut JsonObject<'a>, name: &str) -> Result<JsonArray<'a>
   }
 }
 
+fn is_truthy(value: &JsonValue) -> bool {
+  match value {
+    JsonValue::Null => false,
+    JsonValue::Boolean(value) => *value,
+    JsonValue::Number(value) => value.parse::<f64>().map(|value| value != 0.0).unwrap_or(true),
+    JsonValue::String(value) => !value.is_empty(),
+    JsonValue::Array(_) | JsonValue::Object(_) => true,
+  }
+}
+
 #[cfg(test)]
 mod test {
   use super::*;
@@ -263,6 +282,7 @@ mod test {
       .with_info_file(|info| {
         info
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-typescript".to_string(),
             version: "0.17.2".to_string(),
             url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -272,6 +292,7 @@ mod test {
             ..Default::default()
           })
           .add_plugin(TestInfoFilePlugin {
+            never_preselect: false,
             name: "dprint-plugin-jsonc".to_string(),
             version: "0.2.3".to_string(),
             url: "https://plugins.dprint.dev/json-0.2.3.wasm".to_string(),
@@ -293,6 +314,8 @@ mod test {
           plugin_system_schema_version: 4,
           latest_plugins: vec![
             InfoFilePluginInfo {
+              display_name: None,
+              never_preselect: false,
               name: "dprint-plugin-typescript".to_string(),
               version: "0.17.2".to_string(),
               url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
@@ -307,6 +330,8 @@ mod test {
               config_items: vec![],
             },
             InfoFilePluginInfo {
+              display_name: None,
+              never_preselect: false,
               name: "dprint-plugin-jsonc".to_string(),
               version: "0.2.3".to_string(),
               url: "https://plugins.dprint.dev/json-0.2.3.wasm".to_string(),
@@ -331,6 +356,7 @@ mod test {
     let environment = TestEnvironmentBuilder::new()
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
+          never_preselect: false,
           name: "dprint-plugin-exec".to_string(),
           version: "0.5.0".to_string(),
           url: "https://plugins.dprint.dev/exec-0.5.0.json".to_string(),

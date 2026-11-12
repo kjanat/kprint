@@ -14,7 +14,6 @@ use crate::options::ConfigOptions;
 use crate::utils::PathSource;
 use crate::utils::ResolvedFilePathWithText;
 use crate::utils::ResolvedFilePathWithTextRef;
-use crate::utils::resolve_path_source_to_file_with_cache;
 use crate::utils::resolve_url_or_file_path_to_path_source;
 use kprint_discovery::ConfigDiscovery;
 
@@ -24,6 +23,7 @@ pub use kprint_discovery::POSSIBLE_CONFIG_FILE_NAMES;
 
 #[derive(Debug)]
 pub struct ResolvedConfigPathWithText {
+  pub reload: bool,
   pub source: PathSource,
   pub is_first_download: bool,
   pub content: String,
@@ -46,11 +46,17 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
 ) -> Result<Option<ResolvedConfigPathWithText>> {
   fn get_default_paths(args: &dyn ConfigOptions, environment: &impl Environment) -> Result<Option<ResolvedConfigPathWithText>> {
     let start_search_dir = get_start_search_directory(args, environment)?;
+    let start_search_dir = if kprint_discovery::is_project_config_dir(start_search_dir.as_ref(), environment) {
+      start_search_dir.parent().unwrap()
+    } else {
+      start_search_dir
+    };
     let maybe_config_file = get_config_file_in_dir(&start_search_dir, environment)?;
 
     if let Some((path, content)) = maybe_config_file {
       let path = environment.canonicalize(path)?;
       Ok(Some(ResolvedConfigPathWithText {
+        reload: false,
         source: PathSource::new_local(path),
         is_first_download: false,
         content,
@@ -78,7 +84,7 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
   }
 
   let config_discovery = args.config_discovery(environment);
-  if let Some(config) = &args.config() {
+  let mut result = if let Some(config) = &args.config() {
     let base_path = environment.cwd();
     let resolved_file = match config {
       ConfigArg::Text(_) => read_config_arg(config, &base_path, args, environment).await?,
@@ -89,6 +95,7 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
         .map_err(|err| add_config_text_hint(err, value))?,
     };
     Ok(Some(ResolvedConfigPathWithText {
+      reload: false,
       content: resolved_file.content,
       source: resolved_file.source,
       is_first_download: resolved_file.is_first_download,
@@ -108,7 +115,16 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
     Ok(Some(path))
   } else {
     Ok(None)
+  }?;
+  if let Some(config) = &mut result {
+    config.reload = args.reload_config();
+    if let Some(dir) = config.source.maybe_local_path().and_then(|path| path.parent())
+      && kprint_discovery::is_project_config_dir(dir.as_ref(), environment)
+    {
+      config.base_path = dir.parent().unwrap();
+    }
   }
+  Ok(result)
 }
 
 async fn read_config_arg<TEnvironment: Environment>(
@@ -143,7 +159,17 @@ async fn read_config_arg<TEnvironment: Environment>(
         is_first_download: false,
       }
     }
-    ConfigArgSource::File(path_source) => resolve_path_source_to_file_with_cache(path_source, environment).await?.into_text()?,
+    ConfigArgSource::File(path_source) => crate::utils::resolve_path_source_to_file_with_cache_mode(
+      path_source,
+      environment,
+      if args.reload_config() {
+        crate::utils::RemoteCacheMode::Reload
+      } else {
+        crate::utils::RemoteCacheMode::Use
+      },
+    )
+    .await?
+    .into_text()?,
   })
 }
 
@@ -302,6 +328,7 @@ fn resolve_global_config_path_and_text_detail(environment: &impl Environment) ->
     let file_path = global_folder.join_panic_relative(name);
     if let Some(content) = environment.maybe_read_file(&file_path)? {
       return Ok(ResolveGlobalConfigPathResult::Found(ResolvedConfigPathWithText {
+        reload: false,
         source: PathSource::new_local(file_path),
         is_first_download: false,
         content,
@@ -332,6 +359,12 @@ pub fn resolve_global_config_dir(environment: &impl Environment) -> std::io::Res
       None => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Could not find system config directory.")),
     }
   }
+}
+
+pub fn resolve_global_config_dir_path(environment: &impl Environment) -> Option<PathBuf> {
+  resolve_env_var_folder(environment, "DPRINT_CONFIG_DIR")
+    .map(PathBuf::from)
+    .or_else(|| resolve_system_config_dir(environment).map(|dir| dir.join("dprint")))
 }
 
 fn resolve_system_config_dir(environment: &impl Environment) -> Option<PathBuf> {
@@ -387,12 +420,18 @@ fn resolve_or_create_folder(environment: &impl crate::environment::FileSystemEnv
 }
 
 pub fn get_default_config_file_in_ancestor_directories(
-  environment: &impl crate::environment::FileSystemEnvironment,
+  environment: &(impl crate::environment::FileSystemEnvironment + crate::environment::DirectoriesEnvironment),
   start_dir: &Path,
 ) -> Result<Option<ResolvedConfigPathWithText>> {
+  let start_dir = if kprint_discovery::is_project_config_dir(start_dir, environment) {
+    start_dir.parent().unwrap()
+  } else {
+    start_dir
+  };
   for ancestor_dir in start_dir.ancestors() {
     if let Some((ancestor_config_path, content)) = get_config_file_in_dir(ancestor_dir, environment)? {
       return Ok(Some(ResolvedConfigPathWithText {
+        reload: false,
         source: PathSource::new_local(environment.canonicalize(ancestor_config_path)?),
         is_first_download: false,
         content,
@@ -405,8 +444,14 @@ pub fn get_default_config_file_in_ancestor_directories(
   Ok(None)
 }
 
-fn get_config_file_in_dir(dir: impl AsRef<Path>, environment: &impl crate::environment::FileSystemEnvironment) -> std::io::Result<Option<(PathBuf, String)>> {
-  for file_name in POSSIBLE_CONFIG_FILE_NAMES {
+fn get_config_file_in_dir(
+  dir: impl AsRef<Path>,
+  environment: &(impl crate::environment::FileSystemEnvironment + crate::environment::DirectoriesEnvironment),
+) -> std::io::Result<Option<(PathBuf, String)>> {
+  for file_name in kprint_discovery::config_file_names(dir.as_ref(), environment) {
+    if file_name.starts_with(".config/") && environment.path_kind(dir.as_ref().join(".config")) != Some(PathKind::Dir) {
+      continue;
+    }
     let config_path = dir.as_ref().join(file_name);
     if let Some(text) = environment.maybe_read_file(&config_path)? {
       return Ok(Some((config_path, text)));

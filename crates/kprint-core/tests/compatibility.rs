@@ -12,8 +12,8 @@ fn formatting_macro_and_facade_use_the_same_engine() {
     new_line_text: "\n",
   };
   let output = kprint_formatting::format(
-    || {
-      let mut items = PrintItems::new();
+    |arena| {
+      let mut items = PrintItems::new(arena);
       items.push_sc(sc!("hello"));
       items
     },

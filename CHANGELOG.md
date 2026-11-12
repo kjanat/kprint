@@ -1,0 +1,14 @@
+# Changelog
+
+## Unreleased
+
+- Add npm packages in `extends`, explicit `--reload` controls, an `install` command, CLI range formatting with `--lines`, and project configuration discovery under `.config/`.
+- Add init preferences, plugin option editing, file-type selection, plugin ordering, and insertion into existing JSON and TOML configurations.
+- Verify checksum-pinned remote configurations and restrict process-plugin configuration to trusted layers while preserving kprint's exec program allowlists.
+- Pass shebang-derived extensions to plugins while retaining real paths for associations and overrides. Preserve selections across consecutive formatting plugins.
+- Keep editor requests responsive during configuration changes and cancellation. Correct LSP range edits, UTF-16 positions, unsaved paths, and ancestor configuration inheritance.
+- Support sandboxed WASI reactors and native exception handling while preserving supervised compilation, interpreter-first execution, and execution limits for plugin metadata.
+- Port upstream formatting layout fixes and the arena-based formatting API. Formatting library users must now supply an arena to `PrintItems` and its helpers; see `docs/overview.md` and the Wasm SDK arena pool.
+- Report deprecation notices from npm and plugin update metadata. Keep cached npm configuration usable offline and bound advisory metadata and schema downloads.
+- Preserve TOML array comments and effective init defaults, deduplicate option choices, retain nullable values, and redraw prompts on terminal resize.
+- Allow shutdown to interrupt stalled process-plugin liveness probes and replacement handshakes.

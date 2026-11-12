@@ -75,6 +75,8 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
       config_schema_paths: Vec::new(),
       config_local_schemas_use_root: false,
       config_reference_paths: Vec::new(),
+      supports_range_formatting: None,
+      allow_plugin_override_config: None,
       config_relative_path_bases: Default::default(),
     }
   }
@@ -227,6 +229,8 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
         "plugin-config: {}",
         result.map(|r| String::from_utf8(r).unwrap()).unwrap_or_else(|| new_text.to_string())
       )
+    } else if let Some(text) = file_text.strip_suffix("output_file_path") {
+      format!("{}{}", text, request.file_path.display())
     } else if file_text == "should_error" {
       return Err("Did error.".into());
     } else {

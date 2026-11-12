@@ -70,7 +70,14 @@ Implementing a Process plugin is easy if you're using Rust as there are several 
          config_key: "keyGoesHere".to_string(),
          help_url: "".to_string(),          // ex. https://dprint.dev/plugins/prettier
          config_schema_url: "".to_string(), // the schema url for your config file
-         update_url: Some(None),            // ex. https://plugins.dprint.dev/dprint/dprint-plugin-prettier/latest.json
+         update_url: None,                  // ex. https://plugins.dprint.dev/dprint/dprint-plugin-prettier/latest.json
+         supports_range_formatting: None,   // Some(true) or Some(false) when known
+         allow_plugin_override_config: None,
+         config_files: None,
+         config_schema_paths: Vec::new(),
+         config_local_schemas_use_root: false,
+         config_reference_paths: Vec::new(),
+         config_relative_path_bases: Default::default(),
        }
      }
 

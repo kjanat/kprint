@@ -155,6 +155,7 @@ pub struct TestEnvironment {
   stdout_messages: Arc<Mutex<Vec<String>>>,
   stderr_messages: Arc<Mutex<Vec<String>>>,
   remote_files: Arc<Mutex<HashMap<String, Result<Vec<u8>>>>>,
+  unresponsive_remote_files: Arc<Mutex<Vec<String>>>,
   remote_file_redirects: Arc<Mutex<HashMap<String, String>>>,
   /// How long each URL takes to respond, or `None` when it never does.
   remote_file_delays: Arc<Mutex<HashMap<String, Option<std::time::Duration>>>>,
@@ -215,6 +216,7 @@ impl TestEnvironment {
       stdout_messages: Default::default(),
       stderr_messages: Default::default(),
       remote_files: Default::default(),
+      unresponsive_remote_files: Default::default(),
       remote_file_redirects: Default::default(),
       remote_file_delays: Default::default(),
       remote_file_downloads: Default::default(),
@@ -313,7 +315,16 @@ impl TestEnvironment {
     self.remote_files.lock().insert(String::from(path), Err(anyhow!("{}", err)));
   }
 
-  /// Makes the url respond with a 404 from now on.
+  /// Makes downloads wait until `remove_unresponsive_remote_file` clears the URL,
+  /// or until the current download deadline expires.
+  pub fn add_unresponsive_remote_file(&self, url: &str) {
+    self.unresponsive_remote_files.lock().push(url.to_string());
+  }
+
+  pub fn remove_unresponsive_remote_file(&self, url: &str) {
+    self.unresponsive_remote_files.lock().retain(|u| u != url);
+  }
+
   pub fn remove_remote_file(&self, path: &str) {
     self.remote_files.lock().remove(path);
   }
@@ -636,6 +647,19 @@ impl SystemTimeNow for TestEnvironment {
 impl UrlDownloader for TestEnvironment {
   async fn download_file_no_redirects(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     *self.remote_file_downloads.lock().entry(url.to_string()).or_default() += 1;
+    let wait_until_removed = async {
+      while self.unresponsive_remote_files.lock().iter().any(|u| u == url.as_str()) {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+      }
+    };
+    match crate::utils::current_deadline() {
+      Some(deadline) => {
+        if tokio::time::timeout_at(deadline.into(), wait_until_removed).await.is_err() {
+          bail!("Error downloading {} - Timed out.", url);
+        }
+      }
+      None => wait_until_removed.await,
+    }
 
     let delay = self.remote_file_delays.lock().get(url.as_str()).copied();
     if let Some(delay) = delay {
@@ -1114,5 +1138,26 @@ impl kprint_platform::environment::ConsentEnvironment for TestEnvironment {
   }
   fn is_terminal_interactive(&self) -> bool {
     *self.is_terminal_interactive.lock()
+  }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+  use super::*;
+
+  #[test]
+  fn unresponsive_download_stops_at_the_callers_deadline() {
+    let environment = TestEnvironment::new();
+    environment.add_unresponsive_remote_file("https://example.com/config.json");
+    environment.clone().run_in_runtime(async move {
+      let url = Url::parse("https://example.com/config.json").unwrap();
+      let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+      let result = crate::utils::run_before_deadline(deadline, environment.download_file_no_redirects(&url, None)).await;
+      let error = result
+        .expect("download must report its timeout before the outer grace period expires")
+        .err()
+        .unwrap();
+      assert!(error.to_string().contains("Timed out."));
+    });
   }
 }

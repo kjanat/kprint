@@ -13,7 +13,9 @@ mod lax_single_process_fs_flag;
 mod logging;
 mod minimum_dependency_age;
 mod no_proxy;
+mod npm_package;
 mod npm_specifier;
+pub use npm_package::*;
 mod path_source;
 mod pretty_print_json_text;
 mod process;
@@ -52,3 +54,13 @@ pub use unsync::*;
 pub use update_checker::*;
 
 pub use kprint_host_api::ui::*;
+
+pub fn replace_control_chars(text: &str) -> String {
+  text
+    .chars()
+    .map(|c| if c.is_control() && !matches!(c, '\n' | '\t') { '\u{FFFD}' } else { c })
+    .collect()
+}
+
+mod format_range;
+pub use format_range::*;

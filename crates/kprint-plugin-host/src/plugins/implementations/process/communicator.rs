@@ -31,6 +31,8 @@ struct InnerState {
 pub struct InitializedProcessPluginCommunicator<TEnvironment: Environment> {
   inner: AsyncMutex<InnerState>,
   restart_info: ProcessRestartInfo<TEnvironment>,
+  shutdown_token: tokio_util::sync::CancellationToken,
+  restart_lock: AsyncMutex<()>,
 }
 
 impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironment> {
@@ -47,6 +49,8 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
         communicator: Rc::new(communicator),
       }),
       restart_info,
+      shutdown_token: Default::default(),
+      restart_lock: Default::default(),
     };
 
     Ok(initialized_communicator)
@@ -80,6 +84,7 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
   }
 
   pub async fn shutdown(&self) {
+    self.shutdown_token.cancel();
     self.get_inner().await.shutdown().await
   }
 
@@ -119,10 +124,8 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
   }
 
   pub async fn format_text(&self, request: InitializedPluginFormatRequest) -> FormatResult {
-    match self
-      .get_inner_ensure_config(&request.config)
-      .await
-      .map_err(FormatError::new)?
+    let communicator = self.get_inner_ensure_config(&request.config).await.map_err(FormatError::new)?;
+    match communicator
       .format_text(ProcessPluginCommunicatorFormatRequest {
         file_path: request.file_path,
         file_bytes: request.file_text,
@@ -136,18 +139,32 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
     {
       Ok(result) => Ok(result),
       Err(err) => {
-        // attempt to restart the communicator if this fails and it's no longer alive
-        let mut inner = self.inner.lock().await;
-        if inner.communicator.is_process_alive().await {
-          Err(err)
-        } else {
-          *inner = InnerState {
-            registered_configs: Default::default(),
-            communicator: Rc::new(create_new_communicator(&self.restart_info).await.map_err(FormatError::new)?),
-          };
-          Err(err)
-        }
+        self.restart_if_dead(&communicator).await.map_err(FormatError::new)?;
+        Err(err)
       }
+    }
+  }
+
+  async fn restart_if_dead(&self, failed: &Rc<ProcessPluginCommunicator>) -> Result<()> {
+    tokio::select! {
+      biased;
+      _ = self.shutdown_token.cancelled() => Ok(()),
+      result = async {
+        let _restart = self.restart_lock.lock().await;
+        let current = self.get_inner().await;
+        if !Rc::ptr_eq(&current, failed) || current.is_process_alive().await {
+          return Ok(());
+        }
+        // No inner lock is held during the handshake. Cancelling this future
+        // drops the replacement's OwnedChild, including a stalled handshake.
+        let replacement = create_new_communicator(&self.restart_info).await?;
+        let mut inner = self.inner.lock().await;
+        *inner = InnerState {
+          registered_configs: Default::default(),
+          communicator: Rc::new(replacement),
+        };
+        Ok(())
+      } => result,
     }
   }
 
@@ -371,5 +388,111 @@ mod test {
         communicator.shutdown().await;
       }
     })
+  }
+  #[cfg(unix)]
+  #[test]
+  fn shutdown_interrupts_stalled_liveness_and_replacement_handshakes() {
+    use sys_traits::FsRead;
+    use sys_traits::FsSetPermissions;
+    use sys_traits::FsWrite;
+    for stalled_handshake in [false, true] {
+      let real_fs = sys_traits::impls::RealSys;
+      let dir = tempfile::tempdir().unwrap();
+      let script = dir.path().join("plugin");
+      let marker = dir.path().join("waiting");
+      let handshake = "printf '\\000\\000\\000\\000\\000\\000\\000\\005'";
+      let initial = if stalled_handshake {
+        format!("#!/bin/sh\n{handshake}\nexec sleep 120\n")
+      } else {
+        format!("#!/bin/sh\n{handshake}\nhead -c 12 | wc -c > '{}'\nexec sleep 120\n", marker.display())
+      };
+      real_fs.fs_write(&script, initial).unwrap();
+      real_fs.fs_set_permissions(&script, 0o700).unwrap();
+      let environment = TestEnvironmentBuilder::new().build();
+      environment.clone().run_in_runtime(async move {
+        let communicator = InitializedProcessPluginCommunicator::new("stalled".into(), script.clone(), environment.clone())
+          .await
+          .unwrap();
+        let failed = communicator.get_inner().await;
+        if stalled_handshake {
+          failed.kill();
+          real_fs
+            .fs_write(&script, format!("#!/bin/sh\nprintf 'handshake' > '{}'\nexec sleep 120\n", marker.display()))
+            .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+          let shutdown = async {
+            let expected = if stalled_handshake { "handshake" } else { "12" };
+            while !real_fs.fs_read_to_string(&marker).is_ok_and(|text| text.trim() == expected) {
+              tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            communicator.shutdown().await;
+          };
+          let (result, ()) = tokio::join!(communicator.restart_if_dead(&failed), shutdown);
+          result.unwrap();
+        })
+        .await
+        .expect("shutdown blocked on a plugin probe or replacement handshake");
+        environment.clear_logs();
+      });
+    }
+  }
+
+  #[test]
+  fn should_not_restart_process_plugin_after_shutdown() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin().build();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let test_environment = environment.clone();
+    // run on another thread so a hang fails the test instead of blocking it forever
+    let handle = std::thread::spawn(move || {
+      test_environment.run_in_runtime({
+        let environment = test_environment.clone();
+        async move {
+          let communicator = Rc::new(InitializedProcessPluginCommunicator::new_test_plugin_communicator(environment.clone()).await);
+          let format_config = Arc::new(FormatConfig {
+            id: FormatConfigId::from_raw(1),
+            plugin: Default::default(),
+            global: Default::default(),
+            base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+          });
+
+          // start up a format that will never finish
+          let handle = kprint_async_runtime::spawn({
+            let communicator = communicator.clone();
+            async move {
+              communicator
+                .format_text(InitializedPluginFormatRequest {
+                  file_path: PathBuf::from("test.txt"),
+                  // special text that makes it wait for cancellation
+                  file_text: b"wait_cancellation".to_vec(),
+                  range: None,
+                  config: format_config,
+                  override_config: Default::default(),
+                  on_host_format: Rc::new(|_| future::ready(Ok(None)).boxed_local()),
+                  token: Arc::new(NullCancellationToken),
+                })
+                .await
+            }
+          });
+
+          // give it some time to start then shut down while it's in flight
+          tokio::time::sleep(Duration::from_millis(100)).await;
+          let inner_communicator = communicator.get_inner().await;
+          communicator.shutdown().await;
+
+          // the in-flight format should error without starting a new process
+          assert!(handle.await.unwrap().is_err());
+          assert!(Rc::ptr_eq(&inner_communicator, &communicator.get_inner().await));
+        }
+      });
+      tx.send(()).unwrap();
+    });
+    let completed = rx.recv_timeout(std::time::Duration::from_secs(10));
+    // a disconnect means the thread panicked, which joining it reports
+    assert!(
+      !matches!(completed, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+      "hung shutting down a process plugin with a format in flight"
+    );
+    handle.join().unwrap();
   }
 }

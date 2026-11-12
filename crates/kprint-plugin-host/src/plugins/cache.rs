@@ -47,6 +47,7 @@ use crate::utils::resolve_url_or_file_path_to_path_source;
 use crate::utils::verify_sha256_checksum;
 
 pub struct PluginCacheItem {
+  pub was_set_up: bool,
   pub file_path: PathBuf,
   pub info: PluginInfo,
   pub plugin_kind: PluginKind,
@@ -625,6 +626,7 @@ where
     }
 
     Ok(PluginCacheItem {
+      was_set_up: true,
       file_path: setup_result.file_path,
       info: setup_result.plugin_info,
       plugin_kind,
@@ -645,6 +647,7 @@ where
       return None;
     }
     Some(PluginCacheItem {
+      was_set_up: false,
       file_path: meta.artifact_file_path(hash, &self.environment),
       resolution_cache: PluginResolutionCache::new(resolutions_path(hash, &self.environment), artifact_id(&meta)),
       build_id: build_id(&meta),
@@ -805,6 +808,8 @@ mod test {
         config_schema_paths: Vec::new(),
         config_local_schemas_use_root: false,
         config_reference_paths: Vec::new(),
+        supports_range_formatting: None,
+        allow_plugin_override_config: None,
         config_relative_path_bases: Default::default(),
       },
       executable_sub_path: None,

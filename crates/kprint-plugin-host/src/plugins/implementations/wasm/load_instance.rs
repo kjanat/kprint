@@ -38,10 +38,22 @@ impl WasmInstance {
 
 /// Instantiates a compiled wasm module with the given linker.
 pub fn load_instance(store: &mut Store, module: &WasmModule, linker: &Linker) -> Result<WasmInstance> {
+  let mut linker = linker.clone();
+  super::instance::wasi::native::add_unsupported_wasi_imports(&mut linker, store, &module.inner)?;
   let instance = match linker.instantiate(&mut *store, &module.inner) {
     Ok(instance) => instance,
     Err(err) => bail!("Error instantiating module: {:#}", err),
   };
+  if !module.initializes_on_start
+    && let Some(initialize) = instance.get_func(&mut *store, "_initialize")
+  {
+    initialize
+      .typed::<(), ()>(&*store)?
+      .call(&mut *store, ())
+      .map_err(|err| anyhow::anyhow!("Error initializing module: {:#}", err))?;
+  } else if instance.get_func(&mut *store, "_start").is_some() && instance.get_func(&mut *store, "_initialize").is_none() {
+    bail!("WASI plugins must be built as reactors exporting _initialize, not commands exporting _start.");
+  }
   Ok(WasmInstance {
     inner: instance,
     _engine: module.engine.clone(),
@@ -54,12 +66,24 @@ pub struct WasmModule {
   inner: wasmtime::Module,
   engine: wasmtime::Engine,
   version: PluginSchemaVersion,
+  initializes_on_start: bool,
+}
+
+pub fn plugin_initializes_on_start(info: &kprint_plugin_types::PluginInfo) -> bool {
+  info.name == "dprint-plugin-gofumpt"
+    && deno_semver::Version::parse_from_npm(&info.version).is_ok_and(|version| version < deno_semver::Version::parse_from_npm("0.0.19").unwrap())
 }
 
 impl WasmModule {
+  pub fn with_initializes_on_start(mut self, value: bool) -> Self {
+    self.initializes_on_start = value;
+    self
+  }
+
   pub fn new(module: wasmtime::Module, engine: wasmtime::Engine) -> Result<Self> {
     Ok(Self {
       version: get_current_plugin_schema_version(&module)?,
+      initializes_on_start: false,
       inner: module,
       engine,
     })
@@ -80,7 +104,10 @@ impl WasmModule {
   /// Creates a store backed by the same engine as this module so that the
   /// module and the store it's instantiated in always use the same backend.
   pub fn new_store(&self, data: WasmHostState) -> Store {
-    Store::new(&self.engine, data)
+    let metadata = matches!(data, WasmHostState::Empty);
+    let mut store = Store::new(&self.engine, data);
+    store.set_epoch_deadline(if metadata { METADATA_EPOCH_TICKS } else { u64::MAX / 2 });
+    store
   }
 }
 
@@ -119,6 +146,10 @@ impl WasmModuleCreator {
   /// engine (optimization level doesn't affect artifact compatibility).
   pub fn new_unoptimized() -> Self {
     Self { engine: new_engine(false) }
+  }
+
+  pub fn validate_wasm_bytes(&self, bytes: &[u8]) -> Result<()> {
+    Ok(Module::validate(&self.engine, bytes)?)
   }
 
   pub fn create_from_wasm_bytes(&self, wasm_bytes: &[u8]) -> Result<WasmModule> {
@@ -178,6 +209,9 @@ pub const MAX_WASM_STACK_SIZE: usize = 1024 * 1024;
 /// recoverable trap) before exhausting the native stack (a crash).
 pub const WASM_PLUGIN_THREAD_STACK_SIZE: usize = MAX_WASM_STACK_SIZE + 3 * 1024 * 1024;
 
+/// Each metadata export gets three seconds of wall-clock execution.
+pub(super) const METADATA_EPOCH_TICKS: u64 = 30;
+
 fn new_engine(optimize: bool) -> wasmtime::Engine {
   let mut config = Config::new();
   // optimize plugins for speed. compiling without optimizations is only a
@@ -192,8 +226,21 @@ fn new_engine(optimize: bool) -> wasmtime::Engine {
     let pulley_target = if cfg!(target_endian = "big") { "pulley64be" } else { "pulley64" };
     config.target(pulley_target).expect("failed to set pulley target");
   }
+  config.epoch_interruption(true);
+  config.table_lazy_init(false);
+  #[cfg(not(windows))]
+  config.native_unwind_info(false);
   config.max_wasm_stack(MAX_WASM_STACK_SIZE);
-  Engine::new(&config).expect("failed to create wasmtime engine")
+  let engine = Engine::new(&config).expect("failed to create wasmtime engine");
+  let weak = engine.weak();
+  std::thread::spawn(move || {
+    loop {
+      std::thread::sleep(std::time::Duration::from_millis(100));
+      let Some(engine) = weak.upgrade() else { break };
+      engine.increment_epoch();
+    }
+  });
+  engine
 }
 
 // a mapped file can't be replaced on Windows, which is why modules are only
@@ -226,5 +273,139 @@ mod test {
     std::fs::rename(&temp_file_path, &file_path).unwrap();
     assert_eq!(plugin_name(&module), "test-plugin");
     assert!(wasm_module_creator.create_from_serialized_file(&file_path).is_err());
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wasmtime::Val;
+
+  use super::super::instance::create_identity_import_object;
+  use super::*;
+
+  #[test]
+  fn initializes_wasi_reactor() {
+    let (mut store, instance) = load(
+      r#"(import "wasi_snapshot_preview1" "sock_shutdown" (func (param i32 i32) (result i32)))
+         (global $count (mut i32) (i32.const 0))
+         (func (export "_initialize") (global.set $count (i32.add (global.get $count) (i32.const 1))))
+         (func (export "get_count") (result i32) (global.get $count))"#,
+    )
+    .unwrap();
+    let mut results = [Val::I32(0)];
+    let get_count = instance.get_function(&mut store, "get_count").unwrap();
+    get_count.call(&mut store, &[], &mut results).unwrap();
+    assert_eq!(results[0].unwrap_i32(), 1);
+  }
+
+  #[test]
+  fn skips_initialize_when_module_initializes_on_start() {
+    // traps when initialized a second time
+    let body = r#"(global $count (mut i32) (i32.const 0))
+         (func $init (export "_initialize")
+           (if (global.get $count) (then unreachable))
+           (global.set $count (i32.const 1)))
+         (start $init)"#;
+    let err = load(body).err().unwrap();
+    assert!(format!("{:#}", err).starts_with("Error initializing module: "), "{:#}", err);
+    assert!(load_with(body, |module| module.with_initializes_on_start(true)).is_ok());
+  }
+
+  #[test]
+  fn gofumpt_initializes_on_start() {
+    let run = |name: &str, version: &str| {
+      plugin_initializes_on_start(&kprint_plugin_types::PluginInfo {
+        name: name.to_string(),
+        version: version.to_string(),
+        config_key: String::new(),
+        config_relative_path_bases: Default::default(),
+        config_files: None,
+        config_schema_paths: vec![],
+        config_local_schemas_use_root: false,
+        config_reference_paths: vec![],
+        help_url: String::new(),
+        config_schema_url: String::new(),
+        update_url: None,
+        supports_range_formatting: None,
+        allow_plugin_override_config: None,
+      })
+    };
+    assert!(run("dprint-plugin-gofumpt", "0.0.1"));
+    assert!(run("dprint-plugin-gofumpt", "0.0.18"));
+    assert!(!run("dprint-plugin-gofumpt", "0.0.19"));
+    assert!(!run("dprint-plugin-gofumpt", "0.1.0"));
+    assert!(!run("dprint-plugin-gofumpt", "invalid"));
+    assert!(!run("dprint-plugin-other", "0.0.18"));
+  }
+
+  #[test]
+  fn errors_when_initializing_fails() {
+    let err = load(
+      r#"(import "wasi_snapshot_preview1" "proc_exit" (func $proc_exit (param i32)))
+         (func (export "_initialize") (call $proc_exit (i32.const 1)))"#,
+    )
+    .err()
+    .unwrap();
+    let text = format!("{:#}", err);
+    assert!(text.starts_with("Error initializing module: "), "{}", text);
+    assert!(text.contains("The plugin attempted to exit with code 1."), "{}", text);
+  }
+
+  #[test]
+  fn errors_for_wasi_command() {
+    let err = load(r#"(func (export "_start"))"#).err().unwrap();
+    assert_eq!(
+      format!("{:#}", err),
+      "WASI plugins must be built as reactors exporting _initialize, not commands exporting _start."
+    );
+    // ok when it has both
+    assert!(load(r#"(func (export "_start")) (func (export "_initialize"))"#).is_ok());
+  }
+
+  #[test]
+  fn runs_module_with_exception_handling() {
+    // NativeAOT-LLVM plugins built with WasmEnableExceptionHandling throw and catch with exnref
+    let (mut store, instance) = load(
+      r#"(tag $e (param i32))
+         (func $thrower (param i32) (throw $e (local.get 0)))
+         (func (export "rethrows") (param i32) (result i32)
+           (block $outer (result i32)
+             (try_table (catch $e $outer)
+               (block $caught (result i32 exnref)
+                 (try_table (catch_ref $e $caught)
+                   (call $thrower (local.get 0)))
+                 (unreachable))
+               (throw_ref))
+             (i32.const -1)))"#,
+    )
+    .unwrap();
+    let mut results = [Val::I32(0)];
+    let rethrows = instance.get_function(&mut store, "rethrows").unwrap();
+    rethrows.call(&mut store, &[Val::I32(7)], &mut results).unwrap();
+    assert_eq!(results[0].unwrap_i32(), 7);
+  }
+
+  #[test]
+  fn errors_for_unknown_import() {
+    let err = load(r#"(import "dprint" "host_unknown" (func))"#).err().unwrap();
+    let text = format!("{:#}", err);
+    assert!(text.starts_with("Error instantiating module: "), "{}", text);
+    assert!(text.contains("host_unknown"), "{}", text);
+  }
+
+  fn load(body: &str) -> Result<(Store, WasmInstance)> {
+    load_with(body, |module| module)
+  }
+
+  fn load_with(body: &str, map_module: impl FnOnce(WasmModule) -> WasmModule) -> Result<(Store, WasmInstance)> {
+    let wasm = wat::parse_str(format!(
+      r#"(module {} (func (export "dprint_plugin_version_4") (result i32) (i32.const 4)))"#,
+      body
+    ))?;
+    let module = map_module(WasmModuleCreator::default().create_from_wasm_bytes(&wasm)?);
+    let linker = create_identity_import_object(module.version(), module.engine())?;
+    let mut store = module.new_store(WasmHostState::Empty);
+    let instance = load_instance(&mut store, &module, &linker)?;
+    Ok((store, instance))
   }
 }

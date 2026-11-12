@@ -325,6 +325,7 @@ impl RemoteExec {
       config,
       origins,
       remote_exec,
+      ..
     } = plugin_configuration;
     let policy = take_policy(config)?;
     let scopes = vec![RemoteExecScope {

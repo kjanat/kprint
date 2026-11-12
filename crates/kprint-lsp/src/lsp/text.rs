@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use anyhow::bail;
+use kprint_plugin_types::FormatRange;
 use similar::ChangeTag;
 use similar::TextDiff;
 use std::collections::HashMap;
@@ -34,6 +35,8 @@ impl Utf16Char {
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct LineIndex {
   utf8_offsets: Vec<TextSize>,
+  /// The u8 offset of the end of each line excluding its line ending.
+  utf8_line_ends: Vec<TextSize>,
   utf16_lines: HashMap<u32, Vec<Utf16Char>>,
   utf16_offsets: Vec<TextSize>,
 }
@@ -44,7 +47,9 @@ impl LineIndex {
     let mut utf16_chars = Vec::new();
 
     let mut utf8_offsets = vec![0.into()];
+    let mut utf8_line_ends = Vec::new();
     let mut utf16_offsets = vec![0.into()];
+    let mut was_last_cr = false;
     let mut curr_row = 0.into();
     let mut curr_col = 0.into();
     let mut curr_offset_u16 = 0.into();
@@ -54,6 +59,9 @@ impl LineIndex {
       curr_row += c_len;
       curr_offset_u16 += TextSize::from(c.len_utf16() as u32);
       if c == '\n' {
+        let line_ending_len = if was_last_cr { 2 } else { 1 };
+        utf8_line_ends.push(curr_row - TextSize::from(line_ending_len));
+        was_last_cr = false;
         utf8_offsets.push(curr_row);
         utf16_offsets.push(curr_offset_u16);
 
@@ -66,6 +74,7 @@ impl LineIndex {
         line += 1;
         continue;
       }
+      was_last_cr = c == '\r';
 
       if !c.is_ascii() {
         utf16_chars.push(Utf16Char {
@@ -78,6 +87,7 @@ impl LineIndex {
 
     // utf8_offsets and utf16_offsets length is equal to (# of lines + 1)
     utf8_offsets.push(curr_row);
+    utf8_line_ends.push(curr_row);
     utf16_offsets.push(curr_offset_u16);
 
     if !utf16_chars.is_empty() {
@@ -86,6 +96,7 @@ impl LineIndex {
 
     LineIndex {
       utf8_offsets,
+      utf8_line_ends,
       utf16_lines,
       utf16_offsets,
     }
@@ -93,22 +104,30 @@ impl LineIndex {
 
   /// Convert a u16 based range to a u8 TextRange.
   pub fn get_text_range(&self, range: lsp::Range) -> Result<TextRange> {
-    let start = self.offset(range.start)?;
-    let end = self.offset(range.end)?;
+    let start = self.offset(range.start);
+    let end = self.offset(range.end);
+    if start > end {
+      bail!("The start of the range was after its end.")
+    }
     Ok(TextRange::new(start, end))
   }
 
   /// Return a u8 offset based on a u16 position.
-  pub fn offset(&self, position: lsp::Position) -> Result<TextSize> {
-    let col = self.utf16_to_utf8_col(position.line, position.character);
-    if let Some(line_offset) = self.utf8_offsets.get(position.line as usize) {
-      Ok(line_offset + col)
-    } else {
-      bail!("The position is out of range.")
-    }
+  ///
+  /// A position past the end of a line is the end of that line, which is how
+  /// the language server protocol defines it, and a position past the last
+  /// line is the end of the text.
+  pub fn offset(&self, position: lsp::Position) -> TextSize {
+    let line = position.line as usize;
+    let Some(line_end) = self.utf8_line_ends.get(line).copied() else {
+      return self.utf8_line_ends.last().copied().unwrap_or_default();
+    };
+    let line_start = u32::from(self.utf8_offsets[line]);
+    let col = u32::from(self.utf16_to_utf8_col(position.line, position.character));
+    std::cmp::min(TextSize::from(line_start.saturating_add(col)), line_end)
   }
 
-  /// Returns a u16 position based on a u8 offset.
+  /// Returns a u16 position based on a u16 offset.
   pub fn position_utf16(&self, offset: TextSize) -> lsp::Position {
     let line = partition_point(&self.utf16_offsets, |&it| it <= offset) - 1;
     let line_start_offset = self.utf16_offsets[line];
@@ -120,11 +139,24 @@ impl LineIndex {
     }
   }
 
+  /// Returns the zero based number of the last line, which is the line
+  /// that the end of the text is on.
+  pub fn last_line(&self) -> u32 {
+    // only a default index has no lines
+    self.utf8_line_ends.len().saturating_sub(1) as u32
+  }
+
   fn utf16_to_utf8_col(&self, line: u32, mut col: u32) -> TextSize {
     if let Some(utf16_chars) = self.utf16_lines.get(&line) {
       for c in utf16_chars {
         if col > u32::from(c.start) {
-          col += u32::from(c.len()) - c.len_utf16() as u32;
+          col = col.saturating_add(u32::from(c.len()) - c.len_utf16() as u32);
+          // a position in the middle of a character (between the two
+          // utf-16 code units of a surrogate pair) is the character's start
+          if col < u32::from(c.end) {
+            col = c.start.into();
+            break;
+          }
         } else {
           break;
         }
@@ -166,15 +198,24 @@ fn detect_crlf(text: &str) -> Option<bool> {
   }
 }
 
-/// Compare two strings and return a vector of text edit records which are
-/// supported by the Language Server Protocol.
-pub fn get_edits(a: &str, b: &str, line_index: &LineIndex) -> Vec<TextEdit> {
+/// An edit of a text where the offsets are UTF-16 code units of that text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Utf16TextEdit {
+  pub start: u32,
+  pub end: u32,
+  pub new_text: String,
+}
+
+/// Compare two strings and return the edits that change the first into the
+/// second, which never split a character.
+pub fn get_utf16_edits(a: &str, b: &str) -> Vec<Utf16TextEdit> {
   if a == b {
     return vec![];
   }
   // Heuristic to detect things like minified files. Diffing is expensive.
-  if b.chars().filter(|c| *c == '\n').count() > line_index.utf8_offsets.len() * 3 {
-    return vec![replace_whole_file(a, b, line_index)];
+  // This is three times the number of line offsets of a line index of `a`.
+  if b.chars().filter(|c| *c == '\n').count() > (a.chars().filter(|c| *c == '\n').count() + 2) * 3 {
+    return vec![replace_whole_file(a, b)];
   }
   // diff at the character level, coalescing consecutive changes of the same
   // kind into runs so the edit construction below can work a chunk at a time.
@@ -186,7 +227,7 @@ pub fn get_edits(a: &str, b: &str, line_index: &LineIndex) -> Vec<TextEdit> {
   let deadline = Instant::now() + Duration::from_millis(500);
   let diff = TextDiff::configure().deadline(deadline).diff_chars(a, b);
   if Instant::now() >= deadline {
-    return vec![replace_whole_file(a, b, line_index)];
+    return vec![replace_whole_file(a, b)];
   }
   let mut chunks: Vec<(ChangeTag, String)> = Vec::new();
   for change in diff.iter_all_changes() {
@@ -196,41 +237,31 @@ pub fn get_edits(a: &str, b: &str, line_index: &LineIndex) -> Vec<TextEdit> {
     }
   }
 
-  let mut text_edits = Vec::<TextEdit>::new();
-  let mut iter = chunks.iter().peekable();
-  let mut a_pos = TextSize::from(0);
+  let mut text_edits = Vec::<Utf16TextEdit>::new();
+  let mut iter = chunks.into_iter().peekable();
+  let mut a_pos = 0;
   loop {
     let chunk = iter.next();
     match chunk {
       None => break,
       Some((ChangeTag::Equal, e)) => {
-        a_pos += TextSize::from(e.encode_utf16().count() as u32);
+        a_pos += e.encode_utf16().count() as u32;
       }
       Some((ChangeTag::Delete, d)) => {
-        let start = line_index.position_utf16(a_pos);
-        a_pos += TextSize::from(d.encode_utf16().count() as u32);
-        let end = line_index.position_utf16(a_pos);
-        let range = lsp::Range { start, end };
-        match iter.peek() {
-          Some((ChangeTag::Insert, i)) => {
-            iter.next();
-            text_edits.push(TextEdit {
-              range,
-              new_text: i.to_string(),
-            });
-          }
-          _ => text_edits.push(TextEdit {
-            range,
-            new_text: "".to_string(),
-          }),
-        }
+        let start = a_pos;
+        a_pos += d.encode_utf16().count() as u32;
+        let end = a_pos;
+        let new_text = match iter.next_if(|(tag, _)| *tag == ChangeTag::Insert) {
+          Some((_, i)) => i,
+          None => String::new(),
+        };
+        text_edits.push(Utf16TextEdit { start, end, new_text });
       }
       Some((ChangeTag::Insert, i)) => {
-        let pos = line_index.position_utf16(a_pos);
-        let range = lsp::Range { start: pos, end: pos };
-        text_edits.push(TextEdit {
-          range,
-          new_text: i.to_string(),
+        text_edits.push(Utf16TextEdit {
+          start: a_pos,
+          end: a_pos,
+          new_text: i,
         });
       }
     }
@@ -240,14 +271,133 @@ pub fn get_edits(a: &str, b: &str, line_index: &LineIndex) -> Vec<TextEdit> {
 }
 
 /// A single edit that replaces the entire document with `new_text`.
-fn replace_whole_file(old_text: &str, new_text: &str, line_index: &LineIndex) -> TextEdit {
-  TextEdit {
-    range: lsp::Range {
-      start: lsp::Position::new(0, 0),
-      end: line_index.position_utf16(TextSize::from(old_text.len() as u32)),
-    },
+fn replace_whole_file(old_text: &str, new_text: &str) -> Utf16TextEdit {
+  Utf16TextEdit {
+    start: 0,
+    end: old_text.encode_utf16().count() as u32,
     new_text: new_text.to_string(),
   }
+}
+
+/// How to format the range of a text in an editor.
+pub struct RangeFormat {
+  /// The range to give the plugins, which is `None` for the whole text.
+  pub plugin_range: FormatRange,
+  /// The range of the edits to keep, which is `None` for all of them.
+  pub edits_range: FormatRange,
+}
+
+impl RangeFormat {
+  /// Gets how to format the range. Plugins that say they format a range are
+  /// given it as it is because they know what to format around it (ex. the
+  /// nodes it overlaps). The ones that don't say are given the range's whole
+  /// lines and only the edits within those lines are kept.
+  pub fn new(text: &str, range: FormatRange, plugins_format_range: bool) -> Self {
+    if plugins_format_range {
+      RangeFormat {
+        plugin_range: range,
+        edits_range: None,
+      }
+    } else {
+      let range = range.and_then(|range| expand_to_lines(text, range));
+      RangeFormat {
+        plugin_range: range.clone(),
+        edits_range: range,
+      }
+    }
+  }
+}
+
+/// Gets the edits that change the text to the formatted text, which are only
+/// the ones within the range when there is one.
+pub fn get_range_utf16_edits(text: &str, formatted_text: &str, range: &FormatRange) -> Vec<Utf16TextEdit> {
+  let mut edits = get_utf16_edits(text, formatted_text);
+  let Some(range) = range else {
+    return edits;
+  };
+  if edits.len() == 1 && edits[0].start == 0 && edits[0].end == text.encode_utf16().count() as u32 {
+    // The character diff may fall back to a document replacement. Recover
+    // independent changed lines, then trim unchanged characters in each hunk.
+    let diff = TextDiff::configure()
+      .deadline(Instant::now() + Duration::from_millis(500))
+      .diff_lines(text, formatted_text);
+    edits.clear();
+    let mut old_offset = 0;
+    let mut old = String::new();
+    let mut new = String::new();
+    for change in diff.iter_all_changes() {
+      match change.tag() {
+        ChangeTag::Equal => {
+          if !old.is_empty() || !new.is_empty() {
+            edits.push(trimmed_replacement(&old, &new, old_offset));
+            old_offset += old.encode_utf16().count() as u32;
+            old.clear();
+            new.clear();
+          }
+          old_offset += change.value().encode_utf16().count() as u32;
+        }
+        ChangeTag::Delete => old.push_str(change.value()),
+        ChangeTag::Insert => new.push_str(change.value()),
+      }
+    }
+    if !old.is_empty() || !new.is_empty() {
+      edits.push(trimmed_replacement(&old, &new, old_offset));
+    }
+  }
+  let start = text[..range.start].encode_utf16().count() as u32;
+  let end = start + text[range.clone()].encode_utf16().count() as u32;
+  // an insertion after the range's last line break is on the next line
+  let ends_with_line_break = text[range.clone()].ends_with('\n');
+  edits
+    .into_iter()
+    .filter(|edit| edit.start >= start && edit.end <= end && !(ends_with_line_break && edit.start == end))
+    .collect()
+}
+
+fn trimmed_replacement(old: &str, new: &str, offset: u32) -> Utf16TextEdit {
+  let prefix: usize = old.chars().zip(new.chars()).take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum();
+  let suffix: usize = old[prefix..]
+    .chars()
+    .rev()
+    .zip(new[prefix..].chars().rev())
+    .take_while(|(a, b)| a == b)
+    .map(|(c, _)| c.len_utf8())
+    .sum();
+  Utf16TextEdit {
+    start: offset + old[..prefix].encode_utf16().count() as u32,
+    end: offset + old[..old.len() - suffix].encode_utf16().count() as u32,
+    new_text: new[prefix..new.len() - suffix].to_string(),
+  }
+}
+
+/// Converts the edits of UTF-16 offsets to the edits of positions, which are
+/// supported by the Language Server Protocol.
+pub fn to_lsp_edits(edits: Vec<Utf16TextEdit>, line_index: &LineIndex) -> Vec<TextEdit> {
+  edits.into_iter().map(|edit| to_lsp_edit(edit, line_index)).collect()
+}
+
+fn to_lsp_edit(edit: Utf16TextEdit, line_index: &LineIndex) -> TextEdit {
+  TextEdit {
+    range: lsp::Range {
+      start: line_index.position_utf16(TextSize::from(edit.start)),
+      end: line_index.position_utf16(TextSize::from(edit.end)),
+    },
+    new_text: edit.new_text,
+  }
+}
+
+/// Expands the range to the whole lines it touches, including the last
+/// line's line break, which is `None` for the whole text. A range that ends
+/// at the start of a line (ex. after selecting whole lines) doesn't include
+/// that line.
+fn expand_to_lines(text: &str, range: std::ops::Range<usize>) -> FormatRange {
+  let start = text[..range.start].rfind('\n').map(|index| index + 1).unwrap_or(0);
+  let end = if range.end > start && text.as_bytes()[range.end - 1] == b'\n' {
+    range.end
+  } else {
+    text[range.end..].find('\n').map(|index| range.end + index + 1).unwrap_or(text.len())
+  };
+  if start == 0 && end == text.len() { None } else { Some(start..end) }
 }
 
 fn partition_point<T, P>(slice: &[T], mut predicate: P) -> usize
@@ -304,6 +454,81 @@ mod tests {
     assert_eq!(index.position_utf16(2.into()), lsp::Position { line: 1, character: 1 });
     assert_eq!(index.position_utf16(6.into()), lsp::Position { line: 1, character: 5 });
     assert_eq!(index.position_utf16(7.into()), lsp::Position { line: 2, character: 0 });
+  }
+
+  #[test]
+  fn test_offset_out_of_range() {
+    fn offset(index: &LineIndex, line: u32, character: u32) -> u32 {
+      index.offset(lsp::Position { line, character }).into()
+    }
+
+    let index = LineIndex::new("ab\ncd");
+    assert_eq!(offset(&index, 0, 2), 2);
+    // past the end of a line is the end of the line
+    assert_eq!(offset(&index, 0, 3), 2);
+    assert_eq!(offset(&index, 0, 100), 2);
+    assert_eq!(offset(&index, 0, u32::MAX), 2);
+    assert_eq!(offset(&index, 1, 100), 5);
+    // past the last line is the end of the text
+    assert_eq!(offset(&index, 2, 0), 5);
+    assert_eq!(offset(&index, 100, 100), 5);
+
+    // excludes the line ending
+    let index = LineIndex::new("ab\r\ncd\n");
+    assert_eq!(offset(&index, 0, 100), 2);
+    assert_eq!(offset(&index, 1, 100), 6);
+    assert_eq!(offset(&index, 2, 0), 7);
+    assert_eq!(offset(&index, 2, 100), 7);
+    assert_eq!(offset(&index, 3, 0), 7);
+
+    // empty text
+    let index = LineIndex::new("");
+    assert_eq!(offset(&index, 0, 0), 0);
+    assert_eq!(offset(&index, 0, 5), 0);
+    assert_eq!(offset(&index, 5, 5), 0);
+
+    // multi-byte characters
+    let index = LineIndex::new("a\u{1F995}b\n\u{e9}");
+    assert_eq!(offset(&index, 0, 1), 1);
+    // in the middle of the surrogate pair is the start of the character
+    assert_eq!(offset(&index, 0, 2), 1);
+    assert_eq!(offset(&index, 0, 3), 5);
+    assert_eq!(offset(&index, 0, 4), 6);
+    assert_eq!(offset(&index, 0, 100), 6);
+    assert_eq!(offset(&index, 1, 1), 9);
+    assert_eq!(offset(&index, 1, 100), 9);
+  }
+
+  #[test]
+  fn test_last_line() {
+    assert_eq!(LineIndex::new("").last_line(), 0);
+    assert_eq!(LineIndex::new("ab").last_line(), 0);
+    assert_eq!(LineIndex::new("ab\ncd").last_line(), 1);
+    assert_eq!(LineIndex::new("ab\r\ncd\n").last_line(), 2);
+    assert_eq!(LineIndex::default().last_line(), 0);
+  }
+
+  #[test]
+  fn test_get_text_range_out_of_range() {
+    fn range(index: &LineIndex, start: (u32, u32), end: (u32, u32)) -> Result<(u32, u32)> {
+      let range = index.get_text_range(lsp::Range {
+        start: lsp::Position {
+          line: start.0,
+          character: start.1,
+        },
+        end: lsp::Position { line: end.0, character: end.1 },
+      })?;
+      Ok((range.start().into(), range.end().into()))
+    }
+
+    let index = LineIndex::new("ab\ncd");
+    // the start is past the end of its line, which was previously after the end
+    assert_eq!(range(&index, (0, 100), (1, 0)).unwrap(), (2, 3));
+    assert_eq!(range(&index, (0, 0), (0, 10)).unwrap(), (0, 2));
+    assert_eq!(range(&index, (0, 0), (100, 0)).unwrap(), (0, 5));
+    // start after the end
+    assert!(range(&index, (0, 2), (0, 1)).is_err());
+    assert!(range(&index, (1, 0), (0, 0)).is_err());
   }
 
   #[test]
@@ -394,7 +619,7 @@ const C: char = \"メ メ\";
   fn test_get_edits() {
     let a = "abcdefg";
     let b = "a\nb\nchije\nfg\n";
-    let actual = get_edits(a, b, &LineIndex::new(a));
+    let actual = to_lsp_edits(get_range_utf16_edits(a, b, &None), &LineIndex::new(a));
     assert_eq!(
       actual,
       vec![
@@ -438,6 +663,24 @@ const C: char = \"メ メ\";
   }
 
   #[test]
+  fn test_replace_whole_file_non_ascii() {
+    fn end(old_text: &str) -> lsp::Position {
+      let edit = to_lsp_edit(replace_whole_file(old_text, "new"), &LineIndex::new(old_text));
+      assert_eq!(edit.range.start, lsp::Position { line: 0, character: 0 });
+      assert_eq!(edit.new_text, "new");
+      edit.range.end
+    }
+
+    assert_eq!(end("ab\ncd"), lsp::Position { line: 1, character: 2 });
+    assert_eq!(end("ab\ncd\n"), lsp::Position { line: 2, character: 0 });
+    // é is two utf-8 bytes and one utf-16 code unit, 🦕 is four and two
+    assert_eq!(end("\u{e9}\nab"), lsp::Position { line: 1, character: 2 });
+    assert_eq!(end("a\u{e9}\u{1F995}"), lsp::Position { line: 0, character: 4 });
+    assert_eq!(end("\u{e9}\u{e9}\u{e9}\n"), lsp::Position { line: 1, character: 0 });
+    assert_eq!(end("\u{1F995}\r\n\u{e9}b\u{1F995}"), lsp::Position { line: 1, character: 4 });
+  }
+
+  #[test]
   fn test_normalize_to_source_line_endings() {
     // source LF, formatted CRLF -> formatted becomes LF
     assert_eq!(normalize_to_source_line_endings("a\nb\n", "a\r\nb\r\nc\r\n".to_string()), "a\nb\nc\n");
@@ -458,14 +701,14 @@ const C: char = \"メ メ\";
     let a = "line1\nline2\nline3\n";
     let formatted = "line1\r\nline2\r\nline3\r\n".to_string();
     let new_text = normalize_to_source_line_endings(a, formatted);
-    assert_eq!(get_edits(a, &new_text, &LineIndex::new(a)), vec![]);
+    assert_eq!(to_lsp_edits(get_range_utf16_edits(a, &new_text, &None), &LineIndex::new(a)), vec![]);
   }
 
   #[test]
   fn test_get_edits_mbc() {
     let a = "const bar = \"👍🇺🇸😃\";\nconsole.log('hello deno')\n";
     let b = "const bar = \"👍🇺🇸😃\";\nconsole.log(\"hello deno\");\n";
-    let actual = get_edits(a, b, &LineIndex::new(a));
+    let actual = to_lsp_edits(get_range_utf16_edits(a, b, &None), &LineIndex::new(a));
     assert_eq!(
       actual,
       vec![
@@ -492,5 +735,50 @@ const C: char = \"メ メ\";
         },
       ]
     )
+  }
+
+  #[test]
+  fn range_keeps_expanded_minified_text_when_character_diff_falls_back() {
+    let before = "// before 😀\n// boundary\n";
+    let statement = "[1,2,3]";
+    let after = "\n// after\n";
+    let text = format!("{before}{statement}{after}");
+    let expanded = format!("[\n{}]", "  1,\n".repeat(20));
+    for outside_change in [false, true] {
+      let formatted = format!("{}{expanded}{after}", if outside_change { "// changed 😀\n// boundary\n" } else { before });
+      let edits = get_range_utf16_edits(&text, &formatted, &Some(before.len()..before.len() + statement.len() + 1));
+      assert!(!edits.is_empty());
+      let units: Vec<u16> = text.encode_utf16().collect();
+      let mut actual = units.clone();
+      for edit in edits.iter().rev() {
+        actual.splice(edit.start as usize..edit.end as usize, edit.new_text.encode_utf16());
+      }
+      assert_eq!(String::from_utf16(&actual).unwrap(), format!("{before}{expanded}{after}"));
+    }
+  }
+
+  #[test]
+  fn should_only_keep_the_edits_within_the_range() {
+    let get = |text: &str, formatted_text: &str, range: std::ops::Range<usize>| {
+      get_range_utf16_edits(text, formatted_text, &Some(range))
+        .into_iter()
+        .map(|edit| (edit.start, edit.end, edit.new_text))
+        .collect::<Vec<_>>()
+    };
+    // the indent of the next line isn't within the range's lines
+    assert_eq!(get("a\nb", "a!\n  b", 0..2), vec![(1, 1, "!".to_string())]);
+    // but an insertion at the end of a range without a line break is
+    assert_eq!(get("a\nb", "a\nb!", 2..3), vec![(3, 3, "!".to_string())]);
+    assert_eq!(get("a\nb", "!a\nb", 2..3), Vec::new());
+  }
+
+  #[test]
+  fn should_only_expand_the_range_for_plugins_that_do_not_format_one() {
+    let range = RangeFormat::new("a\nbc\nd", Some(3..4), true);
+    assert_eq!((range.plugin_range, range.edits_range), (Some(3..4), None));
+    let range = RangeFormat::new("a\nbc\nd", Some(3..4), false);
+    assert_eq!((range.plugin_range.clone(), range.edits_range.clone()), (Some(2..5), Some(2..5)));
+    let range = RangeFormat::new("a\nbc\nd", None, false);
+    assert_eq!((range.plugin_range, range.edits_range), (None, None));
   }
 }

@@ -19,6 +19,34 @@ pub struct SyncFormatRequest<'a, TConfiguration> {
   /// Range to format.
   pub range: FormatRange,
   pub token: &'a dyn CancellationToken,
+  /// Reuses arena memory for the lifetime of the loaded plugin.
+  #[cfg(feature = "formatting")]
+  pub arena_pool: &'a kprint_formatting::ArenaPool,
+}
+
+impl<'a, TConfiguration> SyncFormatRequest<'a, TConfiguration> {
+  #[doc(hidden)]
+  pub fn new(
+    file_path: &'a std::path::Path,
+    file_bytes: Vec<u8>,
+    config_id: FormatConfigId,
+    config: &'a TConfiguration,
+    range: FormatRange,
+    token: &'a dyn CancellationToken,
+  ) -> Self {
+    #[cfg(feature = "formatting")]
+    static POOL: std::sync::OnceLock<kprint_formatting::ArenaPool> = std::sync::OnceLock::new();
+    Self {
+      file_path,
+      file_bytes,
+      config_id,
+      config,
+      range,
+      token,
+      #[cfg(feature = "formatting")]
+      arena_pool: POOL.get_or_init(Default::default),
+    }
+  }
 }
 
 /// Trait for implementing a Wasm plugin.

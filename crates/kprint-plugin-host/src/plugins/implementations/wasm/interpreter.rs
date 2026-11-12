@@ -51,6 +51,7 @@ const FUEL_PER_CALL: u64 = 1_000_000_000;
 #[derive(Clone)]
 pub struct InterpretedModule {
   module: Module,
+  initializes_on_start: bool,
   version: PluginSchemaVersion,
   wasm_bytes: Arc<[u8]>,
   /// The module for formatting, read from `wasm_bytes` the first time the
@@ -66,10 +67,16 @@ impl InterpretedModule {
     let version = plugin_schema_version_from_exports(module.exports().map(|export| export.name()))?;
     Ok(Self {
       module,
+      initializes_on_start: false,
       version,
       wasm_bytes: Arc::from(wasm_bytes),
       format_module: Default::default(),
     })
+  }
+
+  pub fn with_initializes_on_start(mut self, value: bool) -> Self {
+    self.initializes_on_start = value;
+    self
   }
 
   pub fn version(&self) -> PluginSchemaVersion {
@@ -93,11 +100,20 @@ impl InterpretedModule {
       PluginSchemaVersion::V3 => add_v3_imports(&mut linker)?,
       PluginSchemaVersion::V4 => add_v4_imports(&mut linker)?,
     }
+    super::instance::wasi::interpreted::add_wasi_imports(&mut linker)?;
+    super::instance::wasi::interpreted::add_unsupported_wasi_imports(&mut linker, &mut store, &self.module)?;
     // instantiating runs the module's start function
     store.set_fuel(FUEL_PER_CALL)?;
     let instance = linker
       .instantiate_and_start(&mut store, &self.module)
       .map_err(|err| anyhow!("Error instantiating module: {:#}", call_error("its start function", err)))?;
+    if !self.initializes_on_start
+      && let Some(initialize) = instance.get_func(&store, "_initialize")
+    {
+      initialize.typed::<(), ()>(&store)?.call(&mut store, ())?;
+    } else if instance.get_func(&store, "_start").is_some() && instance.get_func(&store, "_initialize").is_none() {
+      bail!("WASI plugins must be built as reactors exporting _initialize, not commands exporting _start.");
+    }
     let Some(memory) = instance.get_memory(&store, "memory") else {
       bail!("Could not find memory export in plugin.");
     };
@@ -119,9 +135,18 @@ impl InterpretedModule {
     let mut store = Store::new(format_engine(), host_state);
     let mut linker = Linker::new(format_engine());
     add_interpreted_host_functions(&mut linker, self.version)?;
+    super::instance::wasi::interpreted::add_wasi_imports(&mut linker)?;
+    super::instance::wasi::interpreted::add_unsupported_wasi_imports(&mut linker, &mut store, &module)?;
     let instance = linker
       .instantiate_and_start(&mut store, &module)
       .map_err(|err| anyhow!("Error instantiating module: {:#}", err))?;
+    if !self.initializes_on_start
+      && let Some(initialize) = instance.get_func(&store, "_initialize")
+    {
+      initialize.typed::<(), ()>(&store)?.call(&mut store, ())?;
+    } else if instance.get_func(&store, "_start").is_some() && instance.get_func(&store, "_initialize").is_none() {
+      bail!("WASI plugins must be built as reactors exporting _initialize, not commands exporting _start.");
+    }
     let Some(memory) = instance.get_memory(&store, "memory") else {
       bail!("Could not find memory export in plugin.");
     };
@@ -144,6 +169,69 @@ impl InterpretedModule {
     let module = Module::new(format_engine(), &self.wasm_bytes)?;
     *format_module = Some(module.clone());
     Ok(module)
+  }
+}
+
+/// Runs metadata calls with Wasmi when supported, or with the supervised native
+/// module for proposals such as exception handling that Wasmi cannot execute.
+#[derive(Clone)]
+pub enum MetadataModule {
+  Interpreted(InterpretedModule),
+  Native(super::WasmModule, usize),
+}
+
+impl From<InterpretedModule> for MetadataModule {
+  fn from(module: InterpretedModule) -> Self {
+    Self::Interpreted(module)
+  }
+}
+
+impl MetadataModule {
+  pub fn native_module(&self) -> Option<&super::WasmModule> {
+    match self {
+      Self::Native(module, _) => Some(module),
+      _ => None,
+    }
+  }
+
+  pub fn wasm_len(&self) -> usize {
+    match self {
+      Self::Interpreted(module) => module.wasm_len(),
+      Self::Native(_, len) => *len,
+    }
+  }
+
+  pub fn version(&self) -> PluginSchemaVersion {
+    match self {
+      Self::Interpreted(module) => module.version(),
+      Self::Native(module, _) => module.version(),
+    }
+  }
+
+  pub fn instantiate(&self, log: LogFn) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> {
+    match self {
+      Self::Interpreted(module) => module.instantiate(log),
+      Self::Native(module, _) => {
+        let linker = super::instance::create_identity_import_object(module.version(), module.engine())?;
+        let mut store = module.new_store(WasmHostState::Empty);
+        let instance = super::load_instance(&mut store, module, &linker)?;
+        super::instance::create_wasm_plugin_instance(store, instance)
+      }
+    }
+  }
+
+  pub fn instantiate_to_format(&self, state: WasmHostState) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> {
+    match self {
+      Self::Interpreted(module) => module.instantiate_to_format(state),
+      Self::Native(module, _) => {
+        let mut linker = super::instance::Linker::new(module.engine());
+        super::instance::add_native_host_functions(&mut linker, module.version())?;
+        super::instance::wasi::native::add_wasi_imports(&mut linker)?;
+        let mut store = module.new_store(state);
+        let instance = super::load_instance(&mut store, module, &linker)?;
+        super::instance::create_wasm_plugin_instance(store, instance)
+      }
+    }
   }
 }
 
@@ -305,6 +393,61 @@ impl<T: InterpretedHostData> PluginExports for InterpretedExports<T> {
 #[cfg(test)]
 mod test {
   use super::*;
+
+  #[test]
+  fn native_metadata_exports_have_an_execution_deadline() {
+    let wasm = wat::parse_str(
+      r#"(module
+      (memory (export "memory") 1)
+      (func (export "dprint_plugin_version_4"))
+      (func (export "get_shared_bytes_ptr") (result i32) (i32.const 0))
+      (func (export "get_license_text") (result i32) (loop $again (br $again)) (i32.const 0)))"#,
+    )
+    .unwrap();
+    let module = super::super::load_instance::WasmModuleCreator::default().create_from_wasm_bytes(&wasm).unwrap();
+    let metadata = MetadataModule::Native(module, wasm.len());
+    let mut instance = metadata.instantiate(Arc::new(|_| {})).unwrap();
+    let start = std::time::Instant::now();
+    let error = instance.license_text().unwrap_err();
+    assert!(format!("{error:#}").contains("interrupt"), "{error:#}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+  }
+
+  #[test]
+  fn wasi_reactor_initializes_metadata_and_formatting_instances() {
+    let wasm = wat::parse_str(
+      r#"(module
+      (import "wasi_snapshot_preview1" "environ_sizes_get" (func $env (param i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "sock_shutdown" (func $sock (param i32 i32) (result i32)))
+      (memory (export "memory") 1)
+      (func (export "dprint_plugin_version_4"))
+      (func (export "_initialize")
+        (if (call $env (i32.const 0) (i32.const 4)) (then unreachable))
+        (if (i32.ne (call $sock (i32.const 0) (i32.const 0)) (i32.const 52)) (then unreachable))
+        (i32.store8 (i32.const 16) (i32.const 65)))
+      (func (export "get_shared_bytes_ptr") (result i32) (i32.const 16))
+      (func (export "get_license_text") (result i32) (i32.const 1)))"#,
+    )
+    .unwrap();
+    let module = InterpretedModule::new(&wasm).unwrap();
+    assert_eq!(module.instantiate(Arc::new(|_| {})).unwrap().license_text().unwrap(), "A");
+    assert_eq!(module.instantiate_to_format(WasmHostState::Empty).unwrap().license_text().unwrap(), "A");
+  }
+
+  #[test]
+  fn wasi_commands_are_rejected_by_both_interpreter_paths() {
+    let wasm = wat::parse_str(
+      r#"(module
+      (memory (export "memory") 1)
+      (func (export "dprint_plugin_version_4"))
+      (func (export "_start")))"#,
+    )
+    .unwrap();
+    let module = InterpretedModule::new(&wasm).unwrap();
+    for result in [module.instantiate(Arc::new(|_| {})), module.instantiate_to_format(WasmHostState::Empty)] {
+      assert!(result.err().unwrap().to_string().contains("reactors exporting _initialize"));
+    }
+  }
 
   #[test]
   fn formatting_supports_deeper_call_stacks_than_the_default_interpreter() {

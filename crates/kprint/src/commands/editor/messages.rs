@@ -44,14 +44,16 @@ impl EditorMessage {
         let end_byte_index = reader.read_u32()?;
         let override_config = reader.read_sized_bytes()?;
         let file_text = reader.read_sized_bytes()?;
+        let end_byte_index = (end_byte_index as usize).min(file_text.len());
+        let start_byte_index = (start_byte_index as usize).min(end_byte_index);
         EditorMessageBody::Format(FormatEditorMessageBody {
           file_path: PathBuf::from(String::from_utf8_lossy(&file_path).to_string()),
-          range: if start_byte_index == 0 && end_byte_index == file_text.len() as u32 {
+          range: if start_byte_index == 0 && end_byte_index == file_text.len() {
             None
           } else {
             Some(std::ops::Range {
-              start: start_byte_index as usize,
-              end: end_byte_index as usize,
+              start: start_byte_index,
+              end: end_byte_index,
             })
           },
           file_bytes: file_text,

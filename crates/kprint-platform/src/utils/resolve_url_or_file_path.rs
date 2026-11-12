@@ -74,8 +74,22 @@ pub async fn resolve_path_source_to_file_with_cache<TEnvironment: Environment>(
   path_source: PathSource,
   environment: &TEnvironment,
 ) -> Result<ResolvedFilePathWithBytes> {
+  resolve_path_source_to_file_with_cache_mode(path_source, environment, RemoteCacheMode::Use).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RemoteCacheMode {
+  Use,
+  Reload,
+}
+
+pub async fn resolve_path_source_to_file_with_cache_mode<TEnvironment: Environment>(
+  path_source: PathSource,
+  environment: &TEnvironment,
+  mode: RemoteCacheMode,
+) -> Result<ResolvedFilePathWithBytes> {
   match &path_source {
-    PathSource::Remote(remote_path_source) => resolve_url_to_file_with_cache(&remote_path_source.url, environment).await,
+    PathSource::Remote(remote_path_source) => resolve_url_to_file_with_cache(&remote_path_source.url, environment, mode).await,
     PathSource::Local(local_path_source) => {
       let content = environment.read_file_bytes(&local_path_source.path)?;
       Ok(ResolvedFilePathWithBytes {
@@ -88,7 +102,11 @@ pub async fn resolve_path_source_to_file_with_cache<TEnvironment: Environment>(
   }
 }
 
-async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, environment: &TEnvironment) -> Result<ResolvedFilePathWithBytes> {
+async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(
+  url: &Url,
+  environment: &TEnvironment,
+  mode: RemoteCacheMode,
+) -> Result<ResolvedFilePathWithBytes> {
   const MAX_REDIRECTS: usize = 10;
 
   enum CachedFile {
@@ -140,7 +158,7 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
     // check cache
     let mut stale_entry = None;
     if let Some(entry) = cache.get(&key)? {
-      if is_cache_entry_fresh(&entry, now_secs) {
+      if mode == RemoteCacheMode::Use && is_cache_entry_fresh(&entry, now_secs) {
         match use_cache_entry(&current_url, entry, chain_changed)? {
           CachedFile::Redirect(location) => {
             current_url = location;

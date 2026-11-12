@@ -285,7 +285,9 @@ impl ProcessPluginCommunicator {
         // we wait for acknowledgement in order to give the process
         // plugin a chance to clean up (ex. in case it has spawned
         // any processes it needs to kill or something like that)
-        _ = self.send_with_acknowledgement(MessageBody::Close) => {}
+        _ = self.send_with_acknowledgement(MessageBody::Close) => {
+          self.context.messages.take_all();
+        }
         _ = tokio::time::sleep(Duration::from_millis(250)) => {
           self.kill();
         }

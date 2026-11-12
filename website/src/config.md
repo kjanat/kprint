@@ -522,7 +522,15 @@ Referencing multiple configuration files is also supported. These should be orde
 
 An extended configuration file adds its plugins, plugin configuration, `"excludes"`, `"shebangs"` and `"incremental"` where the configuration file that extends it doesn't specify them. Which files to format (`"includes"`) and whether to [inherit](#directory-specific-configuration) are up to the configuration file being used, so specifying them in an extended configuration file is an error. A file may be extended by more than one file (ex. a shared base), but a configuration file that extends itself, directly or through other files, is an error.
 
-Note: The `includes` property of extended _remote_ configuration is ignored for security reasons out of an abundance of caution (to disallow the dprint cli pulling in sensitive files) and additionally non-Wasm plugins are ignored in remote configuration because they don't run sandboxed. A local file that a remote configuration extends (ex. with a `file://` url) is treated as remote configuration too, since the remote configuration chose it.
+Unpinned remote configuration has restrictions: `includes`, negated excludes, associations reaching parent directories, and non-Wasm plugins are filtered. A local file that an untrusted remote configuration extends (for example, with a `file://` URL) has the same restrictions. Local `exec.playWithFire` settings continue to allow remote exec commands, either for specific programs or for all programs.
+
+### Pinning and Trust
+
+Append `@` and the file's 64-character SHA-256 checksum to an `extends` reference to pin its contents. For example, use `https://example.com/base.json@<sha256>`, replacing `<sha256>` with the checksum of the exact file bytes. Local paths support the same syntax.
+
+A checksum-pinned file extended by trusted configuration is trusted too: it may supply process plugins, exec commands, negated excludes, and parent-directory associations. Every file it extends must also have a checksum, including local files. A checksum selected by an untrusted remote file cannot grant trust. The existing rule that extended configuration cannot specify `includes` or `inherit` still applies.
+
+kprint verifies every pin before using the configuration. If a cached remote file has the wrong checksum, it checks the server again and rejects the file if it still differs. Existing program allowlists continue to apply to unpinned remote configuration.
 
 ### Caching of Remote Configuration
 

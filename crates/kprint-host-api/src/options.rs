@@ -33,6 +33,9 @@ pub struct ConfigArgText {
 
 /// Configuration and selection policy, independent of command-line parsing.
 pub trait ConfigOptions {
+  fn reload_config(&self) -> bool {
+    false
+  }
   fn config(&self) -> Option<&ConfigArg>;
   fn plugins(&self) -> &[String];
   fn discovery_override(&self) -> Option<ConfigDiscovery>;

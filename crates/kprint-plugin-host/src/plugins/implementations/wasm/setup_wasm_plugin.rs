@@ -31,9 +31,9 @@ pub const WASM_CACHE_VERSION: &str = "43.0.2";
 /// Sets up a Wasm plugin: gets its plugin info by interpreting it and keeps
 /// its module at `dest_file_path`.
 ///
-/// Nothing is compiled. The module is compiled to native code the first time
-/// the plugin formats (see [`compile_native_module`]), so a run that only
-/// resolves configuration or lists files never compiles a plugin.
+/// Interpreter-compatible modules compile when they first need native formatting
+/// (see [`compile_native_module`]). Modules using unsupported proposals, such as
+/// exception handling, use the supervised compiler to read their metadata.
 pub async fn setup_wasm_plugin<TEnvironment: Environment>(
   url_or_file_path: &PathSource,
   file_bytes: Vec<u8>,
@@ -60,13 +60,29 @@ pub async fn setup_wasm_plugin<TEnvironment: Environment>(
 }
 
 pub(crate) fn interpreted_plugin_info(environment: &impl Environment, plugin_display: &str, wasm_bytes: &[u8]) -> Result<PluginInfo> {
-  let module = InterpretedModule::new(wasm_bytes)?;
+  let module = match InterpretedModule::new(wasm_bytes) {
+    Ok(module) => module,
+    Err(_) => {
+      let control = CompileControl::new(crate::utils::current_deadline());
+      return Ok(environment.compile_wasm(plugin_display, wasm_bytes, &control)?.plugin_info);
+    }
+  };
   let log = {
     let environment = environment.clone();
     let plugin_display = plugin_display.to_string();
     Arc::new(move |text: &str| environment.log_stderr_with_context(text, &plugin_display))
   };
-  module.instantiate(log)?.plugin_info()
+  match module.instantiate(log.clone()).and_then(|mut instance| instance.plugin_info()) {
+    Ok(info) => Ok(info),
+    Err(err) => match module
+      .with_initializes_on_start(true)
+      .instantiate(log)
+      .and_then(|mut instance| instance.plugin_info())
+    {
+      Ok(info) if super::load_instance::plugin_initializes_on_start(&info) => Ok(info),
+      _ => Err(err),
+    },
+  }
 }
 
 /// Compiles a Wasm plugin's module to native code, showing that it does.
@@ -118,6 +134,28 @@ mod test {
 
   fn source() -> PathSource {
     PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/plugin.wasm"))
+  }
+
+  #[test]
+  fn reads_metadata_with_native_fallback_for_exception_handling() {
+    let environment = TestEnvironment::new();
+    let json = r#"{"name":"eh-test","version":"1.0.0","configKey":"eh","helpUrl":"","configSchemaUrl":""}"#;
+    let data = json.bytes().map(|byte| format!("\\{byte:02x}")).collect::<String>();
+    let wasm = wat::parse_str(format!(
+      r#"(module
+      (tag $exception (param i32))
+      (memory (export "memory") 1)
+      (data (i32.const 0) "{data}")
+      (func (export "dprint_plugin_version_4"))
+      (func (export "get_shared_bytes_ptr") (result i32) (i32.const 0))
+      (func (export "get_plugin_info") (result i32) (i32.const {})))"#,
+      json.len()
+    ))
+    .unwrap();
+    assert!(InterpretedModule::new(&wasm).is_err());
+    let info = interpreted_plugin_info(&environment, "eh-test", &wasm).unwrap();
+    assert_eq!(info.name, "eh-test");
+    assert_eq!(info.version, "1.0.0");
   }
 
   #[tokio::test]

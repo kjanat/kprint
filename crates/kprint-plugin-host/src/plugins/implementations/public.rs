@@ -99,12 +99,17 @@ pub(crate) async fn read_cached_plugin_info<TEnvironment: Environment>(
   }
 }
 
+pub struct CreatedPlugin {
+  pub plugin: Box<dyn Plugin>,
+  pub was_set_up: bool,
+}
+
 pub async fn create_plugin<TEnvironment: Environment>(
   plugin_cache: &Rc<PluginCache<TEnvironment>>,
   environment: TEnvironment,
   plugin_reference: &PluginSourceReference,
   wasm_module_creator: &WasmModuleCreator,
-) -> Result<Box<dyn Plugin>> {
+) -> Result<CreatedPlugin> {
   let cache_item = match plugin_cache.get_plugin_cache_item(plugin_reference).await {
     Ok(cache_item) => cache_item,
     Err(err) if err.downcast_ref::<NoRetrySetupError>().is_some() => return Err(err),
@@ -160,12 +165,10 @@ pub async fn create_plugin<TEnvironment: Environment>(
         native_module_path: native_module_path(&cache_item.file_path),
         format_rate_path: format_rate_path(&cache_item.file_path),
       };
-      Ok(Box::new(wasm::WasmPlugin::new(
-        cache_item.info,
-        modules,
-        cache_item.resolution_cache,
-        environment,
-      )))
+      Ok(CreatedPlugin {
+        was_set_up: cache_item.was_set_up,
+        plugin: Box::new(wasm::WasmPlugin::new(cache_item.info, modules, cache_item.resolution_cache, environment)),
+      })
     }
     PluginKind::Process => {
       let cache_item = if !environment.path_exists(&cache_item.file_path) {
@@ -182,7 +185,10 @@ pub async fn create_plugin<TEnvironment: Environment>(
       };
 
       let executable_path = super::process::get_test_safe_executable_path(&cache_item.info.version, cache_item.file_path, &environment);
-      Ok(Box::new(process::ProcessPlugin::new(environment, executable_path, cache_item.info)))
+      Ok(CreatedPlugin {
+        was_set_up: cache_item.was_set_up,
+        plugin: Box::new(process::ProcessPlugin::new(environment, executable_path, cache_item.info)),
+      })
     }
   }
 }
@@ -212,13 +218,28 @@ impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
     }
     load_compiled_wasm_module_in_background(&self.environment, native_path, &self.wasm_module_creator)
       .await
-      .map(Some)
+      .map(|module| Some(module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info))))
   }
 
-  async fn load_interpreted(&self) -> Result<wasm::InterpretedModule> {
-    self
-      .load_from_cache(|environment, file_path| wasm::InterpretedModule::new(&environment.read_file_bytes(file_path)?))
-      .await
+  async fn load_interpreted(&self) -> Result<wasm::MetadataModule> {
+    let module = self
+      .load_from_cache(|environment, file_path| {
+        let bytes = environment.read_file_bytes(file_path)?;
+        match wasm::InterpretedModule::new(&bytes) {
+          Ok(module) => Ok(Ok(module)),
+          Err(err) => {
+            if wasm::WasmModuleCreator::default().validate_wasm_bytes(&bytes).is_err() {
+              return Err(err);
+            }
+            Ok(Err(bytes.len()))
+          }
+        }
+      })
+      .await?;
+    match module {
+      Ok(module) => Ok(module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info)).into()),
+      Err(len) => Ok(wasm::MetadataModule::Native(self.load_native().await?, len)),
+    }
   }
 
   /// Loads the native module compiled from the build's module, compiling it
@@ -227,7 +248,7 @@ impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
     let native_path = native_module_path(&self.file_path);
     if self.environment.path_exists(&native_path) {
       match load_compiled_wasm_module_in_background(&self.environment, native_path.clone(), &self.wasm_module_creator).await {
-        Ok(module) => return Ok(module),
+        Ok(module) => return Ok(module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info))),
         // ex. it was compiled for a CPU with different features, or by a
         // different wasm engine or rustc version, or the file is corrupt
         Err(err) => log_debug!(
@@ -256,6 +277,7 @@ impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
       move || wasm_module_creator.create_from_serialized(&compiled)
     })
     .await?
+    .map(|module| module.with_initializes_on_start(wasm::plugin_initializes_on_start(&self.info)))
   }
 
   /// Loads from the build's module file with `load`.
@@ -406,7 +428,8 @@ mod test {
     let cache_item = plugin_cache.get_plugin_cache_item(&plugin_reference).await.unwrap();
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
 
     // neither the cached module nor the plugin it was set up from load
     environment.write_file_bytes(&cache_item.file_path, b"corrupt").unwrap();
@@ -428,7 +451,8 @@ mod test {
     let cache_item = plugin_cache.get_plugin_cache_item(&plugin_reference).await.unwrap();
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
     assert_eq!(plugin.info().version, "0.2.0");
 
     // the compiled module needs recompiling, and the url now serves another version
@@ -458,7 +482,8 @@ mod test {
     let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
 
     // ex. another dprint process sets it up again after the url changed,
     // replacing the module this plugin would load
@@ -480,7 +505,8 @@ mod test {
     let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
 
     // the same plugin name and version, but other contents (an empty custom section)
     let mut other_build = WASM_PLUGIN_BYTES.to_vec();
@@ -523,7 +549,8 @@ mod test {
       &WasmModuleCreator::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .plugin;
     let plugin = plugin.initialize().await.unwrap();
     assert!(plugin.license_text().await.is_ok());
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
@@ -537,8 +564,8 @@ mod test {
     let plugin_reference = PluginSourceReference::new_local(PathBuf::from("/test.wasm"));
     let wasm_module_creator = WasmModuleCreator::default();
     let create = || create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &wasm_module_creator);
-    let first_build_plugin = create().await.unwrap();
-    let other_first_build_plugin = create().await.unwrap();
+    let first_build_plugin = create().await.unwrap().plugin;
+    let other_first_build_plugin = create().await.unwrap().plugin;
 
     // ex. rebuilt while `dprint lsp` runs, and set up again by another process
     environment.write_file_bytes("/test.wasm", WASM_PLUGIN_0_1_0_BYTES).unwrap();
@@ -567,7 +594,8 @@ mod test {
     let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
 
     // the same build compiled again isn't a change
     PluginCache::new(environment.clone()).forget_and_recreate(&plugin_reference).await.unwrap();
@@ -605,7 +633,8 @@ mod test {
     let cache_item = plugin_cache.get_plugin_cache_item(&plugin_reference).await.unwrap();
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
     assert!(plugin.chooses_format_engine());
     assert!(!plugin.compiles_to_format());
 
@@ -636,7 +665,8 @@ mod test {
     // and later runs load the native code, however little they format
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
     assert!(!plugin.chooses_format_engine());
     assert!(!plugin.compiles_to_format());
     let initialized = plugin.initialize().await.unwrap();
@@ -655,7 +685,7 @@ mod test {
     let cache_item = plugin_cache.get_plugin_cache_item(&plugin_reference).await.unwrap();
     let wasm_module_creator = WasmModuleCreator::default();
     let create = || create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &wasm_module_creator);
-    let plugin = create().await.unwrap();
+    let plugin = create().await.unwrap().plugin;
     plugin.choose_format_engine(100 * 1024 * 1024);
     assert!(format_with(&plugin.initialize().await.unwrap()).await.is_ok());
     assert_eq!(
@@ -667,7 +697,7 @@ mod test {
     environment.write_file_bytes(native_module_path(&cache_item.file_path), b"corrupt").unwrap();
     // nothing was downloaded again
     environment.add_remote_file("https://plugins.dprint.dev/test.wasm", b"corrupt");
-    let plugin = create().await.unwrap().initialize().await.unwrap();
+    let plugin = create().await.unwrap().plugin.initialize().await.unwrap();
     assert_eq!(format_with(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert_eq!(
       crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
@@ -687,7 +717,8 @@ mod test {
     // creating the plugin doesn't load the module
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
-      .unwrap();
+      .unwrap()
+      .plugin;
     assert_eq!(plugin.info().name, "test-plugin");
 
     // initializing it does, which sets it up again from its source instead of failing

@@ -168,6 +168,8 @@ pub struct TestInfoFileBuilder {
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TestInfoFilePlugin {
+  #[serde(default)]
+  pub never_preselect: bool,
   pub name: String,
   pub version: String,
   pub url: String,

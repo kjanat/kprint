@@ -271,6 +271,10 @@ pub trait FileSystemEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static
   /// followed—canonicalize and stat again to see what a symlink points at.
   fn path_kind(&self, path: impl AsRef<Path>) -> Option<PathKind>;
   fn canonicalize(&self, path: impl AsRef<Path>) -> io::Result<CanonicalizedPathBuf>;
+  /// Resolves the closest existing ancestor of an unsaved editor file.
+  fn canonicalize_maybe_not_exists(&self, path: impl AsRef<Path>) -> io::Result<CanonicalizedPathBuf> {
+    super::canonicalized_path_buf::canonicalize_path_maybe_not_exists(path.as_ref(), |path| self.canonicalize(path))
+  }
   fn is_absolute_path(&self, path: impl AsRef<Path>) -> bool;
   fn file_permissions(&self, path: impl AsRef<Path>) -> io::Result<FilePermissions>;
   fn set_file_permissions(&self, path: impl AsRef<Path>, permissions: FilePermissions) -> io::Result<()>;
@@ -505,11 +509,11 @@ impl<T: FileSystemEnvironment + OutputEnvironment + EnvironmentVariables + Direc
 {
 }
 /// File selection and VCS metadata, without clocks or process execution.
-pub trait DiscoveryEnvironment: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment {}
-impl<T: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment> DiscoveryEnvironment for T {}
+pub trait DiscoveryEnvironment: FileSystemEnvironment + DirectoriesEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment {}
+impl<T: FileSystemEnvironment + DirectoriesEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment> DiscoveryEnvironment for T {}
 /// Configuration resolution may request consent, but never executes a process.
-pub trait ConfigEnvironment: PlatformEnvironment + ConsentEnvironment {}
-impl<T: PlatformEnvironment + ConsentEnvironment> ConfigEnvironment for T {}
+pub trait ConfigEnvironment: PlatformEnvironment + FileSystemSys + ConsentEnvironment {}
+impl<T: PlatformEnvironment + FileSystemSys + ConsentEnvironment> ConfigEnvironment for T {}
 
 /// Plugin acquisition and execution; no terminal input or VCS selection.
 pub trait PluginEnvironment: PlatformEnvironment + FileSystemSys + CompilerEnvironment {}

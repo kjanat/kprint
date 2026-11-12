@@ -11,7 +11,7 @@ use crate::configuration::ResolvedConfig;
 use crate::configuration::ResolvedConfigPathWithText;
 use crate::configuration::get_default_config_file_in_ancestor_directories;
 use crate::configuration::resolve_config_from_args;
-use crate::configuration::resolve_config_from_path_with_bytes;
+use crate::configuration::resolve_config_with_ancestors_from_path_with_bytes;
 use crate::configuration::resolve_global_config_path_and_text;
 use crate::environment::HostEnvironment as Environment;
 use crate::plugins;
@@ -53,7 +53,15 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
       let path = self.environment.canonicalize(path).context("failed resolving --config path")?;
       let content = self.environment.read_file(&path).context("failed resolving --config path")?;
       Some(ResolvedConfigPathWithText {
-        base_path: path.parent().unwrap_or_else(|| path.clone()),
+        reload: false,
+        base_path: {
+          let dir = path.parent().unwrap_or_else(|| path.clone());
+          if kprint_discovery::is_project_config_dir(dir.as_ref(), &self.environment) {
+            dir.parent().unwrap()
+          } else {
+            dir
+          }
+        },
         source: PathSource::new_local(path),
         is_first_download: false,
         content,
@@ -68,7 +76,7 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
     let Some(config_file_bytes) = config_file_bytes else {
       return Ok(None);
     };
-    let config = resolve_config_from_path_with_bytes(&config_file_bytes, &self.environment).await?;
+    let config = resolve_config_with_ancestors_from_path_with_bytes(&config_file_bytes, &self.environment).await?;
     self.resolve_config(config, || {}).await.map(Some)
   }
 
@@ -236,6 +244,24 @@ mod tests {
       assert!(Rc::ptr_eq(&first, &second));
       let by_path = session.resolve_by_path(Path::new("/")).await.unwrap().unwrap();
       assert_eq!(first.config, by_path.config);
+      session.shutdown().await;
+    });
+  }
+
+  #[test]
+  fn editor_path_resolution_inherits_and_refreshes_ancestor_configuration() {
+    let environment = TestEnvironment::new();
+    environment.write_file("/dprint.json", r#"{"incremental": false}"#).unwrap();
+    environment.mk_dir_all("/nested").unwrap();
+    environment.write_file("/nested/dprint.json", r#"{"inherit": true}"#).unwrap();
+    environment.clone().run_in_runtime(async move {
+      let session = session(&environment);
+      let first = session.resolve_by_path(Path::new("/nested")).await.unwrap().unwrap();
+      assert_eq!(first.config.as_ref().unwrap().execution.incremental, Some(false));
+      environment.write_file("/dprint.json", r#"{"incremental": true}"#).unwrap();
+      let second = session.resolve_by_path(Path::new("/nested")).await.unwrap().unwrap();
+      assert_eq!(second.config.as_ref().unwrap().execution.incremental, Some(true));
+      assert!(!Rc::ptr_eq(&first, &second));
       session.shutdown().await;
     });
   }
