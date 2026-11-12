@@ -1217,11 +1217,9 @@ mod test {
   #[cfg(unix)]
   #[tokio::test]
   async fn runs_a_command_with_its_environment_over_dprints() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("greet");
-    std::fs::write(&script, "#!/bin/sh\ncat > /dev/null\nprintf '%s %s' \"$GREETING\" \"$HOME\"\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    kprint_test_support::test_helpers::write_executable(&script, "#!/bin/sh\ncat > /dev/null\nprintf '%s %s' \"$GREETING\" \"$HOME\"\n");
     let config = resolve(serde_json::json!({
       "lineWidth": 80,
       "commands": [{
@@ -1759,10 +1757,8 @@ mod relative_program_test {
     }
     #[cfg(unix)]
     {
-      use std::os::unix::fs::PermissionsExt;
       let script = chosen.join("formatter");
-      std::fs::write(&script, "#!/bin/sh\necho chosen\n").unwrap();
-      std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+      kprint_test_support::test_helpers::write_executable(&script, "#!/bin/sh\necho chosen\n");
     }
     let config = serde_json::json!({
       "commands": [{ "command": "./formatter", "cwd": chosen.to_string_lossy(), "exts": ["txt"] }]
