@@ -5,7 +5,7 @@ import { parseArgs } from "@std/cli/parse-args";
 import decompress from "decompress";
 import { fmtPackage, mainPackage, platformDir, platformPackage, scope } from "./names.ts";
 import targets from "./targets.json" with { type: "json" };
-import { packedPackage, type Publication, publishVerified, readPackage } from "./publish.ts";
+import { packedPackage, type Publication, publishPackage, readPackage } from "./publish.ts";
 
 interface Package {
   zipFileName: string;
@@ -324,7 +324,7 @@ if (args.publish || args["publish-only"]) {
       const pkg = packedPackage(packed, name, npmVersion);
       $.logStep(`Publishing ${pkg.name}@${pkg.version}...`);
       publications.push(
-        await publishVerified(
+        await publishPackage(
           pkg,
           () => readPackage(pkg.name, pkg.version),
           async () => {

@@ -395,7 +395,7 @@ jobs:
           NPM_TAG: ${{ needs.plan.outputs.npm_tag }}
           EXACT_VERSION: ${{ needs.plan.outputs.channel == 'managed' && '1' || '' }}
         run: deno run -A deployment/npm/build.ts "${VERSION}" --publish-only --report "${RUNNER_TEMP}/npm-publications.json" ${EXACT_VERSION:+--exact-version} ${NPM_TAG:+--tag "${NPM_TAG}"}
-      - name: Read verified npm publications
+      - name: Read npm publication receipts
         id: publications
         if: needs.plan.outputs.channel == 'managed'
         run: printf 'json=%s\n' "$(jq -c . "${RUNNER_TEMP}/npm-publications.json")" >> "${GITHUB_OUTPUT}"
