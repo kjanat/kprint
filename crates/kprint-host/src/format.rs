@@ -695,6 +695,7 @@ where
   ) -> Result<(Instant, Vec<u8>, Vec<String>)> {
     let start_instant = Instant::now();
     let original_text = file_text;
+    let mut range = range;
     let mut file_text = Cow::Borrowed(file_text);
     let mut changed_by = Vec::new();
     let plugins_len = plugins.len();
@@ -708,7 +709,7 @@ where
           range: range.clone(),
           override_config: plugin.get_config_file_overrides_for_path(&file_path),
           on_host_format: observe_host_format(
-            scope.create_host_format_callback(plugin.clone(), file_path.clone()),
+            scope.create_host_format_callback_for_path(plugin.clone(), file_path.clone(), file_path.clone(), plugin_file_path.to_path_buf()),
             &scope,
             plugin,
             &file_path,
@@ -729,6 +730,11 @@ where
         },
       );
       if let Some(text) = format_text_result? {
+        if i + 1 < plugins_len
+          && let Some(selected) = &mut range
+        {
+          *selected = crate::utils::translate_format_range(&file_text, &text, selected.clone())?;
+        }
         if text != *file_text {
           changed_by.push(plugin.info().config_key.clone());
         }

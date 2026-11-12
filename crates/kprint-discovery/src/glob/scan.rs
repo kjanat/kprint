@@ -267,7 +267,7 @@ impl<TEnvironment: Environment> DiscoveryPolicy<TEnvironment> {
       })
       .map(|file_name| self.environment.dir_entry_path(&context.dir, file_name.as_ref()))
       // the config file in use doesn't start a new scope
-      .find(|path| !context.is_gitignored(path, /* is dir */ false))
+      .find(|path| context.index.as_ref().is_some_and(|index| index.contains_file(path)) || !context.is_gitignored(path, /* is dir */ false))
       .filter(|path| Some(path) != self.options.current_config_path.as_ref())
   }
 }

@@ -482,10 +482,16 @@ fn edit_array(array: &mut toml_edit::Array, should_remove: impl Fn(&Value) -> bo
 /// Puts each element of the array on its own line.
 fn format_multiline(array: &mut toml_edit::Array) {
   for value in array.iter_mut() {
-    value.decor_mut().set_prefix("\n  ");
-    value.decor_mut().set_suffix("");
+    if !value.decor().prefix().and_then(|text| text.as_str()).is_some_and(|text| text.contains('#')) {
+      value.decor_mut().set_prefix("\n  ");
+    }
+    if !value.decor().suffix().and_then(|text| text.as_str()).is_some_and(|text| text.contains('#')) {
+      value.decor_mut().set_suffix("");
+    }
   }
-  array.set_trailing("\n");
+  if !array.trailing().as_str().is_some_and(|text| text.contains('#')) {
+    array.set_trailing("\n");
+  }
   array.set_trailing_comma(true);
 }
 
@@ -1343,6 +1349,27 @@ exts = ["rs"]
 #[cfg(test)]
 mod init_insertion_tests {
   use super::*;
+
+  #[test]
+  fn keeps_comments_inside_the_plugins_array() {
+    let original = "plugins = [\n  # pinned version\n  \"old\", # explanation\n  # trailing comment\n]\n";
+    let updated = ConfigFileFormat::Toml
+      .insert_plugins(
+        original,
+        &[super::super::PluginEntryToInsert {
+          entry: "new".into(),
+          before_index: Some(0),
+        }],
+      )
+      .unwrap();
+    for comment in ["# pinned version", "# explanation", "# trailing comment"] {
+      assert!(updated.contains(comment), "{updated}");
+    }
+    assert_eq!(
+      ConfigFileFormat::Toml.plugin_entries(&updated).unwrap(),
+      vec![Some("new".into()), Some("old".into())]
+    );
+  }
 
   #[test]
   fn inserts_toml_plugins_and_options_without_overwriting_existing_settings() {

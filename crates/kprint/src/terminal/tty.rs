@@ -31,11 +31,10 @@ pub fn is_terminal_interactive() -> bool {
 pub(crate) fn read_terminal_key_press() -> Result<Event> {
   fn read_until_key_press() -> Result<Event> {
     loop {
-      let result = read();
-      if let Ok(Event::Key(e)) = &result
-        && e.kind == KeyEventKind::Press
-      {
-        return Ok(result?);
+      match read()? {
+        event @ Event::Resize(..) => return Ok(event),
+        Event::Key(key) if key.kind == KeyEventKind::Press => return Ok(Event::Key(key)),
+        _ => {}
       }
     }
   }

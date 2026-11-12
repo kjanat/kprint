@@ -2607,6 +2607,30 @@ text2_formatted"
   }
 
   #[test]
+  fn translates_line_ranges_between_plugins() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+      .with_local_config("/dprint.json", |c| {
+        c.add_remote_wasm_plugin()
+          .add_remote_process_plugin()
+          .add_config_section("test-plugin", r#"{"ending":"x","associations":["**/*.txt"]}"#)
+          .add_config_section("testProcessPlugin", r#"{"associations":["**/*.txt"]}"#);
+      })
+      .write_file("/file.txt", "abcdefghijklmnopqrst\nTAIL")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt", "--lines", "1"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "_formatted_process_\nTAIL_x_formatted_process");
+    environment.clear_logs();
+    run_test_cli_with_stdin(
+      vec!["fmt", "--stdin", "file.txt", "--lines", "1"],
+      &environment,
+      TestStdInReader::from("abcdefghijklmnopqrst\nTAIL"),
+    )
+    .unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["_formatted_process_\nTAIL_x_formatted_process"]);
+    environment.clear_logs();
+  }
+
+  #[test]
   fn should_provide_file_path_with_shebang_extension_to_plugin() {
     let script_path = "/scripts/build";
     let dotfile_path = "/.envrc";
@@ -2680,19 +2704,26 @@ text2_formatted"
       )]
     );
 
-    // a path that was given to a plugin is matched by its real path and the
-    // added extension, which is what a plugin provides when formatting with the host
-    for (file_path, text) in [
-      ("./scripts/other.dprint-ext-added.txt_ps", "output_file_path"),
-      ("./scripts/association.dprint-ext-added.other", "output_file_path"),
-    ] {
-      let test_std_in = TestStdInReader::from(text);
-      run_test_cli_with_stdin(vec!["fmt", "--config", "/config.json", "--stdin", file_path], &environment, test_std_in).unwrap();
-      assert_eq!(
-        environment.take_stdout_messages(),
-        vec![format!("{}_formatted_process", environment.cwd().join(file_path).display())]
-      );
-    }
+    // Real filenames containing the marker retain their path and associations.
+    let file_path = "./scripts/other.dprint-ext-added.txt_ps";
+    run_test_cli_with_stdin(
+      vec!["fmt", "--config", "/config.json", "--stdin", file_path],
+      &environment,
+      TestStdInReader::from("output_file_path"),
+    )
+    .unwrap();
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec![format!("{}_formatted_process", environment.cwd().join(file_path).display())]
+    );
+    run_test_cli_with_stdin(
+      vec!["fmt", "--config", "/config.json", "--stdin", "./scripts/association.dprint-ext-added.other"],
+      &environment,
+      TestStdInReader::from("text"),
+    )
+    .unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec!["text"]);
+
     let test_std_in = TestStdInReader::from("text");
     run_test_cli_with_stdin(
       vec!["fmt", "--config", "/config.json", "--stdin", "./scripts/override.dprint-ext-added.txt_ps"],
@@ -2700,7 +2731,7 @@ text2_formatted"
       test_std_in,
     )
     .unwrap();
-    assert_eq!(environment.take_stdout_messages(), vec!["text_overridden"]);
+    assert_eq!(environment.take_stdout_messages(), vec!["text_formatted_process"]);
   }
 
   #[test]

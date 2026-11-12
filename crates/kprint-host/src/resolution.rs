@@ -84,6 +84,7 @@ use kprint_discovery::FilePatternArgs;
 struct Embedder {
   plugin: Rc<PluginWithConfig>,
   outer_path: PathBuf,
+  file_path_mapping: Option<(PathBuf, PathBuf)>,
 }
 
 pub enum GetPluginResult {
@@ -552,11 +553,23 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 
   pub fn create_host_format_callback(self: &Rc<Self>, plugin: Rc<PluginWithConfig>, outer_path: PathBuf) -> HostFormatCallback {
+    self.create_host_format_callback_for_path(plugin, outer_path.clone(), outer_path.clone(), outer_path)
+  }
+
+  pub(crate) fn create_host_format_callback_for_path(
+    self: &Rc<Self>,
+    plugin: Rc<PluginWithConfig>,
+    outer_path: PathBuf,
+    real_path: PathBuf,
+    plugin_path: PathBuf,
+  ) -> HostFormatCallback {
     let scope = self.clone();
+    let file_path_mapping = (real_path != plugin_path).then_some((plugin_path, real_path));
     Rc::new(move |host_request| {
       let embedder = Embedder {
         plugin: plugin.clone(),
         outer_path: outer_path.clone(),
+        file_path_mapping: file_path_mapping.clone(),
       };
       scope.format_from(host_request, Some(embedder))
     })
@@ -653,6 +666,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     let embedder = Embedder {
       plugin: plugin.clone(),
       outer_path: outer_path.to_path_buf(),
+      file_path_mapping: None,
     };
     self.host_format_plugin_names(request, Some(&embedder))
   }
@@ -661,19 +675,31 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   fn host_format_plugin_names(&self, request: &HostFormatRequest, embedder: Option<&Embedder>) -> Vec<String> {
     match embedder.and_then(|embedder| self.embedded_plugin_names(embedder, &request.file_path)) {
       Some(plugin_names) => plugin_names,
-      None => self
-        .plugin_name_maps
-        .get_plugin_names_from_file_path_and_bytes(&request.file_path, &request.file_bytes)
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<String>>(),
+      None => {
+        let names = match Self::mapped_real_path(&request.file_path, embedder) {
+          Some(real_path) => self
+            .plugin_name_maps
+            .get_plugin_names_with_added_extension(real_path, &get_lowercase_file_extension(&request.file_path).unwrap_or_default()),
+          None => self
+            .plugin_name_maps
+            .get_plugin_names_from_file_path_and_bytes(&request.file_path, &request.file_bytes),
+        };
+        names.into_iter().map(ToOwned::to_owned).collect()
+      }
     }
+  }
+
+  fn mapped_real_path<'a>(path: &Path, embedder: Option<&'a Embedder>) -> Option<&'a Path> {
+    let (synthetic, real) = embedder?.file_path_mapping.as_ref()?;
+    (path == synthetic).then_some(real.as_path())
   }
 
   fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
     // owned because they outlive this scope by moving into the future below
     let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
-    let real_file_path = self.plugin_name_maps.get_real_file_path(&request.file_path).to_path_buf();
+    let real_file_path = Self::mapped_real_path(&request.file_path, embedder.as_ref())
+      .unwrap_or(&request.file_path)
+      .to_path_buf();
     let plugin_file_path = self.plugin_name_maps.get_plugin_file_path(&request.file_path, &request.file_bytes).into_owned();
     let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.is_sandboxed());
     let outer_path = match embedder {
@@ -691,8 +717,10 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     let scope = self.clone();
     async move {
       let mut file_text = request.file_bytes;
+      let mut range = request.range;
       let mut had_change = false;
-      for plugin_name in plugin_names {
+      let plugins_len = plugin_names.len();
+      for (index, plugin_name) in plugin_names.into_iter().enumerate() {
         let plugin = scope.get_plugin(&plugin_name);
         let request_override_config = if from_sandbox && !plugin.plugin.is_sandboxed() && plugin.info().allow_plugin_override_config != Some(true) {
           global_config_only(&request.override_config)
@@ -705,13 +733,23 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
               .format_text(InitializedPluginWithConfigFormatRequest {
                 file_path: plugin_file_path.clone(),
                 file_bytes: file_text.clone(),
-                range: request.range.clone(),
+                range: range.clone(),
                 override_config: plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config),
-                on_host_format: scope.create_host_format_callback(plugin.clone(), outer_path.clone()),
+                on_host_format: scope.create_host_format_callback_for_path(
+                  plugin.clone(),
+                  outer_path.clone(),
+                  real_file_path.clone(),
+                  plugin_file_path.clone(),
+                ),
                 token: request.token.clone(),
               })
               .await;
             if let Some(new_text) = result? {
+              if index + 1 < plugins_len
+                && let Some(selected) = &mut range
+              {
+                *selected = crate::utils::translate_format_range(&file_text, &new_text, selected.clone()).map_err(FormatError::new)?;
+              }
               file_text = new_text;
               had_change = true;
             }

@@ -39,6 +39,8 @@ pub struct InitMultiSelectItem {
   /// Where the item goes among the items that are selected the way it is
   /// when the prompt keeps the selected items first, lowest first.
   pub rank: usize,
+  /// Whether opening this item can expose editable settings.
+  pub is_openable: bool,
 }
 
 /// A symbol shown after a multi-select item's text.
@@ -92,6 +94,7 @@ impl InitMultiSelectItem {
       is_selected,
       is_rejected: false,
       is_selectable: true,
+      is_openable: true,
       mark: None,
       id: 0,
       rank: 0,
@@ -106,10 +109,16 @@ impl InitMultiSelectItem {
       is_selected: true,
       is_rejected: false,
       is_selectable: false,
+      is_openable: false,
       mark: None,
       id: 0,
       rank: 0,
     }
+  }
+
+  pub fn with_openable(mut self, is_openable: bool) -> Self {
+    self.is_openable = is_openable;
+    self
   }
 
   pub fn with_detail(mut self, detail: Vec<MultiSelectDetailPart>) -> Self {
@@ -459,6 +468,7 @@ fn handle_key(state: &mut MultiSelectState, key_event: &KeyEvent) -> KeyOutcome 
       if state.features.can_open
         && let Some(&item_index) = visible.get(state.active_index)
         && state.items[item_index].is_selectable
+        && state.items[item_index].is_openable
       {
         return KeyOutcome::Open(item_index);
       }
@@ -1049,6 +1059,9 @@ mod test {
     data.filter = "beta".to_string();
     // the index is into the items rather than the filtered ones
     assert_eq!(press(&mut data, KeyCode::Right), KeyOutcome::Open(1));
+    data.items[1].is_openable = false;
+    assert_eq!(press(&mut data, KeyCode::Right), KeyOutcome::Continue);
+    data.items[1].is_openable = true;
     // what can't be selected can't be opened
     data.items[1].is_selectable = false;
     assert_eq!(press(&mut data, KeyCode::Right), KeyOutcome::Continue);

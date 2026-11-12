@@ -142,6 +142,7 @@ pub async fn get_init_config_file_text(environment: &impl Environment, options: 
         environment,
         PluginPrompt {
           message: "Select plugins:",
+          use_scaffold: true,
           plugins: &latest_plugins,
           project_files: &project_files,
           defaults: &defaults,
@@ -264,6 +265,7 @@ pub async fn get_init_plugins_to_add(environment: &impl Environment, options: Ge
     environment,
     PluginPrompt {
       message: "Select plugins to add:",
+      use_scaffold: false,
       plugins: &latest_plugins,
       project_files: &project_files,
       defaults: &defaults,
@@ -307,7 +309,7 @@ pub async fn get_init_plugins_to_add(environment: &impl Environment, options: Ge
     .map(|((index, entry), before)| {
       let plugin = &latest_plugins[index];
       let mut config = serde_json::Map::new();
-      apply_choices_to_config(&mut config, plugin, &choices[index]);
+      apply_choices_to_config(&mut config, &choices[index], &plugin.file_extensions, &plugin.file_names);
       InitPluginToAdd {
         entry,
         before,
@@ -355,6 +357,7 @@ pub async fn prompt_for_init_preferences(environment: &impl Environment, options
         .with_detail(plugin_prompt_detail(plugin, &choices[index], &no_project_files, false))
         .with_id(index)
         .with_rank(ranks[index])
+        .with_openable(config_key(plugin).is_some())
     })
     .collect::<Vec<_>>();
   let mut state = MultiSelectState::new("Select the plugins to prefer whenever running dprint init:", items);
@@ -379,7 +382,17 @@ pub async fn prompt_for_init_preferences(environment: &impl Environment, options
           age_cutoff: age_cutoff.as_ref(),
           loaded: &loaded,
         });
-        edit_plugin_choices(environment, &title, index, plugin, &no_project_files, options_source, &mut choices[index]).await?;
+        edit_plugin_choices(
+          environment,
+          &title,
+          index,
+          plugin,
+          &no_project_files,
+          false,
+          options_source,
+          &mut choices[index],
+        )
+        .await?;
         state.items[item_index].detail = plugin_prompt_detail(plugin, &choices[index], &no_project_files, false);
         // what was changed is only remembered for a preferred plugin
         if choices[index] != old_choices && !state.items[item_index].is_selected {
@@ -468,6 +481,7 @@ fn get_avoided_plugins(plugins: &[InfoFilePluginInfo], preferences: &InitPrefere
 /// What to show in the plugin prompt.
 struct PluginPrompt<'a> {
   message: &'a str,
+  use_scaffold: bool,
   plugins: &'a [InfoFilePluginInfo],
   project_files: &'a ProjectFiles,
   /// The plugins that start out selected.
@@ -567,6 +581,7 @@ async fn prompt_for_plugins(
         .with_id(i)
         .with_rank(prompt.ranks[i])
         .with_mark(plugin_mark(preferences, plugin))
+        .with_openable(config_key(plugin).is_some())
     })
     .collect::<Vec<_>>();
   // the avoided mark is only explained when there's one to see
@@ -600,7 +615,17 @@ async fn prompt_for_plugins(
           age_cutoff: prompt.age_cutoff,
           loaded: prompt.loaded,
         });
-        edit_plugin_choices(environment, title, index, plugin, prompt.project_files, options_source, &mut choices[index]).await?;
+        edit_plugin_choices(
+          environment,
+          title,
+          index,
+          plugin,
+          prompt.project_files,
+          prompt.use_scaffold,
+          options_source,
+          &mut choices[index],
+        )
+        .await?;
         state.items[item_index].detail = plugin_prompt_detail(plugin, &choices[index], prompt.project_files, is_already_configured(index));
       }
     }
@@ -670,15 +695,20 @@ fn get_updated_preferences(
 /// user asks for this, and leaving before that's done stops it. The options
 /// are those of the version that would be written, which a dependency age
 /// holds back.
+#[allow(clippy::too_many_arguments)]
 async fn edit_plugin_choices(
   environment: &impl Environment,
   title: &str,
   index: usize,
   plugin: &InfoFilePluginInfo,
   project_files: &ProjectFiles,
+  use_scaffold: bool,
   options_source: Option<PluginOptionsSource<'_>>,
   choices: &mut PluginChoices,
 ) -> Result<()> {
+  if config_key(plugin).is_none() {
+    return Ok(());
+  }
   let file_types = plugin_file_types(plugin);
   let mut editor = SettingsEditorState::new(title);
   editor.show_key_help = true;
@@ -700,10 +730,34 @@ async fn edit_plugin_choices(
     .collect();
   editor.options_title = "Options:".to_string();
   let config = choices.config.clone();
+  let scaffold = if use_scaffold {
+    build_plugin_config(
+      plugin,
+      project_files,
+      &PluginChoices {
+        config: Default::default(),
+        ..choices.clone()
+      },
+    )
+    .as_object()
+    .cloned()
+    .unwrap_or_default()
+  } else {
+    Default::default()
+  };
+  let apply_values = move |options: &mut Vec<SettingsOption>| {
+    apply_config_to_settings_options(options, &scaffold);
+    for option in options.iter_mut() {
+      if let Some(value) = option.value.take() {
+        option.default_value = Some(value);
+      }
+    }
+    apply_config_to_settings_options(options, &config);
+  };
   let loaded_options = options_source.and_then(|source| source.loaded.options.borrow().get(&index).cloned());
   let pending_options = match (options_source, loaded_options) {
     (Some(_), Some(mut options)) => {
-      apply_config_to_settings_options(&mut options, &config);
+      apply_values(&mut options);
       editor.options = SettingsOptions::Loaded(options);
       None
     }
@@ -714,16 +768,16 @@ async fn edit_plugin_choices(
           let plugin_entry = source.loaded.entry(index, plugin, source.age_cutoff, environment).await?;
           let mut options = source.loader.load(&plugin_entry).await?;
           source.loaded.options.borrow_mut().insert(index, options.clone());
-          apply_config_to_settings_options(&mut options, &config);
+          apply_values(&mut options);
           Ok(options)
         }
         .boxed_local(),
       )
     }
     (None, _) => {
-      // only what was already chosen is known
+      // Without a download, the scaffold and explicit choices are still known.
       let mut options = Vec::new();
-      apply_config_to_settings_options(&mut options, &config);
+      apply_values(&mut options);
       editor.options = SettingsOptions::Loaded(options);
       None
     }
@@ -1226,6 +1280,8 @@ fn build_plugin_config(plugin: &InfoFilePluginInfo, project_files: &ProjectFiles
     Some(value @ serde_json::Value::Object(_)) => value,
     _ => serde_json::Value::Object(Default::default()),
   };
+  let mut matched_extensions = plugin.file_extensions.clone();
+  let mut matched_file_names = plugin.file_names.clone();
   for item in &plugin.config_items {
     let file_extensions = item
       .file_extensions
@@ -1240,11 +1296,13 @@ fn build_plugin_config(plugin: &InfoFilePluginInfo, project_files: &ProjectFiles
       .cloned()
       .collect::<Vec<_>>();
     if matches_project_files(&file_extensions, &file_names, project_files) {
+      matched_extensions.extend(item.file_extensions.iter().cloned());
+      matched_file_names.extend(item.file_names.iter().cloned());
       deep_merge(&mut config, item.config.clone());
     }
   }
   if let serde_json::Value::Object(config) = &mut config {
-    apply_choices_to_config(config, plugin, choices);
+    apply_choices_to_config(config, choices, &matched_extensions, &matched_file_names);
   }
   config
 }
@@ -1254,13 +1312,18 @@ fn build_plugin_config(plugin: &InfoFilePluginInfo, project_files: &ProjectFiles
 /// gets written is exactly what they chose. The files they said to leave out
 /// that the plugin matches on its own become negated `associations`, which is
 /// how the CLI is told a plugin shouldn't format something it otherwise would.
-fn apply_choices_to_config(config: &mut serde_json::Map<String, serde_json::Value>, plugin: &InfoFilePluginInfo, choices: &PluginChoices) {
+fn apply_choices_to_config(
+  config: &mut serde_json::Map<String, serde_json::Value>,
+  choices: &PluginChoices,
+  matched_extensions: &[String],
+  matched_file_names: &[String],
+) {
   for (name, value) in &choices.config {
     config.insert(name.clone(), value.clone());
   }
 
-  let excluded_extensions = plugin.file_extensions.iter().filter(|ext| choices.excludes_extension(ext));
-  let excluded_file_names = plugin.file_names.iter().filter(|name| choices.excludes_file_name(name));
+  let excluded_extensions = matched_extensions.iter().filter(|ext| choices.excludes_extension(ext));
+  let excluded_file_names = matched_file_names.iter().filter(|name| choices.excludes_file_name(name));
   let patterns = excluded_extensions
     .map(|ext| format!("!**/*.{}", ext))
     .chain(excluded_file_names.map(|name| format!("!**/{}", name)))
@@ -1480,6 +1543,46 @@ mod test {
           config: serde_json::Value::Object(Default::default()),
         })
         .collect(),
+    }
+  }
+
+  #[test]
+  fn excludes_unchecked_types_still_enabled_by_a_retained_config_item() {
+    let mut plugin = info_plugin_with_extensions(vec![], vec![vec!["rs", "go"]]);
+    plugin.config_items[0].file_names = vec!["kept".into(), "skipped".into()];
+    plugin.config_items[0].config = serde_json::json!({"commands": [{"exts": ["rs", "go"]}]});
+    let project_files = ProjectFiles {
+      extensions: ["rs".into()].into(),
+      file_names: Default::default(),
+    };
+    let choices = PluginChoices {
+      excluded_extensions: vec!["go".into()],
+      excluded_file_names: vec!["skipped".into()],
+      ..Default::default()
+    };
+    let config = build_plugin_config(&plugin, &project_files, &choices);
+    assert_eq!(config["associations"], serde_json::json!(["!**/*.go", "!**/skipped"]));
+    assert_eq!(config["commands"], plugin.config_items[0].config["commands"]);
+  }
+
+  #[test]
+  fn plugins_without_config_keys_cannot_open_the_options_editor() {
+    for config_key in [None, Some(String::new())] {
+      let environment = TestEnvironmentBuilder::new()
+        .with_info_file(|info| {
+          let mut plugin = wasm_plugin("a", "a", &["ts"]);
+          plugin.config_key = config_key.clone();
+          info.add_plugin(plugin);
+        })
+        .write_file("/main.ts", "")
+        .build();
+      press_keys(&environment, &["right", "enter"]);
+      environment.clone().run_in_runtime(async move {
+        let text = get_init_config_file_text(&environment, Default::default()).await.unwrap();
+        assert!(text.contains("a-1.0.0.wasm"));
+        assert!(!take_screens(&environment).iter().flatten().any(|line| line.contains("Files to format:")));
+        environment.clear_logs();
+      });
     }
   }
 
@@ -3503,10 +3606,18 @@ mod test {
       async move {
         let text = get_init_config_file_text(&environment, Default::default()).await.unwrap();
         let screens = take_screens(&environment);
-        // no loader was provided and nothing was chosen yet
+        // Scaffolded options are visible even without downloading a plugin.
         assert_eq!(
           screens[1],
-          vec!["  Files to format:", "> [x] .ts", "  [x] .yaml", "  [x] .YML", "  [x] Dockerfile"]
+          vec![
+            "  Files to format:",
+            "> [x] .ts",
+            "  [x] .yaml",
+            "  [x] .YML",
+            "  [x] Dockerfile",
+            "  Options:",
+            "    associations: [\"**/*.custom\"] (edit in the config file)"
+          ]
         );
         // the selection isn't changed by what was done in the editor, so `b`
         // isn't selected for the .yaml file this time
@@ -3692,9 +3803,11 @@ mod test {
             "> [x] .ts",
             "  Options:",
             "    lineWidth: 80",
-            "    useTabs: false (default, written)"
+            "    useTabs: false (default, written)",
+            "    commands: [\"x\"] (edit in the config file)"
           ]
         );
+        assert!(screens[4].iter().any(|line| line.contains("lineWidth: 100")), "{:?}", screens[4]);
         assert_eq!(screens[5], vec!["> [x] a \u{2605} (.ts) \u{2014} customized"]);
         assert_eq!(read_init_preferences(&environment), expected_preferences);
         environment.take_stderr_messages();

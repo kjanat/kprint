@@ -199,7 +199,7 @@ fn kind_of_schema_property(schema: &serde_json::Value, property: &serde_json::Va
 fn enum_values_of_schema_property(schema: &serde_json::Value, property: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
   if let Some(values) = property.get("enum").and_then(|values| values.as_array()) {
     // no values is a schema that nothing matches, so go by its type instead
-    return if values.is_empty() { None } else { Some(values.clone()) };
+    return unique_enum_values(values.clone());
   }
   let alternatives = property
     .get("oneOf")
@@ -219,7 +219,17 @@ fn enum_values_of_schema_property(schema: &serde_json::Value, property: &serde_j
       return None;
     }
   }
-  if values.is_empty() { None } else { Some(values) }
+  unique_enum_values(values)
+}
+
+fn unique_enum_values(values: Vec<serde_json::Value>) -> Option<Vec<serde_json::Value>> {
+  let mut unique = Vec::new();
+  for value in values {
+    if !unique.contains(&value) {
+      unique.push(value);
+    }
+  }
+  if unique.is_empty() { None } else { Some(unique) }
 }
 
 fn kind_of_value(value: &serde_json::Value) -> SettingsOptionKind {
@@ -236,6 +246,15 @@ mod test {
   use super::*;
   use pretty_assertions::assert_eq;
   use serde_json::json;
+
+  #[test]
+  fn deduplicates_enum_alternatives_in_order() {
+    let schema = json!({"anyOf": [{"enum": ["a", "b"]}, {"enum": ["b", "c"]}, {"const": "a"}]});
+    assert_eq!(enum_values_of_schema_property(&schema, &schema), Some(vec![json!("a"), json!("b"), json!("c")]));
+    let schema = json!({"enum": ["a", "a", "b"]});
+    assert_eq!(enum_values_of_schema_property(&schema, &schema), Some(vec![json!("a"), json!("b")]));
+    assert_eq!(enum_values_of_schema_property(&json!({}), &json!({"enum": []})), None);
+  }
 
   #[test]
   fn schema_download_obeys_its_execution_deadline() {

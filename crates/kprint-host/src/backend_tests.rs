@@ -152,3 +152,35 @@ fn should_support_shutdown_during_indefinite_host_formatting() {
     }
   });
 }
+
+#[test]
+fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+    .with_local_config("/dprint.json", |c| {
+      c.add_remote_wasm_plugin()
+        .add_config_section("shebangs", r##"{"#!/bin/sh":"txt"}"##)
+        .add_config_section("test-plugin", r#"{"overrides":{"files":"**/build","ending":"mapped"}}"#);
+    })
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment.clone(), resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let real = PathBuf::from("/build");
+    let synthetic = PathBuf::from("/build.dprint-ext-added.txt");
+    let request = || HostFormatRequest {
+      file_path: synthetic.clone(),
+      file_bytes: b"text".to_vec(),
+      range: None,
+      override_config: Default::default(),
+      token: Arc::new(kprint_plugin_types::NullCancellationToken),
+    };
+    assert_eq!(scope.format(request()).await.unwrap().unwrap(), b"text_formatted");
+    let callback = scope.create_host_format_callback_for_path(scope.get_plugin("test-plugin"), real.clone(), real, synthetic.clone());
+    assert_eq!(callback(request()).await.unwrap().unwrap(), b"text_mapped");
+    // The same filename keeps its identity after a synthetic request, too.
+    assert_eq!(scope.format(request()).await.unwrap().unwrap(), b"text_formatted");
+    session.shutdown().await;
+    environment.clear_logs();
+  });
+}

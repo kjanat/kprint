@@ -577,7 +577,11 @@ fn check_dir_chain<TEnvironment: Environment>(
             .is_some_and(|gitignore| gitignore.is_ignored(&config_file, /* is dir */ false));
         // git doesn't see an untracked, gitignored config file
         if is_tracked || !is_ignored {
-          return DirChainResult::HasConfigFile(config_file);
+          // The first eligible config wins, even when it is already in use.
+          if Some(config_file.as_path()) != finder.current_config_path.as_deref() {
+            return DirChainResult::HasConfigFile(config_file);
+          }
+          break;
         }
       }
     }
@@ -630,10 +634,7 @@ impl<'a, TEnvironment: Environment> DirConfigFileFinder<'a, TEnvironment> {
       // joined like the scan joins them (see `scan::config_file`), so the same
       // config file found either way is the same path
       .map(|file_name| self.environment.dir_entry_path(dir, file_name.as_ref()))
-      // the config file already in use doesn't create a new scope
       .filter(|path| self.environment.path_is_file(path))
-      .take(1)
-      .filter(|path| Some(path.as_path()) != self.current_config_path.as_deref())
       .collect::<Vec<_>>();
     self.cache.insert(dir.to_path_buf(), result.clone());
     result
@@ -1429,6 +1430,23 @@ mod test {
     let mut result = result.file_paths.into_iter().map(|r| r.to_string_lossy().to_string()).collect::<Vec<_>>();
     result.sort();
     assert_eq!(result, vec!["/dir/b/b.txt"]);
+  }
+
+  #[tokio::test]
+  async fn discovers_tracked_project_config_after_an_ignored_root_candidate() {
+    let entries = [kprint_git::test_util::TestEntry::file("sub/.config/dprint.json")];
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/.git/index", kprint_git::test_util::write_index(2, 20, &entries, &[]))
+      .write_file("/.gitignore", "**/dprint.json\n")
+      .write_file("/sub/dprint.json", "{}")
+      .write_file("/sub/.config/dprint.json", "{}")
+      .write_file("/sub/file.txt", "text")
+      .build();
+    for includes in [None, Some(["./sub/file.txt"].as_slice())] {
+      let (files, configs) = glob_tracked_ignored(&environment, "/", includes);
+      assert!(files.is_empty(), "{files:?}");
+      assert_eq!(configs, vec!["/sub/.config/dprint.json"]);
+    }
   }
 
   fn tracked_ignored_environment() -> TestEnvironment {

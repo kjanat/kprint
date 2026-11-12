@@ -614,14 +614,13 @@ impl<TEnvironment: Environment> Filter<'_, TEnvironment> {
         // joined like the scan joins them (see `scan::config_file`)
         .map(|file_name| self.environment.dir_entry_path(&path, file_name.as_ref()))
         .filter(|config_file| self.environment.path_kind(config_file) == Some(PathKind::File))
-        .take(1)
-        .filter(|config_file| Some(config_file) != self.options.current_config_path.as_ref())
         .find(|config_file| {
           index.as_ref().is_some_and(|index| index.contains_file(config_file))
             || !gitignore
               .as_ref()
               .is_some_and(|gitignore| gitignore.is_ignored(config_file, /* is dir */ false))
         })
+        .filter(|config_file| Some(config_file) != self.options.current_config_path.as_ref())
     {
       self.config_files.push(config_file);
       return None;
@@ -875,6 +874,21 @@ mod test {
 
   fn paths(paths: &[&str]) -> Vec<PathBuf> {
     paths.iter().map(PathBuf::from).collect()
+  }
+
+  #[test]
+  fn falls_back_to_a_tracked_project_config_after_an_ignored_candidate() {
+    let mut fixture = Fixture::new();
+    fixture.entries = [".gitignore", "a.ts", "src/b.ts", "src/c.json", "sub/.config/dprint.json", "sub/f.ts"]
+      .into_iter()
+      .map(TestEntry::file)
+      .collect();
+    write(&fixture.environment, "/repo/sub/.config/dprint.json", "{}");
+    write(&fixture.environment, "/repo/.gitignore", "ignored/\n*.log\n**/dprint.json\n");
+    let environment = fixture.write_index();
+    environment.set_git_ipc_response(SOCKET, b"builtin:test:2\0sub/\0".to_vec());
+    let (_, configs) = scan_like_walk(&environment, "/repo", "**/*.{ts,json}");
+    assert_eq!(configs, paths(&["/repo/sub/.config/dprint.json"]));
   }
 
   #[test]

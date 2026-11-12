@@ -200,7 +200,9 @@ impl NpmExtendsResolver {
       name: name.to_string(),
       version: version.to_string(),
     };
-    if let Some(package) = self.registry_package_dirs.borrow().get(&key) {
+    if let Some(package) = self.registry_package_dirs.borrow().get(&key)
+      && checksum.is_none_or(|expected| package.tarball_checksum.eq_ignore_ascii_case(expected))
+    {
       return Ok(RegistryPackageDir {
         is_first_download: false,
         ..package.clone()
@@ -208,8 +210,8 @@ impl NpmExtendsResolver {
     }
     let file_name = name.rsplit('/').next().unwrap();
     let url = url::Url::parse(&format!("https://registry.npmjs.org/{name}/-/{file_name}-{version}.tgz"))?;
-    let file = crate::utils::resolve_path_source_to_file_with_cache_mode(
-      PathSource::new_remote(url),
+    let mut file = crate::utils::resolve_path_source_to_file_with_cache_mode(
+      PathSource::new_remote(url.clone()),
       environment,
       if self.reload {
         crate::utils::RemoteCacheMode::Reload
@@ -218,7 +220,11 @@ impl NpmExtendsResolver {
       },
     )
     .await?;
-    let tarball_checksum = crate::utils::get_sha256_checksum(&file.content);
+    let mut tarball_checksum = crate::utils::get_sha256_checksum(&file.content);
+    if !self.reload && !file.is_first_download && checksum.is_some_and(|expected| !tarball_checksum.eq_ignore_ascii_case(expected)) {
+      file = crate::utils::resolve_path_source_to_file_with_cache_mode(PathSource::new_remote(url), environment, crate::utils::RemoteCacheMode::Reload).await?;
+      tarball_checksum = crate::utils::get_sha256_checksum(&file.content);
+    }
     if let Some(expected) = checksum
       && !tarball_checksum.eq_ignore_ascii_case(expected)
     {
@@ -1196,6 +1202,28 @@ mod tests {
         assert!(error.contains("HTTP(S)"), "{error}");
       });
     }
+  }
+
+  #[test]
+  fn refreshes_a_cached_tarball_once_when_the_pin_changes() {
+    let environment = TestEnvironmentBuilder::new().build();
+    add_registry_package(&environment, "config", "1.0.0", &[("package/dprint.json", "{}")]);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(environment.cwd());
+      let resolver = NpmExtendsResolver::default();
+      resolver.resolve("npm:config@1.0.0", &base, &environment).await.unwrap();
+      let checksum = add_registry_package(&environment, "config", "1.0.0", &[("package/dprint.json", "{\"lineWidth\": 90}")]);
+      let resolved = resolver.resolve(&format!("npm:config@1.0.0@{checksum}"), &base, &environment).await.unwrap();
+      assert_eq!(String::from_utf8(resolved.content).unwrap(), "{\"lineWidth\": 90}");
+      let url = "https://registry.npmjs.org/config/-/config-1.0.0.tgz";
+      assert_eq!(environment.remote_file_download_count(url), 2);
+      let error = resolver
+        .resolve(&format!("npm:config@1.0.0@{}", "0".repeat(64)), &base, &environment)
+        .await
+        .unwrap_err();
+      assert!(error.to_string().contains("Invalid checksum"));
+      assert_eq!(environment.remote_file_download_count(url), 3);
+    });
   }
 
   #[test]

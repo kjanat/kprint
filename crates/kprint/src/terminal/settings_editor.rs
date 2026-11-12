@@ -368,6 +368,8 @@ fn commit_edit(state: &mut SettingsEditorState) {
         return;
       }
     }
+  } else if text == "null" && state.loaded_options()[index].effective_value() == Some(&serde_json::Value::Null) {
+    serde_json::Value::Null
   } else {
     serde_json::Value::String(text)
   };
@@ -667,6 +669,19 @@ mod test {
       value: None,
       description: None,
     }
+  }
+
+  #[test]
+  fn accepting_an_unchanged_nullable_string_keeps_null() {
+    let mut state = SettingsEditorState::new("plugin");
+    state.options = SettingsOptions::Loaded(vec![option("text", SettingsOptionKind::String, serde_json::Value::Null)]);
+    press(&mut state, KeyCode::Enter);
+    press(&mut state, KeyCode::Enter);
+    assert_eq!(option_value(&state, "text"), Some(serde_json::Value::Null));
+    press(&mut state, KeyCode::Enter);
+    type_text(&mut state, "able");
+    press(&mut state, KeyCode::Enter);
+    assert_eq!(option_value(&state, "text"), Some(json!("nullable")));
   }
 
   fn build_state() -> SettingsEditorState {

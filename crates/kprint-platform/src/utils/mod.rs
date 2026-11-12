@@ -61,3 +61,6 @@ pub fn replace_control_chars(text: &str) -> String {
     .map(|c| if c.is_control() && !matches!(c, '\n' | '\t') { '\u{FFFD}' } else { c })
     .collect()
 }
+
+mod format_range;
+pub use format_range::*;
