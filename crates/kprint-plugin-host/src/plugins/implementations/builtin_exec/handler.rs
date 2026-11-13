@@ -1736,23 +1736,38 @@ mod test {
   #[test]
   fn doesnt_count_a_setup_command_no_request_waited_for_as_failing() {
     let dir = tempfile::tempdir().unwrap();
+    let ready = dir.path().join("ready");
     let config = resolve(serde_json::json!({
-      "commands": [{ "command": "tr a-z A-Z", "setupCommand": counting_setup_command(dir.path(), 1), "exts": ["txt"] }]
+      "commands": [{
+        "command": "tr a-z A-Z",
+        "setupCommand": format!(
+          "sh -c \"echo $$ >> {}; while ! test -f {}; do sleep 0.01; done\"",
+          dir.path().join("starts").display(), ready.display()
+        ),
+        "exts": ["txt"]
+      }]
     }));
     let attempts = super::MAX_SETUP_ATTEMPTS as usize + 1;
     run_leaving_nothing_running(async {
       let setup_state = SetupState::default();
       // more times than it may fail
-      for _ in 0..attempts {
+      for attempt in 1..=attempts {
         let token = tokio_util::sync::CancellationToken::new();
         let cancel = async {
-          tokio::time::sleep(Duration::from_millis(100)).await;
+          tokio::time::timeout(Duration::from_secs(10), async {
+            while setup_starts(dir.path()).len() < attempt {
+              tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+          })
+          .await
+          .expect("the setup process should report its start before cancellation");
           token.cancel();
         };
         let (result, ()) = tokio::join!(format_with_token(&config, "text", &setup_state, Arc::new(token.clone())), cancel);
         assert_eq!(result, Ok(None));
       }
       // it still runs, and right away rather than after a delay
+      std::fs::write(&ready, "").unwrap();
       assert_eq!(format(&config, "text", &setup_state).await, Ok(Some("TEXT".to_string())));
     });
     assert_eq!(setup_starts(dir.path()).len(), attempts + 1);
