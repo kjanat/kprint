@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Limit npm tarball extraction by entry size, total decompressed bytes, entry count, and deadline. Cancel extraction workers when their callers stop and remove partial staging data.
 - Give each formatting arena its own identifier counters. Info, anchor and condition constructors now take their destination arena. Reject cross-arena references and support nested arenas with arbitrary drop order.
 - Detect local plugin replacements even when size and mtime are preserved, including process archives. Reuse digests when stable Unix file identities and nanosecond change times match; hash sources when that information is unavailable.
 - Match exec extensions and filenames case-insensitively. Preserve real paths for shebang-matched files, add `{{file_path_with_ext}}` and `{{ext}}`, and explicitly report that exec does not support range formatting. Invalidate the built-in exec formatting cache for the changed behavior.

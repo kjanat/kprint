@@ -252,7 +252,7 @@ impl NpmExtendsResolver {
     // Content-address the extraction so a refreshed package cannot reuse
     // files extracted from different bytes or an unrecorded old directory.
     let dir = environment.get_cache_dir().join("npm-config").join(&tarball_checksum);
-    crate::utils::extract_tarball_to_dir(&file.content, &dir, environment)?;
+    crate::utils::extract_npm_tarball(file.content, dir.clone(), environment.clone(), crate::utils::NpmExtractionMode::Reuse).await?;
     let package = RegistryPackageDir {
       dir,
       tarball_checksum,
