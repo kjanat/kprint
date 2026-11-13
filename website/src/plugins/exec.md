@@ -141,6 +141,13 @@ The former `DPRINT_BUILTIN_EXEC` switch has been removed. Setting it to `0` has 
 effect. Local or self-hosted manifests identifying the external exec plugin are
 rejected; replace those entries with `"exec"` and keep the `exec` configuration.
 
+A manifest or cached identity naming `dprint-plugin-exec` is rejected before its
+executable starts. If a differently named manifest starts a plugin that reports
+that name at runtime, rejection happens after startup and the metadata exchange.
+Startup side effects can already have occurred. Treat every process plugin as
+executable code and apply the usual configuration trust requirements; the
+identity check cannot establish what an unknown executable will do before it runs.
+
 ## Install, Setup, and Configuration
 
 ```shellsession

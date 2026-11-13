@@ -27,13 +27,18 @@ use serde::Deserialize;
 use serde::Serialize;
 
 fn main() -> Result<(), FormatError> {
+  let executable = std::env::current_exe()?;
+  let reports_exec = executable.file_stem() == Some(std::ffi::OsStr::new("test-reports-exec"));
+  if reports_exec {
+    std::fs::write(executable.with_extension("started"), b"started")?;
+  }
   let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
   rt.block_on(async move {
     if let Some(parent_process_id) = get_parent_process_id_from_cli_args() {
       start_parent_process_checker_task(parent_process_id);
     }
 
-    handle_process_stdio_messages(TestProcessPluginHandler::new()).await
+    handle_process_stdio_messages(TestProcessPluginHandler::new(reports_exec)).await
   })
 }
 
@@ -44,11 +49,13 @@ struct Configuration {
   line_width: u32,
 }
 
-struct TestProcessPluginHandler {}
+struct TestProcessPluginHandler {
+  reports_exec: bool,
+}
 
 impl TestProcessPluginHandler {
-  fn new() -> Self {
-    TestProcessPluginHandler {}
+  fn new(reports_exec: bool) -> Self {
+    TestProcessPluginHandler { reports_exec }
   }
 }
 
@@ -58,7 +65,7 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
 
   fn plugin_info(&self) -> PluginInfo {
     PluginInfo {
-      name: String::from(env!("CARGO_PKG_NAME")),
+      name: String::from(if self.reports_exec { "dprint-plugin-exec" } else { env!("CARGO_PKG_NAME") }),
       version: {
         let exe_path = std::env::current_exe().unwrap();
         if exe_path.to_string_lossy().contains("temp-plugin-0.3.0") {
