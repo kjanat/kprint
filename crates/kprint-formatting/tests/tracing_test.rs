@@ -8,7 +8,7 @@ fn test_tracing() {
     {
       let arena = &arena;
       let mut print_items = PrintItems::new(arena);
-      print_items.push_info(LineNumber::new("line_number"));
+      print_items.push_info(LineNumber::new(arena, "line_number"));
       print_items.push_signal(Signal::NewLine);
       print_items.push_str_runtime_width_computed("string");
       print_items.push_condition(conditions::if_true_or(
@@ -50,8 +50,8 @@ fn test_tracing_jumps() {
     {
       let arena = &arena;
       let mut print_items = PrintItems::new(arena);
-      let start_ln = LineNumber::new("start");
-      let end_ln = LineNumber::new("end");
+      let start_ln = LineNumber::new(arena, "start");
+      let end_ln = LineNumber::new(arena, "end");
       let mut later_condition = conditions::if_true("laterCondition", arena.alloc_resolver(|_| Some(true)), PrintItems::new(arena));
       let later_condition_reference = later_condition.create_reference();
       print_items.push_info(start_ln);

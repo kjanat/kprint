@@ -2,16 +2,13 @@
 
 ## Unreleased
 
+- Give each formatting arena its own identifier counters. Info, anchor and condition constructors now take their destination arena. Reject cross-arena references and support nested arenas with arbitrary drop order.
 - Detect local plugin replacements even when size and mtime are preserved, including process archives. Reuse digests when stable Unix file identities and nanosecond change times match; hash sources when that information is unavailable.
-
 - Match exec extensions and filenames case-insensitively. Preserve real paths for shebang-matched files, add `{{file_path_with_ext}}` and `{{ext}}`, and explicitly report that exec does not support range formatting. Invalidate the built-in exec formatting cache for the changed behavior.
-
 - Always use built-in exec for recognized references. Remove the external-exec switch and version-specific trust exceptions; reject local or self-hosted external exec manifests.
-
 - Bound package-manager manifest reads and reject symlinked automatic cache directories. Select the cache per environment and document project-specific cache clearing.
 - Include Wasm contents and process-plugin distributions in incremental formatting identity, independently of compiled-code compatibility.
 - Document how to preserve Markdown shell examples with placeholders using embedded-formatting opt-outs, text fences, or ignore comments.
-
 - Add npm packages in `extends`, explicit `--reload` controls, an `install` command, CLI range formatting with `--lines`, and project configuration discovery under `.config/`.
 - Add init preferences, plugin option editing, file-type selection, plugin ordering, and insertion into existing JSON and TOML configurations.
 - Verify checksum-pinned remote configurations and restrict process-plugin configuration to trusted layers while preserving kprint's exec program allowlists.

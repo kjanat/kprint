@@ -7,12 +7,12 @@ pub struct GraphNode<'a, T> {
 }
 
 impl<'a, T> GraphNode<'a, T> {
-  pub fn new(item: T, previous: Option<&'a GraphNode<'a, T>>) -> GraphNode<'a, T> {
+  pub fn new(_arena: &super::super::Arena, item: T, previous: Option<&'a GraphNode<'a, T>>) -> GraphNode<'a, T> {
     GraphNode {
       item,
       previous,
       #[cfg(feature = "tracing")]
-      graph_node_id: super::super::thread_state::next_graph_node_id(),
+      graph_node_id: _arena.counts.graph_node_id.next(),
     }
   }
 }

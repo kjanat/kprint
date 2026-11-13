@@ -3,8 +3,8 @@ use std::mem;
 
 use super::Arena;
 use super::condition_resolvers;
+use super::identifiers::ArenaId;
 use super::printer::Printer;
-use super::thread_state;
 
 /// A list of print items allocated in an [`Arena`].
 pub struct PrintItems<'a> {
@@ -41,10 +41,14 @@ impl<'a> PrintItems<'a> {
     match &item {
       PrintItem::RcPath(path) => assert_same_arena(self.arena, path.arena),
       PrintItem::Condition(condition) => {
+        assert_same_arena(self.arena, condition.arena);
         for path in [condition.true_path, condition.false_path].into_iter().flatten() {
           assert_same_arena(self.arena, path.arena);
         }
       }
+      PrintItem::Info(info) => self.arena.id.assert_matches(info.owner()),
+      PrintItem::Anchor(Anchor::LineNumber(anchor)) => self.arena.id.assert_matches(anchor.line_number.owner),
+      PrintItem::ConditionReevaluation(reevaluation) => self.arena.id.assert_matches(reevaluation.owner),
       _ => {}
     }
     let node = self.arena.alloc_print_node_cell(PrintNodeCell::new(self.arena, item));
@@ -121,6 +125,7 @@ impl<'a> PrintItems<'a> {
   }
 
   pub fn push_condition(&mut self, condition: Condition<'a>) {
+    assert_same_arena(self.arena, condition.arena);
     let condition = self.arena.alloc_condition(condition);
     self.push_item_internal(PrintItem::Condition(condition));
   }
@@ -479,12 +484,12 @@ pub struct PrintNode<'a> {
 }
 
 impl<'a> PrintNode<'a> {
-  fn new(item: PrintItem<'a>) -> PrintNode<'a> {
+  fn new(_arena: &Arena, item: PrintItem<'a>) -> PrintNode<'a> {
     PrintNode {
       item,
       next: None,
       #[cfg(feature = "tracing")]
-      print_node_id: thread_state::next_print_node_id(),
+      print_node_id: _arena.counts.print_node_id.next(),
     }
   }
 
@@ -509,7 +514,7 @@ impl<'a> PrintNodeCell<'a> {
   pub(super) fn new(arena: &'a Arena, item: PrintItem<'a>) -> PrintNodeCell<'a> {
     PrintNodeCell {
       arena,
-      value: UnsafeCell::new(PrintNode::new(item)),
+      value: UnsafeCell::new(PrintNode::new(arena, item)),
     }
   }
 
@@ -661,14 +666,16 @@ pub struct LineNumberAnchor {
 }
 
 impl LineNumberAnchor {
-  pub fn new(line_number: LineNumber) -> Self {
+  pub fn new(arena: &Arena, line_number: LineNumber) -> Self {
+    arena.id.assert_matches(line_number.owner);
     Self {
-      id: thread_state::next_line_number_anchor_id(),
+      id: arena.counts.line_number_anchor_id.next(),
       line_number,
     }
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -692,6 +699,19 @@ pub enum Info {
   IndentLevel(IndentLevel),
   LineStartColumnNumber(LineStartColumnNumber),
   LineStartIndentLevel(LineStartIndentLevel),
+}
+
+impl Info {
+  pub(super) fn owner(self) -> ArenaId {
+    match self {
+      Self::LineNumber(info) => info.owner,
+      Self::ColumnNumber(info) => info.owner,
+      Self::IsStartOfLine(info) => info.owner,
+      Self::IndentLevel(info) => info.owner,
+      Self::LineStartColumnNumber(info) => info.owner,
+      Self::LineStartIndentLevel(info) => info.owner,
+    }
+  }
 }
 
 impl From<LineNumber> for Info {
@@ -738,16 +758,17 @@ pub struct LineAndColumn {
 }
 
 impl LineAndColumn {
-  pub fn new(name: &'static str) -> Self {
+  pub fn new(arena: &Arena, name: &'static str) -> Self {
     Self {
-      line: LineNumber::new(name),
-      column: ColumnNumber::new(name),
+      line: LineNumber::new(arena, name),
+      column: ColumnNumber::new(arena, name),
     }
   }
 }
 
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct LineNumber {
+  pub(super) owner: ArenaId,
   id: u32,
   /// Name for debugging purposes.
   #[cfg(debug_assertions)]
@@ -755,15 +776,17 @@ pub struct LineNumber {
 }
 
 impl LineNumber {
-  pub fn new(_name: &'static str) -> Self {
+  pub fn new(arena: &Arena, _name: &'static str) -> Self {
     Self {
-      id: thread_state::next_line_number_id(),
+      owner: arena.id,
+      id: arena.counts.line_number_id.next(),
       #[cfg(debug_assertions)]
       name: _name,
     }
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -779,6 +802,7 @@ impl LineNumber {
 
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct ColumnNumber {
+  pub(super) owner: ArenaId,
   id: u32,
   /// Name for debugging purposes.
   #[cfg(debug_assertions)]
@@ -786,15 +810,17 @@ pub struct ColumnNumber {
 }
 
 impl ColumnNumber {
-  pub fn new(_name: &'static str) -> Self {
+  pub fn new(arena: &Arena, _name: &'static str) -> Self {
     Self {
-      id: thread_state::next_column_number_id(),
+      owner: arena.id,
+      id: arena.counts.column_number_id.next(),
       #[cfg(debug_assertions)]
       name: _name,
     }
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -810,6 +836,7 @@ impl ColumnNumber {
 
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct IsStartOfLine {
+  pub(super) owner: ArenaId,
   id: u32,
   /// Name for debugging purposes.
   #[cfg(debug_assertions)]
@@ -817,15 +844,17 @@ pub struct IsStartOfLine {
 }
 
 impl IsStartOfLine {
-  pub fn new(_name: &'static str) -> Self {
+  pub fn new(arena: &Arena, _name: &'static str) -> Self {
     Self {
-      id: thread_state::next_is_start_of_line_id(),
+      owner: arena.id,
+      id: arena.counts.is_start_of_line_id.next(),
       #[cfg(debug_assertions)]
       name: _name,
     }
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -841,6 +870,7 @@ impl IsStartOfLine {
 
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct LineStartColumnNumber {
+  pub(super) owner: ArenaId,
   id: u32,
   /// Name for debugging purposes.
   #[cfg(debug_assertions)]
@@ -848,15 +878,17 @@ pub struct LineStartColumnNumber {
 }
 
 impl LineStartColumnNumber {
-  pub fn new(_name: &'static str) -> Self {
+  pub fn new(arena: &Arena, _name: &'static str) -> Self {
     Self {
-      id: thread_state::next_line_start_column_number_id(),
+      owner: arena.id,
+      id: arena.counts.line_start_column_number_id.next(),
       #[cfg(debug_assertions)]
       name: _name,
     }
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -872,6 +904,7 @@ impl LineStartColumnNumber {
 
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct IndentLevel {
+  pub(super) owner: ArenaId,
   id: u32,
   /// Name for debugging purposes.
   #[cfg(debug_assertions)]
@@ -879,15 +912,17 @@ pub struct IndentLevel {
 }
 
 impl IndentLevel {
-  pub fn new(_name: &'static str) -> Self {
+  pub fn new(arena: &Arena, _name: &'static str) -> Self {
     Self {
-      id: thread_state::next_indent_level_id(),
+      owner: arena.id,
+      id: arena.counts.indent_level_id.next(),
       #[cfg(debug_assertions)]
       name: _name,
     }
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -903,6 +938,7 @@ impl IndentLevel {
 
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct LineStartIndentLevel {
+  pub(super) owner: ArenaId,
   id: u32,
   /// Name for debugging purposes.
   #[cfg(debug_assertions)]
@@ -910,15 +946,17 @@ pub struct LineStartIndentLevel {
 }
 
 impl LineStartIndentLevel {
-  pub fn new(_name: &'static str) -> Self {
+  pub fn new(arena: &Arena, _name: &'static str) -> Self {
     Self {
-      id: thread_state::next_line_start_indent_level_id(),
+      owner: arena.id,
+      id: arena.counts.line_start_indent_level_id.next(),
       #[cfg(debug_assertions)]
       name: _name,
     }
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -935,6 +973,7 @@ impl LineStartIndentLevel {
 /// Used to re-evaluate a condition.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ConditionReevaluation {
+  pub(super) owner: ArenaId,
   pub(crate) condition_reevaluation_id: u32,
   pub(crate) condition_id: u32,
   /// Name for debugging purposes.
@@ -943,9 +982,10 @@ pub struct ConditionReevaluation {
 }
 
 impl ConditionReevaluation {
-  pub(crate) fn new(_name: &'static str, condition_id: u32) -> Self {
+  pub(crate) fn new(arena: &Arena, _name: &'static str, condition_id: u32) -> Self {
     ConditionReevaluation {
-      condition_reevaluation_id: thread_state::next_condition_reevaluation_id(),
+      owner: arena.id,
+      condition_reevaluation_id: arena.counts.condition_reevaluation_id.next(),
       condition_id,
       #[cfg(debug_assertions)]
       name: _name,
@@ -966,6 +1006,7 @@ impl ConditionReevaluation {
 /// information found later on in the file.
 #[derive(Clone)]
 pub struct Condition<'a> {
+  arena: &'a Arena,
   /// Unique identifier.
   id: u32,
   /// Name for debugging purposes.
@@ -986,12 +1027,13 @@ pub struct Condition<'a> {
 }
 
 impl<'a> Condition<'a> {
-  pub fn new(name: &'static str, properties: ConditionProperties<'a>) -> Self {
-    Self::new_internal(name, properties)
+  pub fn new(arena: &'a Arena, name: &'static str, properties: ConditionProperties<'a>) -> Self {
+    Self::new_internal(arena, name, properties)
   }
 
-  pub fn new_true() -> Self {
+  pub fn new_true(arena: &'a Arena) -> Self {
     Self::new_internal(
+      arena,
       "trueCondition",
       ConditionProperties {
         condition: condition_resolvers::true_resolver(),
@@ -1001,8 +1043,9 @@ impl<'a> Condition<'a> {
     )
   }
 
-  pub fn new_false() -> Self {
+  pub fn new_false(arena: &'a Arena) -> Self {
     Self::new_internal(
+      arena,
       "falseCondition",
       ConditionProperties {
         condition: condition_resolvers::false_resolver(),
@@ -1012,12 +1055,13 @@ impl<'a> Condition<'a> {
     )
   }
 
-  fn new_internal(_name: &'static str, properties: ConditionProperties<'a>) -> Self {
-    if let (Some(true_path), Some(false_path)) = (&properties.true_path, &properties.false_path) {
-      assert_same_arena(true_path.arena, false_path.arena);
+  fn new_internal(arena: &'a Arena, _name: &'static str, properties: ConditionProperties<'a>) -> Self {
+    for path in [&properties.true_path, &properties.false_path].into_iter().flatten() {
+      assert_same_arena(arena, path.arena);
     }
     Self {
-      id: thread_state::next_condition_id(),
+      arena,
+      id: arena.counts.condition_id.next(),
       is_stored: false,
       store_save_point: false,
       is_unknown_same_as_false: false,
@@ -1030,6 +1074,7 @@ impl<'a> Condition<'a> {
   }
 
   #[inline]
+  /// Returns the index within this arena and identifier kind.
   pub fn unique_id(&self) -> u32 {
     self.id
   }
@@ -1059,13 +1104,13 @@ impl<'a> Condition<'a> {
 
   pub fn create_reference(&mut self) -> ConditionReference {
     self.is_stored = true;
-    ConditionReference::new(self.name(), self.id)
+    ConditionReference::new(self.arena.id, self.name(), self.id)
   }
 
   pub fn create_reevaluation(&mut self) -> ConditionReevaluation {
     self.store_save_point = true;
     self.is_stored = true;
-    ConditionReevaluation::new(self.name(), self.id)
+    ConditionReevaluation::new(self.arena, self.name(), self.id)
   }
 
   /// Says that what's printed when the condition isn't resolved yet is the same as when it's
@@ -1081,14 +1126,16 @@ impl<'a> Condition<'a> {
 
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct ConditionReference {
+  pub(super) owner: ArenaId,
   #[cfg(debug_assertions)]
   pub(super) name: &'static str,
   pub(super) id: u32,
 }
 
 impl ConditionReference {
-  pub(super) fn new(_name: &'static str, id: u32) -> ConditionReference {
+  pub(super) fn new(owner: ArenaId, _name: &'static str, id: u32) -> ConditionReference {
     ConditionReference {
+      owner,
       #[cfg(debug_assertions)]
       name: _name,
       id,
@@ -1105,6 +1152,7 @@ impl ConditionReference {
 
   /// Creates a condition resolver that checks the value of the condition this references.
   pub fn create_resolver<'a>(&self, arena: &'a Arena) -> ConditionResolver<'a> {
+    arena.id.assert_matches(self.owner);
     let captured_self = *self;
     arena.alloc_resolver(move |condition_context| condition_context.resolved_condition(&captured_self))
   }

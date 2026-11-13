@@ -152,8 +152,8 @@ fn gen_node<'a>(arena: &'a Arena, node: Node<'a>) -> PrintItems<'a> {
 
 fn gen_array_literal_expression<'a>(arena: &'a Arena, expr: &'a ArrayLiteralExpression) -> PrintItems<'a> {
   let mut items = PrintItems::new(arena);
-  let start_ln = LineNumber::new("start");
-  let end_ln = LineNumber::new("end");
+  let start_ln = LineNumber::new(arena, "start");
+  let end_ln = LineNumber::new(arena, "end");
   let is_multiple_lines = create_is_multiple_lines_resolver(
     arena,
     expr.position,
@@ -170,7 +170,7 @@ fn gen_array_literal_expression<'a>(arena: &'a Arena, expr: &'a ArrayLiteralExpr
   }));
 
   items.push_info(start_ln);
-  items.push_anchor(LineNumberAnchor::new(end_ln)); // updates the line number of end_ln when this changes
+  items.push_anchor(LineNumberAnchor::new(arena, end_ln)); // updates the line number of end_ln when this changes
 
   items.push_str_runtime_width_computed("[");
   items.push_condition(conditions::if_true(
