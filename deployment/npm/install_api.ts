@@ -275,7 +275,15 @@ function chmodX(filePath: string): void {
 function getTarget(): string {
   const platform = os.platform();
   if (platform === "linux") {
-    return `${platform}-${getArch()}-${getLinuxFamily()}`;
+    const arch = getArch();
+    const dependencies = readPackageField("package.json", "optionalDependencies");
+    // A reduced preview may ship only the static binary, which also runs on glibc.
+    if (
+      typeof dependencies === "object" && dependencies !== null
+      && platformPackage(`linux-${arch}-musl`) in dependencies
+      && !(platformPackage(`linux-${arch}-glibc`) in dependencies)
+    ) return `linux-${arch}-musl`;
+    return `${platform}-${arch}-${getLinuxFamily()}`;
   } else {
     return `${platform}-${getArch()}`;
   }
