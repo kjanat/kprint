@@ -11,8 +11,8 @@ use super::WriteItem;
 use super::collections::GraphNode;
 use super::collections::LookAheadSavePointsNode;
 use super::collections::NodeStackNode;
-use super::thread_state;
-use super::thread_state::Counts;
+use super::identifiers::ArenaId;
+use super::identifiers::Counts;
 
 /// The memory that print items, and the printer's state when printing them, are allocated in.
 ///
@@ -27,8 +27,10 @@ use super::thread_state::Counts;
 /// let text = print(print_items, options);
 /// ```
 ///
-/// An arena should be created for each file that's formatted, and arenas should be
-/// dropped in the reverse order they're created in (ex. when formatting within a format).
+/// Create an arena for each file being formatted. Each arena owns its identifier
+/// namespace, so nested arenas can be populated independently and dropped in any order.
+/// Infos and conditions must be constructed with their destination arena. Mixing
+/// identifiers from different arenas is rejected, including in condition resolvers.
 ///
 /// The memory of an arena is freed when it's dropped. To reuse it for the next file
 /// instead, create the arenas from an [`ArenaPool`].
@@ -46,9 +48,8 @@ use super::thread_state::Counts;
 /// ```
 pub struct Arena {
   bump: bumpalo::Bump,
-  /// The counts of the infos and conditions created before this arena, which are
-  /// restored when it's dropped.
-  outer_counts: Counts,
+  pub(super) id: ArenaId,
+  pub(super) counts: Counts,
   /// The pool the memory is returned to when the arena is dropped.
   pool: Option<ArenaPool>,
 }
@@ -66,15 +67,13 @@ impl Drop for Arena {
       bump.reset();
       pool.lock_bumps().push(bump);
     }
-    thread_state::set_counts(std::mem::take(&mut self.outer_counts));
   }
 }
 
 impl Arena {
   /// Creates an arena whose memory is freed when it's dropped.
   ///
-  /// This also starts the identifiers of the infos and conditions created while it's alive
-  /// from zero, which keeps the printer's storage of them small.
+  /// Identifiers are allocated densely within this arena to keep printer storage small.
   pub fn new() -> Self {
     Self::new_internal(bumpalo::Bump::new(), None)
   }
@@ -82,7 +81,8 @@ impl Arena {
   fn new_internal(bump: bumpalo::Bump, pool: Option<ArenaPool>) -> Self {
     Self {
       bump,
-      outer_counts: thread_state::take_counts(),
+      id: ArenaId::new(),
+      counts: Counts::default(),
       pool,
     }
   }

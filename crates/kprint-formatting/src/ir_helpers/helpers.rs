@@ -186,8 +186,8 @@ pub fn surround_with_newlines_indented_if_multi_line(inner_items: PrintItems<'_>
   let arena = inner_items.arena();
   let mut items = PrintItems::new(arena);
   let start_name = "surroundWithNewLinesIndentedIfMultiLineStart";
-  let start_ln = LineNumber::new(start_name);
-  let end_ln = LineNumber::new("surroundWithNewLinesIndentedIfMultiLineEnd");
+  let start_ln = LineNumber::new(arena, start_name);
+  let end_ln = LineNumber::new(arena, "surroundWithNewLinesIndentedIfMultiLineEnd");
   let inner_items = inner_items.into_rc_path();
 
   let region = InfoRegion::new(arena);
@@ -195,6 +195,7 @@ pub fn surround_with_newlines_indented_if_multi_line(inner_items: PrintItems<'_>
   items.push_info(start_ln);
   items.extend(region.gen_start(arena));
   let mut condition = Condition::new(
+    arena,
     "newlineIfMultiLine",
     ConditionProperties {
       true_path: Some(surround_with_new_lines(with_indent(inner_items.into_print_items(arena)))),

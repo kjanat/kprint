@@ -107,6 +107,7 @@ pub fn if_above_width(width: u8, items: PrintItems<'_>) -> Condition<'_> {
 pub fn if_above_width_or<'a>(width: u8, true_items: PrintItems<'a>, false_items: PrintItems<'a>) -> Condition<'a> {
   let arena = true_items.arena();
   Condition::new(
+    arena,
     "ifAboveWidth",
     ConditionProperties {
       condition: arena.alloc_resolver(move |context| {
@@ -121,7 +122,9 @@ pub fn if_above_width_or<'a>(width: u8, true_items: PrintItems<'a>, false_items:
 }
 
 pub fn if_true<'a>(name: &'static str, resolver: ConditionResolver<'a>, true_path: PrintItems<'a>) -> Condition<'a> {
+  let arena = true_path.arena();
   Condition::new(
+    arena,
     name,
     ConditionProperties {
       true_path: Some(true_path),
@@ -132,7 +135,9 @@ pub fn if_true<'a>(name: &'static str, resolver: ConditionResolver<'a>, true_pat
 }
 
 pub fn if_true_or<'a>(name: &'static str, resolver: ConditionResolver<'a>, true_path: PrintItems<'a>, false_path: PrintItems<'a>) -> Condition<'a> {
+  let arena = true_path.arena();
   Condition::new(
+    arena,
     name,
     ConditionProperties {
       true_path: Some(true_path),
@@ -143,7 +148,9 @@ pub fn if_true_or<'a>(name: &'static str, resolver: ConditionResolver<'a>, true_
 }
 
 pub fn if_false<'a>(name: &'static str, resolver: ConditionResolver<'a>, false_path: PrintItems<'a>) -> Condition<'a> {
+  let arena = false_path.arena();
   Condition::new(
+    arena,
     name,
     ConditionProperties {
       true_path: None,

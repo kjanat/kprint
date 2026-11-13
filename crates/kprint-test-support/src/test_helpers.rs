@@ -293,14 +293,187 @@ pub fn initialize_plugins(environment: &crate::environment::TestEnvironment) {
   environment.clear_logs();
 }
 
-// A fork in a concurrent test holds an inherited write descriptor until it execs, and executing the file meanwhile fails with ETXTBSY.
+/// Writes a script in a private test directory and publishes it atomically.
+///
+/// The destination must be absent or a regular file. Concurrent writers use
+/// independent staging directories; the last rename wins. Existing executions
+/// keep the old inode, and failed writes leave the previous destination intact.
+/// Names are passed through unchanged and must be accepted by the filesystem.
+/// The caller owns the parent directory and must keep it stable during the call.
 #[cfg(unix)]
 pub fn write_executable(path: &std::path::Path, contents: &str) {
   use std::os::unix::fs::PermissionsExt;
-  let staged = path.with_file_name(format!("{}.staged", path.file_name().unwrap().to_string_lossy()));
-  std::fs::write(&staged, contents).unwrap();
-  let copied = std::process::Command::new("cp").arg(&staged).arg(path).status().unwrap();
-  assert!(copied.success(), "cp {} {}: {}", staged.display(), path.display(), copied);
-  std::fs::remove_file(&staged).unwrap();
-  std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+  match std::fs::symlink_metadata(path) {
+    Ok(metadata) => assert!(
+      metadata.file_type().is_file(),
+      "Executable destination must be a regular file: {}",
+      path.display()
+    ),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+    Err(error) => panic!("Inspecting executable destination {}: {error}", path.display()),
+  }
+  let parent = path
+    .parent()
+    .filter(|parent| !parent.as_os_str().is_empty())
+    .unwrap_or_else(|| std::path::Path::new("."));
+  let staging = tempfile::Builder::new().prefix(".executable-").tempdir_in(parent).unwrap();
+  let source = staging.path().join("source");
+  let executable = staging.path().join("executable");
+  std::fs::write(&source, contents).unwrap();
+  // Only the copying child opens the executable for writing. Waiting for its
+  // exit prevents other test threads' forked children inheriting a write handle
+  // to the inode we execute, which otherwise causes ETXTBSY.
+  let copied = std::process::Command::new("cp").arg("--").arg(&source).arg(&executable).status().unwrap();
+  assert!(copied.success(), "cp {} {}: {}", source.display(), executable.display(), copied);
+  std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+  std::fs::rename(&executable, path).unwrap();
+}
+
+#[cfg(all(test, unix))]
+mod executable_tests {
+  use super::write_executable;
+  use std::process::Command;
+
+  #[test]
+  fn rejects_directory_and_symlink_destinations_without_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("directory");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("keep"), "sentinel").unwrap();
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&directory, &link).unwrap();
+    for path in [&directory, &link] {
+      assert!(std::panic::catch_unwind(|| write_executable(path, "#!/bin/sh\nexit 0\n")).is_err());
+      assert_eq!(std::fs::read_to_string(directory.join("keep")).unwrap(), "sentinel");
+      assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+      assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+  }
+
+  #[test]
+  fn handles_non_utf8_names_without_lossy_substitution() {
+    use std::os::unix::ffi::OsStringExt;
+    let root = tempfile::tempdir().unwrap();
+    // APFS rejects these names. Probe the filesystem itself so the same test
+    // also exercises accepted names on macOS filesystems that permit them.
+    let probe = root.path().join(std::ffi::OsString::from_vec(vec![b'a', 0xfe]));
+    match std::fs::write(&probe, "probe") {
+      Ok(()) => std::fs::remove_file(&probe).unwrap(),
+      Err(error) => {
+        #[cfg(target_os = "macos")]
+        {
+          assert_eq!(error.raw_os_error(), Some(92), "expected Darwin EILSEQ: {error}");
+          assert!(std::panic::catch_unwind(|| write_executable(&probe, "#!/bin/sh\nexit 0\n")).is_err());
+          assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0, "rejected names must leave no staging files");
+          return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        panic!("Creating a non-UTF-8 fixture: {error}");
+      }
+    }
+    for name in [vec![b'a', 0xfe], vec![b'a', 0xff]] {
+      let path = root.path().join(std::ffi::OsString::from_vec(name));
+      write_executable(&path, "#!/bin/sh\nprintf first\n");
+      write_executable(&path, "#!/bin/sh\nprintf second\n");
+      let output = Command::new(&path).output().unwrap();
+      assert!(output.status.success());
+      assert_eq!(output.stdout, b"second");
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2, "staging directories must be cleaned");
+  }
+
+  #[test]
+  fn replaces_existing_files() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("worker");
+    write_executable(&path, "#!/bin/sh\nprintf first\n");
+    write_executable(&path, "#!/bin/sh\nprintf second\n");
+    let output = Command::new(&path).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"second");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+  }
+
+  #[test]
+  fn failed_copy_preserves_the_old_script_and_removes_staging() {
+    const CHILD_ROOT: &str = "KPRINT_TEST_FAILED_EXECUTABLE_COPY";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+      let root = std::path::PathBuf::from(root);
+      let path = root.join("worker");
+      assert!(std::panic::catch_unwind(|| write_executable(&path, "replacement")).is_err());
+      assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+      assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2, "failed staging must be removed");
+      return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    write_executable(&bin.join("cp"), "#!/bin/sh\nexit 7\n");
+    std::fs::write(root.path().join("worker"), "original").unwrap();
+    // Override PATH only in a subprocess, so parallel tests retain their tools.
+    let output = Command::new(std::env::current_exe().unwrap())
+      .args([
+        "--exact",
+        "test_helpers::executable_tests::failed_copy_preserves_the_old_script_and_removes_staging",
+      ])
+      .env(CHILD_ROOT, root.path())
+      .env("PATH", &bin)
+      .output()
+      .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+  }
+
+  #[test]
+  fn immediately_executes_shared_helper_output_while_other_threads_spawn() {
+    let root = tempfile::tempdir().unwrap();
+    let barrier = std::sync::Barrier::new(4);
+    std::thread::scope(|scope| {
+      for _ in 0..3 {
+        let barrier = &barrier;
+        scope.spawn(move || {
+          barrier.wait();
+          for _ in 0..64 {
+            assert!(Command::new("sh").args(["-c", "sleep 0.01"]).status().unwrap().success());
+          }
+        });
+      }
+      barrier.wait();
+      for index in 0..64 {
+        let path = root.path().join(format!("worker-{index}"));
+        write_executable(&path, "#!/bin/sh\nprintf ready\n");
+        let output = Command::new(&path).output().unwrap();
+        assert!(output.status.success(), "{index}: {:?}", output.stderr);
+        assert_eq!(output.stdout, b"ready");
+        std::fs::remove_file(path).unwrap();
+      }
+    });
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+  }
+
+  #[test]
+  fn concurrent_writers_publish_complete_scripts_and_clean_staging() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("worker");
+    let first = "#!/bin/sh\nprintf first\n";
+    let second = "#!/bin/sh\nprintf second\n";
+    write_executable(&path, first);
+    std::thread::scope(|scope| {
+      for text in [first, second] {
+        let path = &path;
+        scope.spawn(move || {
+          for _ in 0..24 {
+            write_executable(path, text);
+          }
+        });
+      }
+      for _ in 0..128 {
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text == first || text == second, "a partial script was published");
+        let output = Command::new(&path).output().unwrap();
+        assert!(output.status.success());
+        assert!(output.stdout == b"first" || output.stdout == b"second");
+      }
+    });
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+  }
 }

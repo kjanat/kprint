@@ -41,7 +41,9 @@ These objects are invisible in the output. They may be placed into the IR and wh
 
 There's also `LineAndColumn`, which resolves to both the line and column number (use `items.push_line_and_column(...)`).
 
-Each info is created with a name for debugging purposes (ex. `LineNumber::new("start")`) and its value is read in a condition resolver (ex. `context.resolved_line_number(start_ln)`).
+Each info is created in its destination arena with a name for debugging purposes (ex. `LineNumber::new(arena, "start")`) and its value is read in a condition resolver (ex. `context.resolved_line_number(start_ln)`).
+
+Each arena owns its identifier counters. Nested arenas can be populated independently and dropped in any order. An info, anchor, condition reference or reevaluation belongs to the arena that created it. Passing it to another arena or querying it in another arena's resolver panics, even if the original arena has been dropped. The value returned by `unique_id()` is an index within one arena and identifier kind.
 
 ### Conditions
 
@@ -109,10 +111,10 @@ For example, given the following code...
 
 ```rs
 let mut items = PrintItems::new(arena);
-let end_ln = LineNumber::new("end");
+let end_ln = LineNumber::new(arena, "end");
 
 // ...lots of code here...
-items.push_anchor(LineNumberAnchor::new(end_ln));
+items.push_anchor(LineNumberAnchor::new(arena, end_ln));
 items.extend(actions::action(arena, "outputEndLine", move |context| {
   eprintln!("{:?}", context.resolved_line_number(end_ln));
 }));
@@ -242,8 +244,8 @@ fn gen_node<'a>(arena: &'a Arena, node: Node<'a>) -> PrintItems<'a> {
 
 fn gen_array_literal_expression<'a>(arena: &'a Arena, expr: &'a ArrayLiteralExpression) -> PrintItems<'a> {
   let mut items = PrintItems::new(arena);
-  let start_ln = LineNumber::new("start");
-  let end_ln = LineNumber::new("end");
+  let start_ln = LineNumber::new(arena, "start");
+  let end_ln = LineNumber::new(arena, "end");
   let is_multiple_lines = create_is_multiple_lines_resolver(
     arena,
     expr.position,
@@ -260,7 +262,7 @@ fn gen_array_literal_expression<'a>(arena: &'a Arena, expr: &'a ArrayLiteralExpr
   }));
 
   items.push_info(start_ln);
-  items.push_anchor(LineNumberAnchor::new(end_ln)); // updates the line number of end_ln when this changes
+  items.push_anchor(LineNumberAnchor::new(arena, end_ln)); // updates the line number of end_ln when this changes
 
   items.push_str("[");
   items.push_condition(conditions::if_true(

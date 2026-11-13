@@ -15,11 +15,11 @@ pub mod ir_helpers;
 
 mod arena;
 mod collections;
+mod identifiers;
 mod infinite_reevaluation_protection;
 mod print;
 mod print_items;
 mod printer;
-mod thread_state;
 #[cfg(feature = "tracing")]
 mod tracing;
 mod write_items;

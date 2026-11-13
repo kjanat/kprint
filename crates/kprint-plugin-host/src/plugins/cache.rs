@@ -559,7 +559,7 @@ where
       file_bytes,
       plugin_kind,
       pre_resolved_tarball,
-      local_stamps,
+      mut local_stamps,
     } = options;
     self.ensure_cache_dir()?;
     let source_checksum = get_sha256_checksum(&file_bytes);
@@ -597,6 +597,17 @@ where
         get_sha256_checksum(format!("{source_checksum}:{archive_checksum}").as_bytes())
       }
     };
+    // Bind stamps to the bytes actually consumed by setup, rather than a
+    // separate read that could observe a different version of the source.
+    if let Some(stamps) = &mut local_stamps {
+      for (index, stamp) in stamps.iter_mut().enumerate() {
+        stamp.checksum = if index == 0 {
+          source_checksum.clone()
+        } else {
+          setup_result.archive_checksum.clone().context("Local archive stamp has no setup checksum")?
+        };
+      }
+    }
     let mut meta = PluginCacheMeta {
       info_version: PLUGIN_INFO_VERSION,
       source: cache_key.to_string(),
@@ -678,8 +689,8 @@ where
     })
   }
 
-  /// Whether every stamped local source file still matches (size + mtime). A
-  /// missing or empty stamp set means we can't vouch for it → treat as changed.
+  /// Reuses digests only when a stable filesystem change identity still matches.
+  /// Other sources are hashed. Old entries without digests are rebuilt.
   fn local_stamps_match(&self, meta: &PluginCacheMeta) -> bool {
     let Some(stamps) = &meta.local_stamps else {
       return false;
@@ -688,10 +699,24 @@ where
       return false;
     }
     stamps.iter().all(|stamp| {
+      if stamp.checksum.is_empty() {
+        return false;
+      }
+      // Missing stored identities get one rebuild when a stable identity first
+      // becomes available. Unsupported or recent timestamps still require hashing.
+      if let Some(current) = self.environment.file_change_id(Path::new(&stamp.path)) {
+        return stamp.change_id.as_ref() == Some(&current)
+          && self
+            .file_size_and_mtime(&stamp.path)
+            .is_some_and(|(len, modified)| len == stamp.len && to_unix_millis(modified) == stamp.modified_ms);
+      }
       self
         .file_size_and_mtime(&stamp.path)
-        .map(|(len, modified)| len == stamp.len && to_unix_millis(modified) == stamp.modified_ms)
-        .unwrap_or(false)
+        .is_some_and(|(len, modified)| len == stamp.len && to_unix_millis(modified) == stamp.modified_ms)
+        && self
+          .environment
+          .read_file_bytes(&stamp.path)
+          .is_ok_and(|bytes| get_sha256_checksum(&bytes) == stamp.checksum)
     })
   }
 
@@ -712,9 +737,8 @@ where
     if plugin_kind == PluginKind::Process
       && pre_resolved_tarball.is_none()
       && let Some(archive_path) = self.resolve_local_per_platform_archive_path(source, plugin_bytes)
-      && let Some(stamp) = self.stamp_for(&archive_path)
     {
-      stamps.push(stamp);
+      stamps.push(self.stamp_for(&archive_path)?);
     }
     Some(stamps)
   }
@@ -725,6 +749,8 @@ where
       path: path.as_ref().to_string_lossy().into_owned(),
       len,
       modified_ms: to_unix_millis(modified),
+      checksum: String::new(),
+      change_id: self.environment.file_change_id(path.as_ref()),
     })
   }
 
@@ -1122,6 +1148,134 @@ mod test {
     assert!(!environment.path_exists(&third_file_path));
     assert!(read_meta(&hash, &environment).is_none());
 
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn stable_local_identity_skips_reads_and_changed_identity_revalidates() -> Result<()> {
+    let environment = TestEnvironment::new();
+    environment.set_fs_time(1000);
+    let path = PathBuf::from("/test.wasm");
+    let bytes = [WASM_PLUGIN_BYTES, &[0, 3, 1, b'x', b'A']].concat();
+    environment.write_file_bytes(&path, &bytes)?;
+    let mut change = crate::environment::FileChangeId {
+      device: 1,
+      inode: 2,
+      changed_secs: 1000,
+      changed_nanos: 123,
+    };
+    environment.set_file_change_id(&path, change.clone());
+    let cache = PluginCache::new(environment.clone());
+    let source = PluginSourceReference::new_local(path.clone());
+    let first = cache.get_plugin_cache_item(&source).await?;
+    let reads = environment.file_read_count(&path);
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    assert_eq!(environment.file_read_count(&path), reads, "warm hits must not read the source");
+    let changed = [WASM_PLUGIN_BYTES, &[0, 3, 1, b'x', b'B']].concat();
+    environment.write_file_bytes(&path, &changed)?;
+    change.changed_nanos += 1;
+    environment.set_file_change_id(&path, change);
+    let second = cache.get_plugin_cache_item(&source).await?;
+    assert!(second.was_set_up);
+    assert_ne!(first.formatting_identity, second.formatting_identity);
+    let reads = environment.file_read_count(&path);
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    assert_eq!(environment.file_read_count(&path), reads);
+    // Digest-bearing metadata from the first PR revision gains an identity once.
+    let hash = entry_hash(&cache.compute_cache_key(&source.path_source)?, &environment);
+    let mut meta = read_meta(&hash, &environment).unwrap();
+    meta.local_stamps.as_mut().unwrap()[0].change_id = None;
+    write_meta(&hash, &meta, &environment)?;
+    assert!(cache.get_plugin_cache_item(&source).await?.was_set_up);
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    environment.clear_logs();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn local_wasm_replacement_with_identical_metadata_invalidates_identity() -> Result<()> {
+    let environment = TestEnvironment::new();
+    environment.set_fs_time(1000);
+    let path = PathBuf::from("/test.wasm");
+    let first_bytes = [WASM_PLUGIN_BYTES, &[0, 3, 1, b'x', b'A']].concat();
+    let second_bytes = [WASM_PLUGIN_BYTES, &[0, 3, 1, b'x', b'B']].concat();
+    environment.write_file_bytes(&path, &first_bytes)?;
+    let cache = PluginCache::new(environment.clone());
+    let source = PluginSourceReference::new_local(path.clone());
+    let before_stamp = cache.stamp_for(&path).unwrap();
+    let first = cache.get_plugin_cache_item(&source).await?;
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    environment.write_file_bytes(&path, &second_bytes)?;
+    assert_eq!(cache.stamp_for(&path).unwrap(), before_stamp, "fixture must preserve length and mtime");
+    let replaced = cache.get_plugin_cache_item(&source).await?;
+    assert!(replaced.was_set_up);
+    assert_ne!(first.formatting_identity, replaced.formatting_identity);
+    assert_eq!(first.info, replaced.info);
+    assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    // Cached metadata from before content stamps were introduced is not trusted.
+    let hash = entry_hash(&cache.compute_cache_key(&source.path_source)?, &environment);
+    let mut meta = read_meta(&hash, &environment).unwrap();
+    meta.local_stamps.as_mut().unwrap()[0].checksum.clear();
+    write_meta(&hash, &meta, &environment)?;
+    assert!(cache.get_plugin_cache_item(&source).await?.was_set_up);
+    environment.clear_logs();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn local_archive_replacement_with_identical_metadata_is_revalidated() -> Result<()> {
+    use crate::test_helpers::PROCESS_PLUGIN_ZIP_BYTES;
+    use crate::test_helpers::TestProcessPluginFileBuilder;
+    let environment = TestEnvironment::new();
+    environment.set_fs_time(1000);
+    let mut original = PROCESS_PLUGIN_ZIP_BYTES.to_vec();
+    // Change only a valid zip comment; both distributions run the same plugin.
+    let end = original.len();
+    original[end - 2..].copy_from_slice(&1u16.to_le_bytes());
+    original.push(b'A');
+    let mut changed = original.clone();
+    *changed.last_mut().unwrap() = b'B';
+    let manifest = |archive: &[u8]| {
+      TestProcessPluginFileBuilder::default()
+        .zip_checksum(&get_sha256_checksum(archive))
+        .build()
+        .text()
+        .replace(
+          "https://github.com/dprint/test-process-plugin/releases/0.1.0/test-process-plugin.zip",
+          "./bin.zip",
+        )
+    };
+    let plugin_path = PathBuf::from("/pkg/plugin.json");
+    let archive_path = PathBuf::from("/pkg/bin.zip");
+    environment.mk_dir_all("/pkg")?;
+    environment.write_file_bytes(&archive_path, &original)?;
+    environment.write_file(&plugin_path, &manifest(&original))?;
+    let cache = PluginCache::new(environment.clone());
+    let source = PluginSourceReference::new_local(plugin_path.clone());
+    // node_modules local process sources don't need a top-level manifest pin.
+    let first = cache.get_local_plugin(&source, None).await?;
+    let original_stamp = cache.stamp_for(&archive_path).unwrap();
+    assert!(!cache.get_local_plugin(&source, None).await?.was_set_up);
+    environment.write_file_bytes(&archive_path, &changed)?;
+    assert_eq!(cache.stamp_for(&archive_path).unwrap(), original_stamp);
+    let error = match cache.get_local_plugin(&source, None).await {
+      Ok(_) => panic!("changed archive must be checked against the manifest again"),
+      Err(error) => error,
+    };
+    assert!(
+      format!("{error:#}").contains("Invalid checksum found within process plugin's manifest"),
+      "{error:#}"
+    );
+    // A matching manifest with the same length and timestamp permits the update.
+    let manifest_stamp = cache.stamp_for(&plugin_path).unwrap();
+    environment.write_file(&plugin_path, &manifest(&changed))?;
+    assert_eq!(cache.stamp_for(&plugin_path).unwrap(), manifest_stamp);
+    let replaced = cache.get_local_plugin(&source, None).await?;
+    assert!(replaced.was_set_up);
+    assert_ne!(first.formatting_identity, replaced.formatting_identity);
+    assert_eq!(first.info, replaced.info);
+    assert!(!cache.get_local_plugin(&source, None).await?.was_set_up);
+    environment.clear_logs();
     Ok(())
   }
 

@@ -48,6 +48,18 @@ pub enum PathKind {
   Symlink,
 }
 
+/// Filesystem identity and change time for a regular local file.
+/// Providers must return no identity for timestamps still within the filesystem's
+/// update granularity, or when writes can preserve the reported change time.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChangeId {
+  pub device: u64,
+  pub inode: u64,
+  pub changed_secs: i64,
+  pub changed_nanos: i64,
+}
+
 #[derive(Debug, Clone)]
 pub enum FilePermissions {
   Std(std::fs::Permissions),
@@ -229,6 +241,11 @@ pub trait FileSystemEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static
     }
   }
   fn read_file_bytes(&self, file_path: impl AsRef<Path>) -> io::Result<Vec<u8>>;
+  /// Returns a change identity suitable for reusing a previously computed digest.
+  /// `None` requires a content check. Size and mtime alone are insufficient.
+  fn file_change_id(&self, _path: &Path) -> Option<FileChangeId> {
+    None
+  }
   fn write_file(&self, file_path: impl AsRef<Path>, file_text: &str) -> io::Result<()> {
     self.write_file_bytes(file_path, file_text.as_bytes())
   }
