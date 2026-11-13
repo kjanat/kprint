@@ -23,14 +23,18 @@ const PLUGIN_CACHE_SCHEMA_VERSION: usize = 13;
 /// Increment when cached plugin metadata needs to be read from the plugin again.
 pub const PLUGIN_INFO_VERSION: u32 = 1;
 
-/// Size + modification time of a local file, captured at setup. A cache hit
-/// requires every stamp to still match (cheap stat, no read/hash).
+/// Metadata and content digest of a local file consumed during setup.
+/// Size and mtime alone cannot establish that the bytes are unchanged.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalStamp {
   pub path: String,
   pub len: u64,
   pub modified_ms: u64,
+  #[serde(default)]
+  pub checksum: String,
+  #[serde(default)]
+  pub change_id: Option<crate::environment::FileChangeId>,
 }
 
 /// Sidecar describing a single cached plugin. Lives next to its artifact at

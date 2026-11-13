@@ -163,6 +163,8 @@ pub struct TestEnvironment {
   remote_file_downloads: Arc<Mutex<HashMap<String, usize>>>,
   /// Paths that can't be renamed to, which an atomic write does.
   failing_rename_targets: Arc<Mutex<Vec<PathBuf>>>,
+  file_change_ids: Arc<Mutex<HashMap<PathBuf, FileChangeId>>>,
+  file_read_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
   /// The deadline of each wasm plugin compile.
   wasm_compile_deadlines: Arc<Mutex<Vec<Option<std::time::Instant>>>>,
   selection_result: Arc<Mutex<usize>>,
@@ -221,6 +223,8 @@ impl TestEnvironment {
       remote_file_delays: Default::default(),
       remote_file_downloads: Default::default(),
       failing_rename_targets: Default::default(),
+      file_change_ids: Default::default(),
+      file_read_counts: Default::default(),
       wasm_compile_deadlines: Default::default(),
       selection_result: Arc::new(Mutex::new(0)),
       multi_selection_result: Arc::new(Mutex::new(None)),
@@ -407,6 +411,14 @@ impl TestEnvironment {
 
   pub fn set_cwd(&self, new_path: &str) {
     self.sys.env_set_current_dir(new_path).unwrap();
+  }
+
+  pub fn set_file_change_id(&self, path: &Path, value: FileChangeId) {
+    self.file_change_ids.lock().insert(self.clean_path(path), value);
+  }
+
+  pub fn file_read_count(&self, path: &Path) -> usize {
+    *self.file_read_counts.lock().get(&self.clean_path(path)).unwrap_or(&0)
   }
 
   /// Pins the in-memory clock so subsequent writes get a deterministic
@@ -730,8 +742,13 @@ impl kprint_platform::environment::FileSystemEnvironment for TestEnvironment {
     Ok(String::from_utf8(file_bytes.to_vec()).unwrap())
   }
 
+  fn file_change_id(&self, path: &Path) -> Option<FileChangeId> {
+    self.file_change_ids.lock().get(&self.clean_path(path)).cloned()
+  }
+
   fn read_file_bytes(&self, file_path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     let file_path = self.clean_path(file_path);
+    *self.file_read_counts.lock().entry(file_path.clone()).or_default() += 1;
     self.sys.fs_read(file_path).map(|b| b.into_owned())
   }
 
