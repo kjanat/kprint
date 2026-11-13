@@ -21,6 +21,7 @@ serde.workspace                = true
 serde_json.workspace           = true
 sys_traits                     = { workspace = true, features = ["memory", "real"] }
 tar.workspace                  = true
+tempfile.workspace             = true
 tokio.workspace                = true
 tree-fucker.workspace          = true
 url.workspace                  = true
