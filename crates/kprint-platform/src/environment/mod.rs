@@ -3,6 +3,7 @@ pub use native::HeadlessServices;
 pub use native::NativeEnvironment;
 pub use native::NativeServices;
 mod cache_dir;
+mod file_change_id;
 mod native;
 #[cfg(test)]
 pub type RealEnvironment = NativeEnvironment<HeadlessServices>;

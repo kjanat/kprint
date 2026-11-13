@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Detect local plugin replacements even when size and mtime are preserved, including process archives. Reuse digests when stable Unix file identities and nanosecond change times match; hash sources when that information is unavailable.
+
 - Match exec extensions and filenames case-insensitively. Preserve real paths for shebang-matched files, add `{{file_path_with_ext}}` and `{{ext}}`, and explicitly report that exec does not support range formatting. Invalidate the built-in exec formatting cache for the changed behavior.
 
 - Always use built-in exec for recognized references. Remove the external-exec switch and version-specific trust exceptions; reject local or self-hosted external exec manifests.
