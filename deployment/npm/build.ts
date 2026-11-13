@@ -98,6 +98,11 @@ const packages = zipsDir == null
   : allPackages.filter((pkg) => zipsDir.join(pkg.zipFileName).existsSync());
 if (packages.length === 0) throw new Error(`No release zips in ${zipsDir}.`);
 
+function isPortableLinuxPackage(pkg: Package): boolean {
+  return pkg.os === "linux" && pkg.libc === "musl"
+    && !packages.some((other) => other.os === "linux" && other.cpu === pkg.cpu && other.libc === "glibc");
+}
+
 $.logStep(`Building ${npmVersion}...`);
 
 // the repository CI runs in, or else the one with the permanent ID, which
@@ -200,7 +205,7 @@ await $`mkdir -p ${dprintDir} ${scopeDir}`;
       homepage: `https://www.npmjs.com/package/${mainPackage}`,
       os: [pkg.os],
       cpu: [pkg.cpu],
-      libc: pkg.libc == null ? undefined : [pkg.libc],
+      libc: pkg.libc == null || isPortableLinuxPackage(pkg) ? undefined : [pkg.libc],
     });
   }
 
@@ -256,8 +261,8 @@ Install ${mainPackage} for the other commands (\`kprint check\`, \`kprint init\`
       ? platformPackage("darwin-x64")
       : platformPackage("darwin-arm64")
     : Deno.build.arch === "x86_64"
-    ? platformPackage("linux-x64-glibc")
-    : platformPackage("linux-arm64-glibc");
+    ? platformPackage(packages.some((pkg) => pkg.os === "linux" && pkg.cpu === "x64" && pkg.libc === "glibc") ? "linux-x64-glibc" : "linux-x64-musl")
+    : platformPackage(packages.some((pkg) => pkg.os === "linux" && pkg.cpu === "arm64" && pkg.libc === "glibc") ? "linux-arm64-glibc" : "linux-arm64-musl");
   $.logLight("Test platform:", testPlatform);
   outputDir.join("package.json").writeJsonPrettySync({
     workspaces: [

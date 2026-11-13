@@ -49,10 +49,8 @@ jobs:
           # the platforms npm and Docker previews are for, without their tests,
           # which CI runs
           targets="$(jq -c 'map(select(.target | IN(
-            "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl",
-            "x86_64-apple-darwin", "aarch64-apple-darwin",
-            "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"
+            "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin"
           )) | .test = false)' .github/build-matrix.json)"
           {
             echo "version=${version}"
@@ -91,10 +89,11 @@ jobs:
       - name: Build npm packages
         run: deno run -A deployment/npm/build.ts "${VERSION}" --zips zips
       - name: Publish to pkg.pr.new
-        working-directory: deployment/npm/dist
+        env:
+          PREVIEW_SHA: ${{ needs.plan.outputs.ref }}
         run: |
-          chmod +x @kprint/*/kprint
-          npx --yes pkg-pr-new@0.0.93 publish --comment=update --bin ./kprint ./fmt ./@kprint/*
+          chmod +x deployment/npm/dist/@kprint/*/kprint
+          deno run --allow-read --allow-write --allow-run=npm,npx deployment/npm/preview.ts deployment/npm/dist "${GITHUB_REPOSITORY}" "${PREVIEW_SHA}"
 
   docker:
     name: Docker
