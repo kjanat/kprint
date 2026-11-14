@@ -9,9 +9,9 @@ Deno.test("every declared npm target requires its binary, even on partial matrix
   deepStrictEqual(expectedArchives.length, 16);
 });
 
-Deno.test("finalization requires complete uploaded binaries, compatibility archives and checksums for the planned commit", () => {
+Deno.test("finalization accepts kprint-only archives and requires complete binaries and checksums for the planned commit", () => {
   const sha = "a".repeat(40);
-  const names = [...expectedArchives, ...expectedArchives.map((name) => `d${name.slice(1)}`), "SHASUMS256.txt"];
+  const names = [...expectedArchives, "SHASUMS256.txt"];
   const release = {
     isDraft: true,
     targetCommitish: sha,
