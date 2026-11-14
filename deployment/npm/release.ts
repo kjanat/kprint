@@ -28,7 +28,7 @@ interface UploadedRelease {
 export function validateUploaded(release: UploadedRelease, sha: string) {
   if (!/^[a-f0-9]{40}$/.test(sha) || release.targetCommitish !== sha) throw new Error("Release source commit mismatch");
   validateArchives(release.assets.map((asset) => asset.name));
-  const required = [...expectedArchives, ...expectedArchives.map((name) => `d${name.slice(1)}`), "SHASUMS256.txt"];
+  const required = [...expectedArchives, "SHASUMS256.txt"];
   for (const name of required) {
     const matches = release.assets.filter((asset) => asset.name === name);
     if (matches.length !== 1) throw new Error(`Expected exactly one uploaded asset: ${name}`);
