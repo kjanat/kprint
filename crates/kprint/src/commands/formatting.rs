@@ -1027,7 +1027,7 @@ mod test {
     assert_eq!(logged_errors.len(), 1);
     let expected_start_text = concat!(
       "Critical error formatting /file1.txt. Cannot continue. ",
-      "Message: Originally panicked in test-plugin, then failed reinitialize. ",
+      "Message: test-plugin failed, then failed again after a restart. ",
       "This may be a bug in the plugin, the kprint cli is out of date, or the plugin is out of date.",
     );
     assert_eq!(&logged_errors[0][..expected_start_text.len()], expected_start_text);
