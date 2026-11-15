@@ -465,7 +465,7 @@ jobs:
           deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}"
       - uses: kjanat/beepboop/actions/publish-refs@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         env:
-          ${{ insert }}: ${{ fromJSON(steps.bot.outputs.gitId) }}
+          ${{ insert }}: ${{ fromJSON(steps.bot.outputs.gitId || '{}') }}
         with:
           token: ${{ steps.bot.outputs.token }}
       - uses: kjanat/beepboop/actions/publish-release@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
