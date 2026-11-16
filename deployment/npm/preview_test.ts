@@ -264,16 +264,24 @@ Deno.test({
       const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(binary)));
       const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
       await Deno.writeTextFile(join(root, "hashes.json"), JSON.stringify({ "linux-x64-musl": hash }));
-      const result = await new Deno.Command("bash", {
-        args: ["-c", "exec node \"$1\"", "node", join(root, "bin.cjs")],
-        clearEnv: true,
-        env: { PATH: Deno.env.get("PATH") ?? "" },
-        stdout: "piped",
-        stderr: "piped",
-      }).output();
-      deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
-      deepStrictEqual(new TextDecoder().decode(result.stdout), "preview\n");
-      deepStrictEqual(requests, [`/kjanat/kprint/@kprint/kprint-linux-x64-musl@${sha}`]);
+      const node = await new Deno.Command("bash", { args: ["-c", "exec node -p process.execPath"], stdout: "piped" }).output();
+      const nodeOnly = join(directory, "node-only");
+      await Deno.mkdir(nodeOnly);
+      await Deno.symlink(new TextDecoder().decode(node.stdout).trim(), join(nodeOnly, "node"));
+      // curl downloads first, and node without it
+      for (const path of [Deno.env.get("PATH") ?? "", nodeOnly]) {
+        await Deno.remove(join(root, "kprint")).catch(() => {});
+        const result = await new Deno.Command("bash", {
+          args: ["-c", "export PATH=\"$1\"; exec node \"$2\"", "node", path, join(root, "bin.cjs")],
+          clearEnv: true,
+          env: { PATH: Deno.env.get("PATH") ?? "" },
+          stdout: "piped",
+          stderr: "piped",
+        }).output();
+        deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
+        deepStrictEqual(new TextDecoder().decode(result.stdout), "preview\n");
+      }
+      deepStrictEqual(requests, Array(2).fill(`/kjanat/kprint/@kprint/kprint-linux-x64-musl@${sha}`));
     } finally {
       await server.shutdown();
       await Deno.remove(directory, { recursive: true });

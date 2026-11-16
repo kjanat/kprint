@@ -195,9 +195,8 @@ function downloadBufferWithCurl(url: string): Buffer | undefined {
  */
 function downloadBufferWithNode(url: string): Buffer {
   const script = `\
-const https = require("node:https");
 function f(u) {
-  https.get(u, r => {
+  require(u.startsWith("http:") ? "node:http" : "node:https").get(u, r => {
     const s = r.statusCode;
     if ((s === 301 || s === 302 || s === 303 || s === 307 || s === 308) && r.headers.location) {
       f(new URL(r.headers.location, u).toString());
