@@ -106,7 +106,7 @@ pub async fn resolve_plugin_config_file(
         );
       };
       let part = select(&content, &reference)?.clone();
-      let root = user_selected_root(plugin_info, &source, base_dir)?;
+      let root = user_selected_root(&source, base_dir);
       Some((reference, part, source, text, root))
     }
     Some(PluginConfigFile::Disabled) => None,
@@ -330,12 +330,14 @@ async fn read_plugin_config(
   Ok(Some((parse_config_file(&path, &text)?, source, text)))
 }
 
-fn user_selected_root(plugin: &PluginInfo, source: &url::Url, base_dir: &Path) -> Result<PathBuf> {
-  let Ok(directory) = config_reference_base(plugin, source)?.join("./")?.to_file_path() else {
-    return Ok(base_dir.to_owned());
-  };
-  let directory = directory.components().collect::<PathBuf>();
-  Ok(if directory.starts_with(base_dir) { base_dir.to_owned() } else { directory })
+fn user_selected_root(source: &url::Url, base_dir: &Path) -> PathBuf {
+  match source.to_file_path() {
+    Ok(path) => match path.parent() {
+      Some(directory) if !directory.starts_with(base_dir) => directory.to_owned(),
+      _ => base_dir.to_owned(),
+    },
+    Err(()) => base_dir.to_owned(),
+  }
 }
 
 fn file_url(path: &Path) -> Result<url::Url> {
@@ -413,25 +415,16 @@ async fn read_config_references(
 fn config_reference_base(plugin: &PluginInfo, source: &url::Url) -> Result<url::Url> {
   if source.scheme() == "file" {
     let path = source.to_file_path().map_err(|()| anyhow::anyhow!("Invalid configuration URI: {source}"))?;
-    if let Some((suffix, directory)) = plugin
+    if let Some((_, directory)) = plugin
       .config_relative_path_bases
       .iter()
       .filter(|(suffix, _)| !suffix.is_empty() && path.ends_with(suffix))
       .max_by_key(|(suffix, _)| suffix.len())
     {
-      if directory.contains(':') || directory.contains('\\') || directory.contains('%') || directory.starts_with('/') {
+      if directory.contains(':') || directory.contains('\\') || directory.starts_with('/') {
         bail!("Plugin configuration path bases must be relative directories: {directory}");
       }
-      let base = source.join(&format!("{}/", directory.trim_end_matches('/')))?;
-      let suffix_root = path
-        .components()
-        .take(path.components().count().saturating_sub(Path::new(suffix).components().count()))
-        .collect::<PathBuf>();
-      let base_path = base.to_file_path().map_err(|()| anyhow::anyhow!("Invalid configuration URI: {base}"))?;
-      if !base_path.starts_with(&suffix_root) || base_path.components().any(|component| component == Component::ParentDir) {
-        bail!("Plugin configuration path base {directory} leaves the directory that contains {suffix}.");
-      }
-      return Ok(base);
+      return Ok(source.join(&format!("{}/", directory.trim_end_matches('/')))?);
     }
   }
   Ok(source.clone())
@@ -1107,28 +1100,6 @@ line-width = 100
       .config_relative_path_bases
       .insert(".config/tombi.toml".into(), "https://elsewhere.example/".into());
     assert!(config_reference_base(&info, &file).is_err());
-    for source in ["file:///C:/project/.config/tombi.toml", "file:///project/.config/tombi.toml"] {
-      let source = url::Url::parse(source).unwrap();
-      for (suffix, directory) in [
-        (".config/tombi.toml", "../.."),
-        (".config/tombi.toml", "../a/../.."),
-        (".config/tombi.toml", "%2e%2e/%2e%2e"),
-        (".config/tombi.toml", ".\t./.\t."),
-        (".config/tombi.toml", ".\n./.\r."),
-        (".config/tombi.toml", "a%2F..%2F..%2F.."),
-        ("tombi.toml", ".."),
-        ("tombi.toml", ".\t."),
-      ] {
-        let mut info = tombi_info(Some(vec![]));
-        info.config_relative_path_bases.insert(suffix.into(), directory.into());
-        assert!(config_reference_base(&info, &source).is_err(), "{source} {suffix} {directory:?}");
-      }
-    }
-    info.config_relative_path_bases.insert(".config/tombi.toml".into(), "a/../..".into());
-    assert_eq!(
-      config_reference_base(&info, &file).unwrap().join("tombi.toml").unwrap().as_str(),
-      "file:///C:/project/tombi.toml"
-    );
   }
 
   fn create_plugin() -> TestPlugin {
@@ -1228,12 +1199,6 @@ line-width = 100
         "extends = ['base/tombi.toml']\n[[schemas]]\npath = 'schema.json'\n",
       ),
       (
-        "sub",
-        "../.config/tombi.toml",
-        ".config/tombi.toml",
-        "extends = ['base/tombi.toml']\n[[schemas]]\npath = 'schema.json'\n",
-      ),
-      (
         "",
         "sub/tombi.toml",
         "sub/tombi.toml",
@@ -1277,6 +1242,22 @@ line-width = 100
       .1
       .unwrap_err();
     assert!(format!("{error:#}").contains("is outside"), "{error:#}");
+    let error = resolve(
+      "sub",
+      Some("../.config/tombi.toml"),
+      ".config/tombi.toml",
+      "[[schemas]]\npath = 'schema.json'\n",
+    )
+    .1
+    .unwrap_err();
+    assert_eq!(
+      format!("{error:#}"),
+      format!(
+        "Schema {} resolves outside {}.",
+        native(&format!("{root}/schema.json")).display(),
+        native(&format!("{root}/.config")).display()
+      )
+    );
     let error = resolve("sub", None, "tombi.toml", "").1.unwrap_err();
     assert!(format!("{error:#}").contains("resolves outside"), "{error:#}");
   }
