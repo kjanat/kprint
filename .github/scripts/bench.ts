@@ -345,17 +345,59 @@ async function measurements(results: string, scenario: string): Promise<Record<N
   return merged;
 }
 
-function cells(merged: Record<Name, Measurement[]>, metric: keyof Measurement, format: (value: number, spread: number) => string): string[] {
+function summarize(merged: Record<Name, Measurement[]>, metric: keyof Measurement): Record<Name, { value: number; spread: number }> {
   const stat = (name: Name) => {
     const samples = merged[name].map((measurement) => measurement[metric].value);
     return { value: mean(samples), spread: stdev(samples) };
   };
-  const stats = { official: stat("official"), master: stat("master"), pr: stat("pr") };
+  return { official: stat("official"), master: stat("master"), pr: stat("pr") };
+}
+
+function cells(merged: Record<Name, Measurement[]>, metric: keyof Measurement, format: (value: number, spread: number) => string): string[] {
+  const stats = summarize(merged, metric);
   const cell = (name: Name) => {
     const text = format(stats[name].value, stats[name].spread);
     return (name === "official" ? text : `${text} (${(stats.official.value / stats[name].value).toFixed(1)}×)`).replaceAll(" ", NBSP);
   };
   return [...NAMES.map(cell), percent((stats.pr.value - stats.master.value) / stats.master.value)];
+}
+
+function barChart(title: string, axis: string[], unit: string, values: number[], labels: string[]): string[] {
+  return [
+    "```mermaid",
+    "---",
+    "config:",
+    "  xyChart:",
+    "    width: 600",
+    "    height: 200",
+    "---",
+    "xychart-beta horizontal",
+    `    title "${title}"`,
+    `    x-axis [${axis.map((name, index) => `"${name}: ${labels[index]}"`).join(", ")}]`,
+    `    y-axis "${unit}" 0 --> ${Math.ceil(Math.max(...values) * 1.15)}`,
+    `    bar [${values.join(", ")}]`,
+    "```",
+    "",
+  ];
+}
+
+function timeChart(title: string, axis: string[], merged: Record<Name, Measurement[]>): string[] {
+  const stats = summarize(merged, "time_wall_clock");
+  const values = NAMES.map((name) => stats[name].value);
+  const seconds = Math.max(...values) >= 1;
+  return barChart(
+    title,
+    axis,
+    seconds ? "s" : "ms",
+    values.map((value) => Number(seconds ? value.toFixed(2) : (value * 1000).toFixed(1))),
+    values.map((value) => (value >= 1 ? `${value.toFixed(2)} s` : `${(value * 1000).toFixed(1)} ms`)),
+  );
+}
+
+function memoryChart(title: string, axis: string[], merged: Record<Name, Measurement[]>): string[] {
+  const stats = summarize(merged, "memory_peak_resident");
+  const values = NAMES.map((name) => Math.round(stats[name].value / (1 << 20)));
+  return barChart(title, axis, "MiB", values, values.map((value) => `${value} MiB`));
 }
 
 async function render(results: string): Promise<string> {
@@ -364,8 +406,11 @@ async function render(results: string): Promise<string> {
   const labels: Record<Name, string> = { official: "official", master: "master", pr };
   const { columns, definitions } = headings(meta, pr);
   const header = `| | ${columns.join(" | ")} |`;
+  const axis = [meta.versions.official, "master", `PR #${meta.pull}`];
   const loaded = [];
-  for (const scenario of SCENARIOS) loaded.push({ label: scenario.label, merged: await measurements(results, scenario.name) });
+  for (const scenario of SCENARIOS) {
+    loaded.push({ label: scenario.label, title: scenario.label.replaceAll("`", ""), merged: await measurements(results, scenario.name) });
+  }
   const compared = loaded.map(({ label, merged }) => ({ label, ...compare(merged, labels) }));
   const bounds = compared.flatMap(({ low, high }) => [low, high, 0]).map((value) => value * 100);
   const lines = [
@@ -396,12 +441,14 @@ async function render(results: string): Promise<string> {
     "| --- | ---: | ---: | ---: | ---: |",
     ...loaded.map(({ label, merged }) => `| ${label.replaceAll(" ", NBSP)} | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
     "",
+    ...loaded.flatMap(({ title, merged }) => timeChart(`${title}, wall time`, axis, merged)),
     "Peak memory, mean ± σ, with the reduction against the official release.",
     "",
     header,
     "| --- | ---: | ---: | ---: | ---: |",
     ...loaded.map(({ label, merged }) => `| ${label.replaceAll(" ", NBSP)} | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
     "",
+    ...loaded.flatMap(({ title, merged }) => memoryChart(`${title}, peak memory`, axis, merged)),
     `<sub>${meta.files} files of ${pr}'s checkout, formatted with:</sub>`,
     ...meta.plugins.map((plugin, index) => `- <sub>\`${plugin}\`${index === meta.plugins.length - 1 ? "." : ","}</sub>`),
     "",
