@@ -106,7 +106,8 @@ pub async fn resolve_plugin_config_file(
         );
       };
       let part = select(&content, &reference)?.clone();
-      Some((reference, part, source, text))
+      let root = user_selected_root(plugin_info, &source, base_dir)?;
+      Some((reference, part, source, text, root))
     }
     Some(PluginConfigFile::Disabled) => None,
     None => {
@@ -130,20 +131,20 @@ pub async fn resolve_plugin_config_file(
             reference.path
           );
         }
-        let Some((content, source, text)) = read_plugin_config(&reference, base_dir, ConfigFileAccess::Confined, environment, files_read).await? else {
+        let Some((content, source, text)) = read_plugin_config(&reference, base_dir, ConfigFileAccess::Within(base_dir), environment, files_read).await? else {
           continue;
         };
         // a file without the part isn't the plugin's (ex. a pyproject.toml
         // without its [tool.tombi])
         if let Ok(part) = select(&content, &reference) {
-          found = Some((reference, part.clone(), source, text));
+          found = Some((reference, part.clone(), source, text, base_dir.to_owned()));
           break;
         }
       }
       found
     }
   };
-  let (reference, content, source, text) = match found {
+  let (reference, content, source, text, root) = match found {
     Some(found) => found,
     None => {
       let content = serde_json::json!({});
@@ -157,7 +158,7 @@ pub async fn resolve_plugin_config_file(
       if paths.is_empty() {
         return Ok(properties);
       }
-      (ConfigFileReference::parse("config.json")?, content, source, String::new())
+      (ConfigFileReference::parse("config.json")?, content, source, String::new(), base_dir.to_owned())
     }
   };
   let config_path = base_dir.join(&reference.path);
@@ -168,8 +169,8 @@ pub async fn resolve_plugin_config_file(
       object.insert(key.clone(), serde_json::to_value(value)?);
     }
   }
-  read_config_schemas(plugin_info, &schema_content, &source, base_dir, environment, files_read, &mut schemas).await?;
-  let documents = read_config_references(plugin_info, &content, &source, base_dir, environment, files_read).await?;
+  read_config_schemas(plugin_info, &schema_content, &source, &root, environment, files_read, &mut schemas).await?;
+  let documents = read_config_references(plugin_info, &content, &source, &root, environment, files_read).await?;
   for document in documents.values() {
     let content = parse_config_file(Path::new(document.source.path()), &document.text)?;
     let schema_base = if plugin_info.config_local_schemas_use_root && document.source.scheme() == "file" {
@@ -177,7 +178,7 @@ pub async fn resolve_plugin_config_file(
     } else {
       &document.source
     };
-    read_config_schemas(plugin_info, &content, schema_base, base_dir, environment, files_read, &mut schemas).await?;
+    read_config_schemas(plugin_info, &content, schema_base, &root, environment, files_read, &mut schemas).await?;
   }
   properties.insert(
     CONFIG_FILE_CONTENT_PROPERTY.to_string(),
@@ -225,9 +226,9 @@ pub async fn resolve_plugin_config_file(
   Ok(properties)
 }
 
-enum ConfigFileAccess {
+enum ConfigFileAccess<'a> {
   UserSelected,
-  Confined,
+  Within(&'a Path),
 }
 
 pub fn resolve_remote_schema_paths(plugin: &PluginInfo, properties: &mut ConfigKeyMap, origins: &kprint_config::resolution::PropertyOrigins) -> Result<()> {
@@ -285,7 +286,7 @@ fn resolve_remote_schema_path(value: &mut ConfigKeyValue, segments: &[String], s
 async fn read_plugin_config(
   reference: &ConfigFileReference,
   base_dir: &Path,
-  access: ConfigFileAccess,
+  access: ConfigFileAccess<'_>,
   environment: &impl HostEnvironment,
   files_read: &mut Vec<PluginConfigFileState>,
 ) -> Result<Option<(JsonValue, url::Url, String)>> {
@@ -311,7 +312,7 @@ async fn read_plugin_config(
   }
   let text = match access {
     ConfigFileAccess::UserSelected => environment.read_file(&path),
-    ConfigFileAccess::Confined => environment.read_file_within(base_dir, &path),
+    ConfigFileAccess::Within(directory) => environment.read_file_within(directory, &path),
   }
   .with_context(|| format!("Failed reading {}.", path.display()))?;
   files_read.push(match access {
@@ -319,8 +320,8 @@ async fn read_plugin_config(
       path: path.clone(),
       text: text.clone(),
     },
-    ConfigFileAccess::Confined => PluginConfigFileState::Confined {
-      directory: base_dir.to_owned(),
+    ConfigFileAccess::Within(directory) => PluginConfigFileState::Confined {
+      directory: directory.to_owned(),
       path: path.clone(),
       text: text.clone(),
     },
@@ -329,8 +330,16 @@ async fn read_plugin_config(
   Ok(Some((parse_config_file(&path, &text)?, source, text)))
 }
 
+fn user_selected_root(plugin: &PluginInfo, source: &url::Url, base_dir: &Path) -> Result<PathBuf> {
+  let Ok(directory) = config_reference_base(plugin, source)?.join("./")?.to_file_path() else {
+    return Ok(base_dir.to_owned());
+  };
+  let directory = directory.components().collect::<PathBuf>();
+  Ok(if directory.starts_with(base_dir) { base_dir.to_owned() } else { directory })
+}
+
 fn file_url(path: &Path) -> Result<url::Url> {
-  url::Url::from_file_path(path)
+  let uri = url::Url::from_file_path(path)
     .or_else(|()| {
       if !path.has_root() {
         return Err(());
@@ -339,7 +348,9 @@ fn file_url(path: &Path) -> Result<url::Url> {
       uri.set_path(&path.to_string_lossy().replace('\\', "/"));
       Ok(uri)
     })
-    .map_err(|()| anyhow::anyhow!("Invalid configuration path: {}", path.display()))
+    .map_err(|()| anyhow::anyhow!("Invalid configuration path: {}", path.display()))?;
+  // from_file_path keeps `..` segments, which parsing the URL removes
+  Ok(url::Url::parse(uri.as_str())?)
 }
 
 #[derive(Clone)]
@@ -352,7 +363,7 @@ async fn read_config_references(
   plugin: &PluginInfo,
   content: &JsonValue,
   source: &url::Url,
-  base_dir: &Path,
+  root: &Path,
   environment: &impl HostEnvironment,
   files_read: &mut Vec<PluginConfigFileState>,
 ) -> Result<std::collections::BTreeMap<String, ConfigDocument>> {
@@ -376,14 +387,14 @@ async fn read_config_references(
         "http" | "https" => ConfigFileReference::parse(uri.as_str())?,
         "file" if base.scheme() == "file" => {
           let path = uri.to_file_path().map_err(|()| anyhow::anyhow!("Invalid configuration URI: {uri}"))?;
-          if !path.starts_with(base_dir) || escapes_dir(base_dir, &path, environment) {
-            bail!("Referenced configuration {uri} is outside {}.", base_dir.display());
+          if !path.starts_with(root) || escapes_dir(root, &path, environment) {
+            bail!("Referenced configuration {uri} is outside {}.", root.display());
           }
           ConfigFileReference::parse(&path.to_string_lossy())?
         }
         _ => bail!("Configuration {base} cannot reference {uri}. Remote configurations may only reference HTTP(S) files."),
       };
-      let Some((content, resolved, text)) = read_plugin_config(&reference, base_dir, ConfigFileAccess::Confined, environment, files_read).await? else {
+      let Some((content, resolved, text)) = read_plugin_config(&reference, root, ConfigFileAccess::Within(root), environment, files_read).await? else {
         bail!("Could not read referenced configuration {uri}.");
       };
       let document = ConfigDocument {
@@ -504,7 +515,7 @@ async fn read_config_schemas(
   plugin_info: &PluginInfo,
   content: &JsonValue,
   config_uri: &url::Url,
-  base_dir: &Path,
+  root: &Path,
   environment: &impl HostEnvironment,
   files_read: &mut Vec<PluginConfigFileState>,
   schemas: &mut SchemaResources,
@@ -574,19 +585,19 @@ async fn read_config_schemas(
     if schemas.count >= 256 {
       bail!("Schema references exceed 256 files at {uri}.");
     }
-    if !path.starts_with(base_dir) || escapes_dir(base_dir, &path, environment) {
-      bail!("Schema {} resolves outside {}.", path.display(), base_dir.display());
+    if !path.starts_with(root) || escapes_dir(root, &path, environment) {
+      bail!("Schema {} resolves outside {}.", path.display(), root.display());
     }
     if !environment.path_is_file(&path) {
       bail!("Failed reading schema {}: not a regular file.", path.display());
     }
     let text = environment
-      .read_file_within(base_dir, &path)
+      .read_file_within(root, &path)
       .with_context(|| format!("Failed reading schema {}.", path.display()))?;
     let schema: JsonValue = serde_json::from_str(&text).with_context(|| format!("Invalid JSON Schema in {}.", path.display()))?;
     schema_references(&schema, &uri, &mut pending, &mut schemas.identifiers)?;
     files_read.push(PluginConfigFileState::Confined {
-      directory: base_dir.to_owned(),
+      directory: root.to_owned(),
       path,
       text: text.clone(),
     });
@@ -1147,6 +1158,96 @@ line-width = 100
       let error = resolve_plugin_config_file(&info, None, properties(&[]), Path::new(root), &environment, &mut Vec::new()).unwrap_err();
       assert!(format!("{error:#}").contains(expected), "{error:#}");
     }
+  }
+
+  #[test]
+  fn confines_a_user_selected_config_files_schemas_and_references_to_its_directory() {
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    let outside = if cfg!(windows) { "C:/outside" } else { "/outside" };
+    let mut info = tombi_info(Some(vec!["tombi.toml"]));
+    info.config_schema_paths = vec![vec!["schemas".into(), "*".into(), "path".into()]];
+    info.config_reference_paths = vec![vec!["extends".into(), "*".into()]];
+    info.config_relative_path_bases.insert(".config/tombi.toml".into(), "..".into());
+    let resolve = |base_dir: &str, selected: Option<&str>, file: &str, text: &str| {
+      let environment = crate::environment::TestEnvironment::new();
+      write(&environment, &format!("{root}/base/tombi.toml"), "[format.rules]\nline-width = 100\n");
+      write(&environment, &format!("{root}/schema.json"), r#"{"type":"object"}"#);
+      write(&environment, &format!("{root}/sub/tombi.toml"), "[[schemas]]\npath = '../schema.json'\n");
+      write(&environment, &format!("{outside}.json"), r#"{"type":"object"}"#);
+      write(&environment, &format!("{outside}.toml"), "");
+      write(&environment, &format!("{root}/{file}"), text);
+      let config_file = selected.map(|selected| PluginConfigFile::Path(selected.to_string()));
+      let mut states = Vec::new();
+      let result = resolve_plugin_config_file(&info, config_file, properties(&[]), &Path::new(root).join(base_dir), &environment, &mut states);
+      (environment, result, states)
+    };
+    let native = |path: &str| file_url(Path::new(path)).unwrap().to_file_path().unwrap();
+
+    for (base_dir, selected, file, text) in [
+      (
+        "sub",
+        "../tombi.toml",
+        "tombi.toml",
+        "extends = ['base/tombi.toml']\n[[schemas]]\npath = 'schema.json'\n",
+      ),
+      (
+        "",
+        ".config/tombi.toml",
+        ".config/tombi.toml",
+        "extends = ['base/tombi.toml']\n[[schemas]]\npath = 'schema.json'\n",
+      ),
+      (
+        "sub",
+        "../.config/tombi.toml",
+        ".config/tombi.toml",
+        "extends = ['base/tombi.toml']\n[[schemas]]\npath = 'schema.json'\n",
+      ),
+      (
+        "",
+        "sub/tombi.toml",
+        "sub/tombi.toml",
+        "extends = ['../base/tombi.toml']\n[[schemas]]\npath = '../schema.json'\n",
+      ),
+    ] {
+      let (environment, result, states) = resolve(base_dir, Some(selected), file, text);
+      let result = result.unwrap();
+      let ConfigKeyValue::Object(config) = &result[CONFIG_FILE_CONTENT_PROPERTY] else {
+        panic!("missing config")
+      };
+      let ConfigKeyValue::Object(files) = &config["files"] else {
+        panic!("missing schemas")
+      };
+      assert_eq!(
+        files.keys().collect::<Vec<_>>(),
+        [&native(&format!("{root}/schema.json")).to_string_lossy()],
+        "{selected}"
+      );
+      let ConfigKeyValue::Object(documents) = &config["documents"] else {
+        panic!("missing documents")
+      };
+      assert!(!documents.is_empty(), "{selected}");
+      assert!(states.iter().all(|state| state.is_current(&environment)), "{selected}");
+      write(&environment, &format!("{root}/schema.json"), "{}");
+      assert!(!states.iter().all(|state| state.is_current(&environment)), "{selected}");
+    }
+
+    let error = resolve("sub", Some("../tombi.toml"), "tombi.toml", "[[schemas]]\npath = '../outside.json'\n")
+      .1
+      .unwrap_err();
+    assert_eq!(
+      format!("{error:#}"),
+      format!(
+        "Schema {} resolves outside {}.",
+        native(&format!("{outside}.json")).display(),
+        native(root).display()
+      )
+    );
+    let error = resolve("sub", Some("../tombi.toml"), "tombi.toml", "extends = ['../outside.toml']\n")
+      .1
+      .unwrap_err();
+    assert!(format!("{error:#}").contains("is outside"), "{error:#}");
+    let error = resolve("sub", None, "tombi.toml", "").1.unwrap_err();
+    assert!(format!("{error:#}").contains("resolves outside"), "{error:#}");
   }
 
   #[test]
