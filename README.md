@@ -1,6 +1,7 @@
 # kprint
 
 [![NPM](https://img.shields.io/npm/v/@kprint/kprint?logo=npm&labelColor=CB3837&color=black)][npm:kprint]
+[![GitHub release](https://img.shields.io/github/v/release/kjanat/kprint?logo=github&logoColor=white&label=release&labelColor=181717&color=black)](https://github.com/kjanat/kprint/releases/latest)
 [![License: MIT](https://img.shields.io/npm/l/@kprint/kprint?color=blue)](LICENSE)
 
 kprint is a pluggable and configurable code formatter written in Rust, forked
