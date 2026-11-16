@@ -404,6 +404,7 @@ async function render(results: string): Promise<string> {
     "",
     `<sub>${meta.files} files of ${pr}'s checkout, formatted with:</sub>`,
     ...meta.plugins.map((plugin, index) => `- <sub>\`${plugin}\`${index === meta.plugins.length - 1 ? "." : ","}</sub>`),
+    "",
     `<sub>${meta.git}.</sub>`,
     "",
     `<sub>master: ${meta.discovery.master}</sub>\\`,
