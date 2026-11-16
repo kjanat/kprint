@@ -65,6 +65,11 @@ impl Default for ExecFormatter {
   }
 }
 
+#[cfg(all(test, unix))]
+fn sh_quoted(path: &std::path::Path) -> String {
+  format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+}
+
 #[cfg(test)]
 mod test {
   use super::*;
