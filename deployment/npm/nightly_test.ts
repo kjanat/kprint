@@ -1,11 +1,14 @@
 import { deepStrictEqual, rejects } from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { basename } from "node:path";
 import { publishNightly, registryValue } from "./nightly.ts";
 
 const missing = { code: 1, stdout: "{\"error\":{\"code\":\"E404\"}}", stderr: "not found" };
 const ok = { code: 0, stdout: "", stderr: "" };
 const failed = { code: 1, stdout: "", stderr: "upload response lost" };
 const value = (text: string) => ({ ...ok, stdout: JSON.stringify(text) });
+const packages = ["00-first", "01-second"];
+const metadata = (path: string) => ({ ...ok, stdout: JSON.stringify({ name: basename(path, ".tgz"), version: "1" }) });
 
 async function fixture(test: (directory: string, integrity: string, report: string) => Promise<void>) {
   const directory = await Deno.makeTempDir();
@@ -31,15 +34,21 @@ Deno.test("an ambiguous upload reconciles later integrity and continues to the n
     let lookups = 0;
     let uploads = 0;
     const delays: number[] = [];
+    const tags: string[] = [];
     const receipts = await publishNightly(directory, "nightly", {
       report,
+      packages,
       wait: (delay) => {
         delays.push(delay);
         return Promise.resolve();
       },
       command: (_command, args) => {
-        if (args[0] === "-xzOf") return Promise.resolve({ ...ok, stdout: JSON.stringify({ name: args[1], version: "1" }) });
+        if (args[0] === "-xzOf") return Promise.resolve(metadata(args[1]));
         if (args[0] === "view") return Promise.resolve(args[1].includes("01-second") || ++lookups <= 3 ? missing : value(integrity));
+        if (args[0] === "dist-tag") {
+          tags.push(args.slice(2).join(" "));
+          return Promise.resolve(ok);
+        }
         uploads++;
         return Promise.resolve(uploads === 1 ? failed : ok);
       },
@@ -48,6 +57,7 @@ Deno.test("an ambiguous upload reconciles later integrity and continues to the n
     deepStrictEqual(delays, [2_000, 5_000]);
     deepStrictEqual(receipts.length, 2);
     deepStrictEqual(receipts.map((receipt) => receipt.outcome), ["available", "accepted"]);
+    deepStrictEqual(tags, ["00-first@1 nightly"]);
     deepStrictEqual(JSON.parse(await Deno.readTextFile(report)).packages, receipts);
   });
 });
@@ -58,9 +68,10 @@ Deno.test("arbitrary upload errors stay failures when no matching integrity appe
     await rejects(() =>
       publishNightly(directory, "nightly", {
         report,
+        packages,
         wait: () => Promise.resolve(),
         command: (_command, args) => {
-          if (args[0] === "-xzOf") return Promise.resolve({ ...ok, stdout: "{\"name\":\"first\",\"version\":\"1\"}" });
+          if (args[0] === "-xzOf") return Promise.resolve(metadata(args[1]));
           if (args[0] === "view") return Promise.resolve(missing);
           uploads++;
           return Promise.resolve(failed);
@@ -78,8 +89,9 @@ Deno.test("no receipt is written before the upload promise completes", async () 
     const started = Promise.withResolvers<void>();
     const publication = publishNightly(directory, "nightly", {
       report,
+      packages: ["00-first"],
       command: (_command, args) => {
-        if (args[0] === "-xzOf") return Promise.resolve({ ...ok, stdout: "{\"name\":\"first\",\"version\":\"1\"}" });
+        if (args[0] === "-xzOf") return Promise.resolve(metadata(args[1]));
         if (args[0] === "view") return Promise.resolve(missing);
         started.resolve();
         return upload.promise;
@@ -122,11 +134,46 @@ Deno.test("a different immutable tarball never reconciles as accepted", async ()
     await rejects(() =>
       publishNightly(directory, "nightly", {
         report,
+        packages,
         command: (_command, args) => {
-          if (args[0] === "-xzOf") return Promise.resolve({ ...ok, stdout: "{\"name\":\"first\",\"version\":\"1\"}" });
+          if (args[0] === "-xzOf") return Promise.resolve(metadata(args[1]));
           if (args[0] === "view") return Promise.resolve(lookups++ === 0 ? missing : value("sha512-other"));
           return Promise.resolve(failed);
         },
-      }), /npm has a different first@1/);
+      }), /npm publish failed for 00-first@1: upload response lost\nnpm has a different 00-first@1/);
+  });
+});
+
+Deno.test("a missing, extra or duplicated package stops publication before any npm command", async () => {
+  await fixture(async (directory, _integrity, report) => {
+    for (const expected of [[...packages, "02-third"], ["00-first"], ["00-first", "00-first"]]) {
+      const commands: string[] = [];
+      await rejects(() =>
+        publishNightly(directory, "nightly", {
+          report,
+          packages: expected,
+          command: (command, args) => {
+            commands.push(command);
+            return Promise.resolve(metadata(args[1]));
+          },
+        }), /a nightly publishes/);
+      deepStrictEqual(commands, ["tar", "tar"]);
+    }
+  });
+});
+
+Deno.test("a failed lookup after an ambiguous upload keeps the upload's error", async () => {
+  await fixture(async (directory, _integrity, report) => {
+    let lookups = 0;
+    await rejects(() =>
+      publishNightly(directory, "nightly", {
+        report,
+        packages,
+        command: (_command, args) => {
+          if (args[0] === "-xzOf") return Promise.resolve(metadata(args[1]));
+          if (args[0] === "view") return Promise.resolve(lookups++ === 0 ? missing : { ...failed, stderr: "registry unavailable" });
+          return Promise.resolve(failed);
+        },
+      }), /npm publish failed for 00-first@1: upload response lost\nnpm lookup failed for 00-first@1: registry unavailable/);
   });
 });

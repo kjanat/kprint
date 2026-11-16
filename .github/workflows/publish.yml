@@ -393,6 +393,8 @@ jobs:
           npm-tarballs: deployment/npm/tarballs
       - name: Publish the nightly to npm
         if: needs.plan.outputs.channel == 'nightly'
+        # leaves the job time to upload the receipts
+        timeout-minutes: 12
         env:
           NPM_TAG: ${{ needs.plan.outputs.npm_tag }}
         run: node deployment/npm/nightly.ts publish deployment/npm/tarballs "${NPM_TAG}"
