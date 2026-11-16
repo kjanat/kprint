@@ -23,6 +23,7 @@ interface Result {
 
 interface Meta {
   repository: string;
+  pull: number;
   versions: Record<Name, string>;
   shas: Record<Build, string>;
   discovery: Record<Build, string>;
@@ -53,7 +54,7 @@ const USAGE = `Usage:
 
 const NAMES: Name[] = ["official", "master", "pr"];
 const MARKER = "<!-- dprint-bench -->";
-const LABELS: Record<Name, string> = { official: "official", master: "master", pr: "this PR" };
+const NBSP = " ";
 const OFFICIAL = "https://github.com/dprint/dprint/releases/latest/download/dprint-x86_64-unknown-linux-gnu.zip";
 const HYPERFINE = {
   url: "https://github.com/sharkdp/hyperfine/releases/download/v2.0.0/hyperfine-v2.0.0-x86_64-unknown-linux-gnu.tar.gz",
@@ -114,6 +115,8 @@ async function setup(builds: string): Promise<void> {
 }
 
 async function bench(corpus: string, results: string, builds: string): Promise<void> {
+  const pull = process.env.GITHUB_REF?.match(/^refs\/pull\/(\d+)\/merge$/)?.[1];
+  if (!pull) throw new Error(`GITHUB_REF ${process.env.GITHUB_REF} is not a pull request's merge ref`);
   const binary = (name: Name) => join(builds, `dprint-${name}`, "dprint");
   const hyperfine = join(builds, "hyperfine");
   for (const file of [...NAMES.map(binary), hyperfine]) await chmod(file, 0o755);
@@ -174,6 +177,7 @@ async function bench(corpus: string, results: string, builds: string): Promise<v
 
     const meta: Meta = {
       repository: process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` : "",
+      pull: Number(pull),
       versions: { official: version("official"), master: version("master"), pr: version("pr") },
       shas: { master: await sha("master"), pr: await sha("pr") },
       discovery: { master: discovery("master"), pr: discovery("pr") },
@@ -282,35 +286,49 @@ function welch(a: number[], b: number[]): Welch {
 }
 
 function percent(value: number): string {
-  return `${value >= 0 ? "+" : ""}${Math.round(value * 100)}%`;
+  const rounded = Math.round(value * 100);
+  return `${rounded >= 0 ? "+" : ""}${rounded}%`;
 }
 
 function pValue(p: number): string {
   return p < 0.001 ? "p < 0.001" : `p = ${p.toFixed(3)}`;
 }
 
-function compare(merged: Record<Name, Measurement[]>) {
+function compare(merged: Record<Name, Measurement[]>, labels: Record<Name, string>) {
   const samples = (name: Name) => merged[name].map((measurement) => measurement.time_wall_clock.value);
   const test = welch(samples("pr"), samples("master"));
   const base = mean(samples("master"));
   const verdict = test.p >= 0.05 ? "no significant difference" : test.diff < 0 ? "faster" : "slower";
   const order = [...NAMES].sort((x, y) => mean(samples(x)) - mean(samples(y)));
-  let ranking = LABELS[order[0]];
+  let ranking = labels[order[0]];
   for (let i = 1; i < order.length; i++) {
-    ranking += (welch(samples(order[i - 1]), samples(order[i])).p < 0.05 ? " < " : " ≈ ") + LABELS[order[i]];
+    ranking += (welch(samples(order[i - 1]), samples(order[i])).p < 0.05 ? " < " : " ≈ ") + labels[order[i]];
   }
   return { verdict, change: test.diff / base, low: test.low / base, high: test.high / base, p: test.p, n: test.n, ranking };
 }
 
-function commitLink(repository: string, sha: string): string {
-  if (!sha) return "";
-  const short = `\`${sha.slice(0, 7)}\``;
-  return repository ? ` [${short}](${repository}/commit/${sha})` : ` ${short}`;
-}
-
-function releaseLink(version: string): string {
-  const tag = version.match(/^dprint (\S+)$/)?.[1];
-  return tag ? `[\`${version}\`](https://github.com/dprint/dprint/releases/tag/${tag})` : `\`${version}\``;
+function headings(meta: Meta, pr: string): { columns: string[]; definitions: string[] } {
+  const definitions: string[] = [];
+  const reference = (label: string, url: string) => {
+    definitions.push(`[${label}]: ${url}`);
+    return `[${label}]`;
+  };
+  const tag = meta.versions.official.match(/^dprint (\S+)$/)?.[1];
+  const official = `\`${meta.versions.official}\``;
+  const commit = (sha: string, url: string) => {
+    if (!sha) return "";
+    const short = `\`${sha.slice(0, 7)}\``;
+    return ` ${meta.repository ? reference(short, url) : short}`;
+  };
+  return {
+    columns: [
+      tag ? reference(official, `https://github.com/dprint/dprint/releases/tag/${tag}`) : official,
+      `master${commit(meta.shas.master, `${meta.repository}/commit/${meta.shas.master}`)}`,
+      `${pr}${commit(meta.shas.pr, `${meta.repository}/pull/${meta.pull}/commits/${meta.shas.pr}`)}`,
+      "vs master",
+    ],
+    definitions,
+  };
 }
 
 async function measurements(results: string, scenario: string): Promise<Record<Name, Measurement[]>> {
@@ -333,35 +351,34 @@ function cells(merged: Record<Name, Measurement[]>, metric: keyof Measurement, f
     return { value: mean(samples), spread: stdev(samples) };
   };
   const stats = { official: stat("official"), master: stat("master"), pr: stat("pr") };
-  return NAMES.map((name) => {
-    let text = format(stats[name].value, stats[name].spread);
-    if (name !== "official") text += ` · ${(stats.official.value / stats[name].value).toFixed(1)}×`;
-    if (name === "pr") {
-      const change = Math.round(((stats.pr.value - stats.master.value) / stats.master.value) * 100);
-      text += ` · ${change >= 0 ? "+" : ""}${change}% vs master`;
-    }
-    return text;
-  });
+  const cell = (name: Name) => {
+    const text = format(stats[name].value, stats[name].spread);
+    return (name === "official" ? text : `${text} (${(stats.official.value / stats[name].value).toFixed(1)}×)`).replaceAll(" ", NBSP);
+  };
+  return [...NAMES.map(cell), percent((stats.pr.value - stats.master.value) / stats.master.value)];
 }
 
 async function render(results: string): Promise<string> {
   const meta: Meta = JSON.parse(await readFile(join(results, "meta.json"), "utf8"));
-  const header = `| | ${releaseLink(meta.versions.official)} | master${commitLink(meta.repository, meta.shas.master)} | this PR${
-    commitLink(meta.repository, meta.shas.pr)
-  } |`;
+  const pr = `PR #${meta.pull}`;
+  const labels: Record<Name, string> = { official: "official", master: "master", pr };
+  const { columns, definitions } = headings(meta, pr);
+  const header = `| | ${columns.join(" | ")} |`;
   const loaded = [];
   for (const scenario of SCENARIOS) loaded.push({ label: scenario.label, merged: await measurements(results, scenario.name) });
-  const compared = loaded.map(({ label, merged }) => ({ label, ...compare(merged) }));
+  const compared = loaded.map(({ label, merged }) => ({ label, ...compare(merged, labels) }));
   const bounds = compared.flatMap(({ low, high }) => [low, high, 0]).map((value) => value * 100);
   const lines = [
     MARKER,
     "## Benchmark",
     "",
-    "**This PR vs master**, wall time. Welch's t-test, 95% confidence interval of the change relative to master's mean.",
+    `**${pr} vs master**, wall time. Welch's t-test, 95% confidence interval of the change relative to master's mean.`,
     "",
-    ...compared.map(({ label, verdict, change, low, high, p, n, ranking }) =>
-      `- ${label}: **${verdict}**, ${percent(change)} (95% CI ${percent(low)} to ${percent(high)}, ${pValue(p)}, n = ${n[0]} vs ${n[1]}). ${ranking}.`
-    ),
+    ...compared.flatMap(({ label, verdict, change, low, high, p, n, ranking }) => [
+      `- ${label}: **${verdict}**.\\`,
+      `  ${percent(change)} (95% CI ${percent(low)} to ${percent(high)}, ${pValue(p)}, n = ${n[0]} vs ${n[1]})\\`,
+      `  ${ranking}.`,
+    ]),
     "",
     "```mermaid",
     "xychart-beta",
@@ -376,19 +393,23 @@ async function render(results: string): Promise<string> {
     "Wall time, mean ± σ, with the speedup over the official release.",
     "",
     header,
-    "| --- | ---: | ---: | ---: |",
+    "| --- | ---: | ---: | ---: | ---: |",
     ...loaded.map(({ label, merged }) => `| ${label} | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
     "",
     "Peak memory, mean ± σ, with the reduction against the official release.",
     "",
     header,
-    "| --- | ---: | ---: | ---: |",
+    "| --- | ---: | ---: | ---: | ---: |",
     ...loaded.map(({ label, merged }) => `| ${label} | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
     "",
-    `${meta.files} files of this pull request's checkout, formatted with ${meta.plugins.map((plugin) => `\`${plugin}\``).join(", ")}. ${meta.git}.`,
+    `<sub>${meta.files} files of ${pr}'s checkout, formatted with:</sub>`,
+    ...meta.plugins.map((plugin, index) => `- <sub>\`${plugin}\`${index === meta.plugins.length - 1 ? "." : ","}</sub>`),
+    `<sub>${meta.git}.</sub>`,
     "",
-    `- master: ${meta.discovery.master}`,
-    `- this PR: ${meta.discovery.pr}`,
+    `<sub>master: ${meta.discovery.master}</sub>\\`,
+    `<sub>${pr}: ${meta.discovery.pr}</sub>`,
+    "",
+    ...definitions,
   ];
   return lines.join("\n") + "\n";
 }
