@@ -76,7 +76,14 @@ jobs:
           SOURCE_SHA: ${{ needs.plan.outputs.ref }}
         run: gh release view "${RELEASE_TAG}" --json isDraft,targetCommitish | jq -e --arg sha "${SOURCE_SHA}" ' .isDraft == true and .targetCommitish == $sha'
       - name: Upload binaries
-        run: gh release upload "${RELEASE_TAG}" release-assets/*.zip --clobber
+        run: |
+          set -o pipefail
+          # --clobber replaces only the assets it uploads
+          gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name | select(endswith(".zip"))' |
+            while read -r name; do
+              [[ -f "release-assets/${name}" ]] || gh release delete-asset "${RELEASE_TAG}" "${name}" --yes
+            done
+          gh release upload "${RELEASE_TAG}" release-assets/*.zip --clobber
       - name: Update checksums for the complete release
         run: |
           gh release view "${RELEASE_TAG}" --json assets > release-assets.json

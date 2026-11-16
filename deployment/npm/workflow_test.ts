@@ -272,3 +272,39 @@ Deno.test("tested tarballs and partial nightly receipts retain the documented re
   match(receipts, /"retention-days":30/);
   match(receipts, /github.run_attempt/);
 });
+
+Deno.test("a reused draft release loses the archives this build doesn't upload", async () => {
+  const binaries = parse(await Deno.readTextFile(new URL("../../.github/workflows/binaries.yml", import.meta.url))) as Workflow;
+  const step = binaries.jobs.upload.steps.find((step) => step.name === "Upload binaries")?.run;
+  if (step === undefined) throw new Error("binaries.yml uploads no binaries");
+  const directory = await Deno.makeTempDir({ prefix: "kprint-binaries-test-" });
+  try {
+    await Deno.mkdir(`${directory}/bin`);
+    await Deno.mkdir(`${directory}/release-assets`);
+    for (const name of ["kprint-a.zip", "kprint-b.zip"]) await Deno.writeTextFile(`${directory}/release-assets/${name}`, name);
+    await Deno.writeTextFile(
+      `${directory}/bin/gh`,
+      `#!/bin/bash
+printf '%s\\n' "$*" >> "${directory}/calls"
+if [[ "$2" == view ]]; then printf '%s\\n' kprint-a.zip dprint-a.zip dprint-b.zip; fi
+`,
+    );
+    await Deno.chmod(`${directory}/bin/gh`, 0o755);
+    const result = await new Deno.Command("bash", {
+      args: ["-e", "-c", step],
+      cwd: directory,
+      clearEnv: true,
+      env: { PATH: `${directory}/bin:${Deno.env.get("PATH")}`, RELEASE_TAG: "1.2.3" },
+      stderr: "piped",
+    }).output();
+    deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
+    deepStrictEqual((await Deno.readTextFile(`${directory}/calls`)).trim().split("\n"), [
+      "release view 1.2.3 --json assets --jq .assets[].name | select(endswith(\".zip\"))",
+      "release delete-asset 1.2.3 dprint-a.zip --yes",
+      "release delete-asset 1.2.3 dprint-b.zip --yes",
+      "release upload 1.2.3 release-assets/kprint-a.zip release-assets/kprint-b.zip --clobber",
+    ]);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
