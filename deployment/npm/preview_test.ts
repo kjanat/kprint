@@ -209,15 +209,18 @@ Deno.test("a failed manifest restore still removes staging and keeps the upload'
     const p = publisher(sizes, true);
     const main = join(directory, "kprint", "package.json");
     const command = async (args: string[], cwd: string) => {
-      if (args[0] !== "npm") await Deno.chmod(main, 0o444);
+      if (args[0] !== "npm") {
+        await Deno.remove(main);
+        await Deno.mkdir(main);
+      }
       return await p.command(args, cwd);
     };
     const failure = await publishPreview(directory, "kjanat/kprint", sha, command, 19).then(() => undefined, (error: unknown) => error);
     if (!(failure instanceof AggregateError)) throw new Error(`Expected an AggregateError, got ${failure}`);
     match(String(failure.errors[0]), /upload failed/);
-    deepStrictEqual(failure.errors[1] instanceof Deno.errors.PermissionDenied, true);
+    deepStrictEqual(failure.errors[1] instanceof Deno.errors.IsADirectory, true, String(failure.errors[1]));
     await rejects(() => Deno.stat(p.packed[0]), Deno.errors.NotFound);
-    await Deno.chmod(main, 0o644);
+    await Deno.remove(main);
     await Deno.writeTextFile(main, originals.get(main) ?? "");
   });
 });
