@@ -202,12 +202,12 @@ function stdev(samples: number[]): number {
 }
 
 function formatSeconds(value: number, spread: number): string {
-  if (value >= 1) return `${value.toFixed(2)} s ± ${spread.toFixed(2)} s`;
-  return `${(value * 1000).toFixed(1)} ms ± ${(spread * 1000).toFixed(1)} ms`;
+  if (value >= 1) return `${value.toFixed(2)} ± ${spread.toFixed(2)} s`;
+  return `${(value * 1000).toFixed(1)} ± ${(spread * 1000).toFixed(1)} ms`;
 }
 
 function formatBytes(value: number, spread: number): string {
-  return `${(value / (1 << 20)).toFixed(0)} MiB ± ${(spread / (1 << 20)).toFixed(0)} MiB`;
+  return `${(value / (1 << 20)).toFixed(0)} ± ${(spread / (1 << 20)).toFixed(0)} MiB`;
 }
 
 function logGamma(x: number): number {
@@ -325,7 +325,7 @@ function headings(meta: Meta, pr: string): { columns: string[]; definitions: str
       tag ? reference(official, `https://github.com/dprint/dprint/releases/tag/${tag}`) : official,
       `master${commit(meta.shas.master, `${meta.repository}/commit/${meta.shas.master}`)}`,
       `${pr}${commit(meta.shas.pr, `${meta.repository}/pull/${meta.pull}/commits/${meta.shas.pr}`)}`,
-      `vs${NBSP}master`,
+      "Δ",
     ],
     definitions,
   };
@@ -409,7 +409,7 @@ async function render(results: string): Promise<string> {
   const axis = [meta.versions.official, "master", `PR #${meta.pull}`];
   const loaded = [];
   for (const scenario of SCENARIOS) {
-    loaded.push({ label: scenario.label, title: scenario.label.replaceAll("`", ""), merged: await measurements(results, scenario.name) });
+    loaded.push({ name: scenario.name, label: scenario.label, title: scenario.label.replaceAll("`", ""), merged: await measurements(results, scenario.name) });
   }
   const compared = loaded.map(({ label, merged }) => ({ label, ...compare(merged, labels) }));
   const bounds = compared.flatMap(({ low, high }) => [low, high, 0]).map((value) => value * 100);
@@ -435,20 +435,30 @@ async function render(results: string): Promise<string> {
     `    line "95% CI low" [${compared.map(({ low }) => Math.round(low * 100)).join(", ")}]`,
     "```",
     "",
-    "Wall time, mean ± σ, with the speedup over the official release.",
+    `Wall time, mean ± σ, with the speedup over the official release. Δ is ${pr} against master.`,
     "",
     header,
     "| --- | ---: | ---: | ---: | ---: |",
-    ...loaded.map(({ label, merged }) => `| ${label.replaceAll(" ", NBSP)} | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
+    ...loaded.map(({ name, merged }) => `| \`${name}\` | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
+    "",
+    "<details>",
+    "<summary>Wall time per scenario</summary>",
     "",
     ...loaded.flatMap(({ title, merged }) => timeChart(`${title}, wall time`, axis, merged)),
-    "Peak memory, mean ± σ, with the reduction against the official release.",
+    "</details>",
+    "",
+    `Peak memory, mean ± σ, with the reduction against the official release. Δ is ${pr} against master.`,
     "",
     header,
     "| --- | ---: | ---: | ---: | ---: |",
-    ...loaded.map(({ label, merged }) => `| ${label.replaceAll(" ", NBSP)} | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
+    ...loaded.map(({ name, merged }) => `| \`${name}\` | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
+    "",
+    "<details>",
+    "<summary>Peak memory per scenario</summary>",
     "",
     ...loaded.flatMap(({ title, merged }) => memoryChart(`${title}, peak memory`, axis, merged)),
+    "</details>",
+    "",
     `<sub>${meta.files} files of ${pr}'s checkout, formatted with:</sub>`,
     ...meta.plugins.map((plugin, index) => `- <sub>\`${plugin}\`${index === meta.plugins.length - 1 ? "." : ","}</sub>`),
     "",
