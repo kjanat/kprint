@@ -1752,7 +1752,6 @@ mod test {
     let attempts = super::MAX_SETUP_ATTEMPTS as usize + 1;
     run_leaving_nothing_running(async {
       let setup_state = SetupState::default();
-      let start = Instant::now();
       // more times than it may fail
       for attempt in 1..=attempts {
         let token = tokio_util::sync::CancellationToken::new();
@@ -1779,6 +1778,7 @@ mod test {
       }
       // it still runs, and right away rather than after a delay
       std::fs::write(&ready, "").unwrap();
+      let start = Instant::now();
       assert_eq!(format(&config, "text", &setup_state).await, Ok(Some("TEXT".to_string())));
       assert!(start.elapsed() < super::FIRST_SETUP_RETRY_DELAY);
     });
