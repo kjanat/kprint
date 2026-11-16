@@ -23,6 +23,7 @@ interface Result {
 
 interface Meta {
   repository: string;
+  pull: number;
   versions: Record<Name, string>;
   shas: Record<Build, string>;
   discovery: Record<Build, string>;
@@ -47,13 +48,13 @@ interface WorkflowRun {
 
 const USAGE = `Usage:
   bench.ts setup <builds>
-  bench.ts bench <corpus> <results> <builds>
+  bench.ts bench <corpus> <results> <builds> <pull request number>
   bench.ts report <results> <comment.md>
   bench.ts comment <comment.md>`;
 
 const NAMES: Name[] = ["official", "master", "pr"];
 const MARKER = "<!-- dprint-bench -->";
-const LABELS: Record<Name, string> = { official: "official", master: "master", pr: "this PR" };
+const NBSP = " ";
 const OFFICIAL = "https://github.com/dprint/dprint/releases/latest/download/dprint-x86_64-unknown-linux-gnu.zip";
 const HYPERFINE = {
   url: "https://github.com/sharkdp/hyperfine/releases/download/v2.0.0/hyperfine-v2.0.0-x86_64-unknown-linux-gnu.tar.gz",
@@ -113,7 +114,7 @@ async function setup(builds: string): Promise<void> {
   await rm(tarball);
 }
 
-async function bench(corpus: string, results: string, builds: string): Promise<void> {
+async function bench(corpus: string, results: string, builds: string, pull: number): Promise<void> {
   const binary = (name: Name) => join(builds, `dprint-${name}`, "dprint");
   const hyperfine = join(builds, "hyperfine");
   for (const file of [...NAMES.map(binary), hyperfine]) await chmod(file, 0o755);
@@ -174,6 +175,7 @@ async function bench(corpus: string, results: string, builds: string): Promise<v
 
     const meta: Meta = {
       repository: process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` : "",
+      pull,
       versions: { official: version("official"), master: version("master"), pr: version("pr") },
       shas: { master: await sha("master"), pr: await sha("pr") },
       discovery: { master: discovery("master"), pr: discovery("pr") },
@@ -198,12 +200,12 @@ function stdev(samples: number[]): number {
 }
 
 function formatSeconds(value: number, spread: number): string {
-  if (value >= 1) return `${value.toFixed(2)} s ± ${spread.toFixed(2)} s`;
-  return `${(value * 1000).toFixed(1)} ms ± ${(spread * 1000).toFixed(1)} ms`;
+  if (value >= 1) return `${value.toFixed(2)} ± ${spread.toFixed(2)} s`;
+  return `${(value * 1000).toFixed(1)} ± ${(spread * 1000).toFixed(1)} ms`;
 }
 
 function formatBytes(value: number, spread: number): string {
-  return `${(value / (1 << 20)).toFixed(0)} MiB ± ${(spread / (1 << 20)).toFixed(0)} MiB`;
+  return `${(value / (1 << 20)).toFixed(0)} ± ${(spread / (1 << 20)).toFixed(0)} MiB`;
 }
 
 function logGamma(x: number): number {
@@ -282,35 +284,49 @@ function welch(a: number[], b: number[]): Welch {
 }
 
 function percent(value: number): string {
-  return `${value >= 0 ? "+" : ""}${Math.round(value * 100)}%`;
+  const rounded = Math.round(value * 100);
+  return `${rounded >= 0 ? "+" : ""}${rounded}%`;
 }
 
 function pValue(p: number): string {
   return p < 0.001 ? "p < 0.001" : `p = ${p.toFixed(3)}`;
 }
 
-function compare(merged: Record<Name, Measurement[]>) {
+function compare(merged: Record<Name, Measurement[]>, labels: Record<Name, string>) {
   const samples = (name: Name) => merged[name].map((measurement) => measurement.time_wall_clock.value);
   const test = welch(samples("pr"), samples("master"));
   const base = mean(samples("master"));
   const verdict = test.p >= 0.05 ? "no significant difference" : test.diff < 0 ? "faster" : "slower";
   const order = [...NAMES].sort((x, y) => mean(samples(x)) - mean(samples(y)));
-  let ranking = LABELS[order[0]];
+  let ranking = labels[order[0]];
   for (let i = 1; i < order.length; i++) {
-    ranking += (welch(samples(order[i - 1]), samples(order[i])).p < 0.05 ? " < " : " ≈ ") + LABELS[order[i]];
+    ranking += (welch(samples(order[i - 1]), samples(order[i])).p < 0.05 ? " < " : " ≈ ") + labels[order[i]];
   }
   return { verdict, change: test.diff / base, low: test.low / base, high: test.high / base, p: test.p, n: test.n, ranking };
 }
 
-function commitLink(repository: string, sha: string): string {
-  if (!sha) return "";
-  const short = `\`${sha.slice(0, 7)}\``;
-  return repository ? ` [${short}](${repository}/commit/${sha})` : ` ${short}`;
-}
-
-function releaseLink(version: string): string {
-  const tag = version.match(/^dprint (\S+)$/)?.[1];
-  return tag ? `[\`${version}\`](https://github.com/dprint/dprint/releases/tag/${tag})` : `\`${version}\``;
+function headings(meta: Meta, pr: string): { columns: string[]; definitions: string[] } {
+  const definitions: string[] = [];
+  const reference = (label: string, url: string) => {
+    definitions.push(`[${label}]: ${url}`);
+    return `[${label}]`;
+  };
+  const tag = meta.versions.official.match(/^dprint (\S+)$/)?.[1];
+  const official = `\`${meta.versions.official}\``;
+  const commit = (sha: string, url: string) => {
+    if (!sha) return "";
+    const short = `\`${sha.slice(0, 7)}\``;
+    return ` ${meta.repository ? reference(short, url) : short}`;
+  };
+  return {
+    columns: [
+      tag ? reference(official, `https://github.com/dprint/dprint/releases/tag/${tag}`) : official,
+      `master${commit(meta.shas.master, `${meta.repository}/commit/${meta.shas.master}`)}`,
+      `${pr}${commit(meta.shas.pr, `${meta.repository}/pull/${meta.pull}/commits/${meta.shas.pr}`)}`,
+      "Δ",
+    ],
+    definitions,
+  };
 }
 
 async function measurements(results: string, scenario: string): Promise<Record<Name, Measurement[]>> {
@@ -327,41 +343,85 @@ async function measurements(results: string, scenario: string): Promise<Record<N
   return merged;
 }
 
-function cells(merged: Record<Name, Measurement[]>, metric: keyof Measurement, format: (value: number, spread: number) => string): string[] {
+function summarize(merged: Record<Name, Measurement[]>, metric: keyof Measurement): Record<Name, { value: number; spread: number }> {
   const stat = (name: Name) => {
     const samples = merged[name].map((measurement) => measurement[metric].value);
     return { value: mean(samples), spread: stdev(samples) };
   };
-  const stats = { official: stat("official"), master: stat("master"), pr: stat("pr") };
-  return NAMES.map((name) => {
-    let text = format(stats[name].value, stats[name].spread);
-    if (name !== "official") text += ` · ${(stats.official.value / stats[name].value).toFixed(1)}×`;
-    if (name === "pr") {
-      const change = Math.round(((stats.pr.value - stats.master.value) / stats.master.value) * 100);
-      text += ` · ${change >= 0 ? "+" : ""}${change}% vs master`;
-    }
-    return text;
-  });
+  return { official: stat("official"), master: stat("master"), pr: stat("pr") };
+}
+
+function cells(merged: Record<Name, Measurement[]>, metric: keyof Measurement, format: (value: number, spread: number) => string): string[] {
+  const stats = summarize(merged, metric);
+  const cell = (name: Name) => {
+    const text = format(stats[name].value, stats[name].spread);
+    return (name === "official" ? text : `${text} (${(stats.official.value / stats[name].value).toFixed(1)}×)`).replaceAll(" ", NBSP);
+  };
+  return [...NAMES.map(cell), percent((stats.pr.value - stats.master.value) / stats.master.value)];
+}
+
+function barChart(title: string, axis: string[], unit: string, values: number[], labels: string[]): string[] {
+  return [
+    "```mermaid",
+    "---",
+    "config:",
+    "  xyChart:",
+    "    width: 600",
+    "    height: 220",
+    "---",
+    "xychart-beta horizontal",
+    `    title "${title}"`,
+    `    x-axis [${axis.map((name, index) => `"${name}: ${labels[index]}"`).join(", ")}]`,
+    `    y-axis "${unit}" 0 --> ${Math.ceil(Math.max(...values) * 1.15)}`,
+    `    bar [${values.join(", ")}]`,
+    "```",
+    "",
+  ];
+}
+
+function timeChart(title: string, axis: string[], merged: Record<Name, Measurement[]>): string[] {
+  const stats = summarize(merged, "time_wall_clock");
+  const values = NAMES.map((name) => stats[name].value);
+  const seconds = Math.max(...values) >= 1;
+  return barChart(
+    title,
+    axis,
+    seconds ? "s" : "ms",
+    values.map((value) => Number(seconds ? value.toFixed(2) : (value * 1000).toFixed(1))),
+    values.map((value) => (value >= 1 ? `${value.toFixed(2)} s` : `${(value * 1000).toFixed(1)} ms`)),
+  );
+}
+
+function memoryChart(title: string, axis: string[], merged: Record<Name, Measurement[]>): string[] {
+  const stats = summarize(merged, "memory_peak_resident");
+  const values = NAMES.map((name) => Math.round(stats[name].value / (1 << 20)));
+  return barChart(title, axis, "MiB", values, values.map((value) => `${value} MiB`));
 }
 
 async function render(results: string): Promise<string> {
   const meta: Meta = JSON.parse(await readFile(join(results, "meta.json"), "utf8"));
-  const header = `| | ${releaseLink(meta.versions.official)} | master${commitLink(meta.repository, meta.shas.master)} | this PR${
-    commitLink(meta.repository, meta.shas.pr)
-  } |`;
+  const pr = `PR <span>#</span>${meta.pull}`;
+  const labels: Record<Name, string> = { official: "official", master: "master", pr };
+  const { columns, definitions } = headings(meta, pr);
+  const header = `| | ${columns.join(" | ")} |`;
+  const axis = [meta.versions.official, "kprint master", `kprint PR #${meta.pull}`];
   const loaded = [];
-  for (const scenario of SCENARIOS) loaded.push({ label: scenario.label, merged: await measurements(results, scenario.name) });
-  const compared = loaded.map(({ label, merged }) => ({ label, ...compare(merged) }));
+  for (const scenario of SCENARIOS) {
+    loaded.push({ name: scenario.name, label: scenario.label, title: scenario.label.replaceAll("`", ""), merged: await measurements(results, scenario.name) });
+  }
+  const compared = loaded.map(({ label, merged }) => ({ label, ...compare(merged, labels) }));
   const bounds = compared.flatMap(({ low, high }) => [low, high, 0]).map((value) => value * 100);
   const lines = [
     MARKER,
     "## Benchmark",
     "",
-    "**This PR vs master**, wall time. Welch's t-test, 95% confidence interval of the change relative to master's mean.",
+    `**${pr} vs master**, wall time. Welch's t-test, 95% confidence interval of the change relative to master's mean.`,
     "",
-    ...compared.map(({ label, verdict, change, low, high, p, n, ranking }) =>
-      `- ${label}: **${verdict}**, ${percent(change)} (95% CI ${percent(low)} to ${percent(high)}, ${pValue(p)}, n = ${n[0]} vs ${n[1]}). ${ranking}.`
-    ),
+    ...compared.flatMap(({ label, verdict, change, low, high, p, n, ranking }) => [
+      `- ${label}: **${verdict}**.\\`,
+      `  ${percent(change)} (95% CI ${percent(low)} to ${percent(high)}, ${pValue(p)}, n = ${n[0]} vs ${n[1]})\\`,
+      `  ${ranking}.`,
+    ]),
     "",
     "```mermaid",
     "xychart-beta",
@@ -369,26 +429,43 @@ async function render(results: string): Promise<string> {
     `    x-axis [${SCENARIOS.map((scenario) => `"${scenario.name}"`).join(", ")}]`,
     `    y-axis "%" ${Math.floor(Math.min(...bounds) / 10) * 10 - 10} --> ${Math.ceil(Math.max(...bounds) / 10) * 10 + 10}`,
     `    bar "mean" [${compared.map(({ change }) => Math.round(change * 100)).join(", ")}]`,
-    `    line "95% CI low" [${compared.map(({ low }) => Math.round(low * 100)).join(", ")}]`,
     `    line "95% CI high" [${compared.map(({ high }) => Math.round(high * 100)).join(", ")}]`,
+    `    line "95% CI low" [${compared.map(({ low }) => Math.round(low * 100)).join(", ")}]`,
     "```",
     "",
-    "Wall time, mean ± σ, with the speedup over the official release.",
+    `Wall time, mean ± σ, with the speedup over the official release. Δ is ${pr} against master.`,
     "",
     header,
-    "| --- | ---: | ---: | ---: |",
-    ...loaded.map(({ label, merged }) => `| ${label} | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
+    "| --- | ---: | ---: | ---: | ---: |",
+    ...loaded.map(({ name, merged }) => `| \`${name}\` | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
     "",
-    "Peak memory, mean ± σ, with the reduction against the official release.",
+    "<details>",
+    "<summary>Wall time per scenario</summary>",
+    "",
+    ...loaded.flatMap(({ title, merged }) => timeChart(`${title}, wall time`, axis, merged)),
+    "</details>",
+    "",
+    `Peak memory, mean ± σ, with the reduction against the official release. Δ is ${pr} against master.`,
     "",
     header,
-    "| --- | ---: | ---: | ---: |",
-    ...loaded.map(({ label, merged }) => `| ${label} | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
+    "| --- | ---: | ---: | ---: | ---: |",
+    ...loaded.map(({ name, merged }) => `| \`${name}\` | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
     "",
-    `${meta.files} files of this pull request's checkout, formatted with ${meta.plugins.map((plugin) => `\`${plugin}\``).join(", ")}. ${meta.git}.`,
+    "<details>",
+    "<summary>Peak memory per scenario</summary>",
     "",
-    `- master: ${meta.discovery.master}`,
-    `- this PR: ${meta.discovery.pr}`,
+    ...loaded.flatMap(({ title, merged }) => memoryChart(`${title}, peak memory`, axis, merged)),
+    "</details>",
+    "",
+    `<sub>${meta.files} files of ${pr}'s checkout, formatted with:</sub>`,
+    ...meta.plugins.map((plugin, index) => `- <sub>\`${plugin}\`${index === meta.plugins.length - 1 ? "." : ","}</sub>`),
+    "",
+    `<sub>${meta.git}.</sub>`,
+    "",
+    `<sub>master: ${meta.discovery.master}</sub>\\`,
+    `<sub>${pr}: ${meta.discovery.pr}</sub>`,
+    "",
+    ...definitions,
   ];
   return lines.join("\n") + "\n";
 }
@@ -454,8 +531,9 @@ export default async function main({ core, github, context }: Partial<Actions>, 
       return;
     }
     case "bench": {
-      const [corpus, results, builds] = expectArguments(args, 3);
-      await bench(resolve(corpus), resolve(results), resolve(builds));
+      const [corpus, results, builds, pull] = expectArguments(args, 4);
+      if (!/^[1-9]\d*$/.test(pull)) throw new Error(`${pull} is not a pull request number`);
+      await bench(resolve(corpus), resolve(results), resolve(builds), Number(pull));
       return;
     }
     case "report": {

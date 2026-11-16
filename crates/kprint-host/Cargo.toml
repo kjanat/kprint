@@ -30,3 +30,4 @@ url         = { workspace = true }
 kprint-plugin-host  = { workspace = true, features = ["test-support"] }
 kprint-test-support = { workspace = true, features = ["plugins"] }
 sys_traits          = { workspace = true, features = ["memory"] }
+tempfile            = { workspace = true }

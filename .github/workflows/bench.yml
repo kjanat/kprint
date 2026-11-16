@@ -46,7 +46,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { ref: "${{ github.event.pull_request.head.sha }}", path: corpus }
+        # persisted credentials add an includeIf to .git/config, and dprint skips the git index of such a repository
+        with: { ref: "${{ github.event.pull_request.head.sha }}", path: corpus, persist-credentials: false }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
       - name: Typecheck the bench script
         working-directory: corpus
@@ -76,7 +77,7 @@ jobs:
         with:
           script: |
             const { default: bench } = await import(`${process.env.GITHUB_WORKSPACE}/corpus/.github/scripts/bench.ts`);
-            await bench({ core }, ["bench", "corpus", "results", "builds"]);
+            await bench({ core }, ["bench", "corpus", "results", "builds", String(context.issue.number)]);
       - name: Upload the results
         if: "!cancelled()"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
