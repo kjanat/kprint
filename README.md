@@ -78,10 +78,11 @@ See <https://dprint.kjanat.dev/plugins/>
 - [fatou](https://github.com/jolars/dprint-plugin-fatou) - Julia formatter.
 - [dprint-plugin-swift](https://github.com/drluckyspin/dprint-plugin-swift) - Swift (SwiftFormat) formatter.
 
-## Credits
+## Sponsor
 
-David Sherret wrote dprint in his spare time. If your company uses it, please
-consider [sponsoring](https://dprint.dev/sponsor) him.
+kjanat maintains kprint and the plugins under [kjanat's plugins](#kjanats-plugins).
+dprint is David Sherret's. If your company uses them, please consider sponsoring
+[kjanat](https://github.com/sponsors/kjanat) or [David Sherret](https://dprint.dev/sponsor).
 
 [npm:kprint]: https://npm.im/@kprint/kprint
 [npm:fmt]: https://npm.im/@kjanat/fmt
