@@ -42,15 +42,23 @@ mod tests {
   use std::time::Duration;
   use std::time::SystemTime;
 
+  fn seconds_after_change(metadata: &fs::Metadata, seconds: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(metadata.ctime()).unwrap() + seconds)
+  }
+
   #[test]
   fn restored_mtime_and_atomic_replacement_change_identity() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("plugin");
     fs::write(&path, b"first").unwrap();
     let before = fs::metadata(&path).unwrap();
-    let later = SystemTime::now() + Duration::from_secs(3);
-    let first = from_metadata(&before, later).unwrap();
-    assert!(from_metadata(&before, SystemTime::now()).is_none());
+    if before.ctime_nsec() == 0 {
+      // this filesystem stores whole seconds
+      assert!(from_metadata(&before, seconds_after_change(&before, 2)).is_none());
+      return;
+    }
+    let first = from_metadata(&before, seconds_after_change(&before, 2)).unwrap();
+    assert!(from_metadata(&before, seconds_after_change(&before, 1)).is_none());
     fs::write(&path, b"other").unwrap();
     fs::File::options()
       .write(true)
@@ -61,7 +69,7 @@ mod tests {
     let after = fs::metadata(&path).unwrap();
     assert_eq!(before.len(), after.len());
     assert_eq!(before.modified().unwrap(), after.modified().unwrap());
-    assert_ne!(first, from_metadata(&after, later).unwrap());
+    assert_ne!(first, from_metadata(&after, seconds_after_change(&after, 2)).unwrap());
     let replacement = dir.path().join("replacement");
     fs::write(&replacement, b"third").unwrap();
     fs::File::options()
@@ -73,7 +81,7 @@ mod tests {
     fs::rename(replacement, &path).unwrap();
     let replaced = fs::metadata(&path).unwrap();
     assert_ne!(before.ino(), replaced.ino());
-    assert_ne!(first, from_metadata(&replaced, later).unwrap());
+    assert_ne!(first, from_metadata(&replaced, seconds_after_change(&replaced, 2)).unwrap());
     assert!(file_change_id(dir.path()).is_none());
   }
 }
