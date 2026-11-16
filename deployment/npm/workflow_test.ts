@@ -5,12 +5,16 @@ import matrix from "../../.github/build-matrix.json" with { type: "json" };
 import targets from "./targets.json" with { type: "json" };
 
 interface Workflow {
-  jobs: Record<string, { needs?: string[]; steps: { id?: string; name?: string; run?: string; env?: Record<string, string> }[] }>;
+  jobs: Record<string, { needs?: string[]; steps: { id?: string; name?: string; uses?: string; run?: string; env?: Record<string, string> }[] }>;
 }
 const workflow = parse(await Deno.readTextFile(new URL("../../.github/workflows/publish.yml", import.meta.url))) as Workflow;
 const plan = workflow.jobs.plan.steps.find((step) => step.id === "plan")!.run!;
 const sha = "a".repeat(40);
 const context = JSON.stringify({ operation: "promote", version: "1.2.3", sourceSha: sha, draftRelease: { tag: "1.2.3" } });
+// version manager shims put the real npm ahead of the mocks on node's PATH
+const node = new TextDecoder().decode((await new Deno.Command("bash", { args: ["-c", "exec node -p process.execPath"], stdout: "piped" }).output()).stdout)
+  .trim();
+const nodeMock = `exec '${node}' "$@"`;
 
 async function runPlan(env: Record<string, string>) {
   const directory = await Deno.makeTempDir({ prefix: "kprint-plan-test-" });
@@ -19,11 +23,14 @@ async function runPlan(env: Record<string, string>) {
     await Deno.mkdir(`${directory}/crates/kprint`, { recursive: true });
     await Deno.mkdir(`${directory}/.github`);
     await Deno.mkdir(`${directory}/deployment/npm`, { recursive: true });
-    await Deno.copyFile(new URL("./nightly.ts", import.meta.url), `${directory}/deployment/npm/nightly.ts`);
+    for (const file of ["nightly.ts", "names.ts", "targets.json"]) {
+      await Deno.copyFile(new URL(`./${file}`, import.meta.url), `${directory}/deployment/npm/${file}`);
+    }
     await Deno.writeTextFile(`${directory}/crates/kprint/Cargo.toml`, "version = \"1.2.3\"\n");
     await Deno.writeTextFile(`${directory}/.github/build-matrix.json`, JSON.stringify(matrix));
     for (
       const [name, script] of Object.entries({
+        node: nodeMock,
         git: `printf '%s\\n' '${sha}'`,
         gh: "printf \"%s\\n\" \"${TEST_VERIFIED:-true}\"",
         npm: `if [[ -n "\${TEST_LOOKUP_ERROR:-}" ]]; then echo '{"error":{"code":"'"$TEST_LOOKUP_ERROR"'"}}'; exit 1; fi
@@ -112,10 +119,9 @@ function stepOf(job: string, name: string) {
 }
 
 const nightlyTarballs = [
-  ["01-kprint-kprint-win32-x64-1.2.3.tgz", "@kprint/kprint-win32-x64"],
-  ["00-kprint-kprint-freebsd-x64-1.2.3.tgz", "@kprint/kprint-freebsd-x64"],
-  ["17-kjanat-fmt-1.2.3.tgz", "@kjanat/fmt"],
+  ...targets.targets.map((target, index) => [`${String(index).padStart(2, "0")}-kprint-kprint-${target.pkg}-1.2.3.tgz`, `@kprint/kprint-${target.pkg}`]),
   ["16-kprint-kprint-1.2.3.tgz", "@kprint/kprint"],
+  ["17-kjanat-fmt-1.2.3.tgz", "@kjanat/fmt"],
 ];
 
 async function runNightly(listed: (directory: string) => Promise<Record<string, string>>, lookupError?: string, failSecond = false) {
@@ -128,8 +134,10 @@ async function runNightly(listed: (directory: string) => Promise<Record<string, 
     await Deno.mkdir(`${directory}/listed/@kprint`, { recursive: true });
     await Deno.mkdir(`${directory}/listed/@kjanat`);
     await Deno.mkdir(tarballs, { recursive: true });
-    await Deno.copyFile(new URL("./nightly.ts", import.meta.url), `${directory}/deployment/npm/nightly.ts`);
-    for (const [file, name] of nightlyTarballs) {
+    for (const file of ["nightly.ts", "names.ts", "targets.json"]) {
+      await Deno.copyFile(new URL(`./${file}`, import.meta.url), `${directory}/deployment/npm/${file}`);
+    }
+    for (const [file, name] of nightlyTarballs.toReversed()) {
       const source = `${directory}/source/${file}/package`;
       await Deno.mkdir(source, { recursive: true });
       await Deno.writeTextFile(`${source}/package.json`, JSON.stringify({ name, version: "1.2.3" }));
@@ -156,6 +164,8 @@ ${failSecond ? `if [[ "$2" == *01-* ]]; then touch "${directory}/failed"; echo "
 `,
     );
     await Deno.chmod(`${directory}/bin/npm`, 0o755);
+    await Deno.writeTextFile(`${directory}/bin/node`, `#!/bin/bash\n${nodeMock}\n`);
+    await Deno.chmod(`${directory}/bin/node`, 0o755);
     const result = await new Deno.Command("bash", {
       args: ["-e", "-c", step],
       cwd: directory,
@@ -187,12 +197,7 @@ const published = (file: string) => `publish deployment/npm/tarballs/${file} --p
 Deno.test("a nightly uploads its tarballs in their numbered order, platform packages first", async () => {
   const result = await runNightly(() => Promise.resolve({}));
   deepStrictEqual(result.code, 0, result.stderr);
-  deepStrictEqual(result.calls, [
-    published("00-kprint-kprint-freebsd-x64-1.2.3.tgz"),
-    published("01-kprint-kprint-win32-x64-1.2.3.tgz"),
-    published("16-kprint-kprint-1.2.3.tgz"),
-    published("17-kjanat-fmt-1.2.3.tgz"),
-  ]);
+  deepStrictEqual(result.calls, nightlyTarballs.map(([file]) => published(file)));
 });
 
 Deno.test("a retried nightly skips the tarballs npm already lists and uploads the rest", async () => {
@@ -202,9 +207,8 @@ Deno.test("a retried nightly skips the tarballs npm already lists and uploads th
   deepStrictEqual(result.code, 0, result.stderr);
   match(result.stdout, /npm already has @kprint\/kprint-freebsd-x64@1\.2\.3/);
   deepStrictEqual(result.calls, [
-    published("01-kprint-kprint-win32-x64-1.2.3.tgz"),
-    published("16-kprint-kprint-1.2.3.tgz"),
-    published("17-kjanat-fmt-1.2.3.tgz"),
+    "dist-tag add @kprint/kprint-freebsd-x64@1.2.3 nightly",
+    ...nightlyTarballs.slice(1).map(([file]) => published(file)),
   ]);
 });
 
@@ -263,10 +267,52 @@ Deno.test("a failed npm subprocess preserves earlier receipts and fails the job"
 Deno.test("tested tarballs and partial nightly receipts retain the documented recovery window", () => {
   const artifact = JSON.stringify(stepOf("build-npm", "Upload the npm tarballs"));
   match(artifact, /"retention-days":30/);
+  match(JSON.stringify(stepOf("publish-npm", "Publish the nightly to npm")), /"timeout-minutes":12/);
   const receipts = JSON.stringify(stepOf("publish-npm", "Preserve nightly publication receipts"));
   match(receipts, /always\(\)/);
   match(receipts, /"retention-days":30/);
   match(receipts, /github.run_attempt/);
+});
+
+Deno.test("finalization publishes refs with an empty identity when Beepboop returns none", () => {
+  const step = workflow.jobs["finalize-release"]?.steps.find((step) => step.uses?.startsWith("kjanat/beepboop/actions/publish-refs@"));
+  deepStrictEqual(step?.env, { "${{ insert }}": "${{ fromJSON(steps.bot.outputs.gitId || '{}') }}" });
+});
+
+Deno.test("a reused draft release loses the archives this build doesn't upload", async () => {
+  const binaries = parse(await Deno.readTextFile(new URL("../../.github/workflows/binaries.yml", import.meta.url))) as Workflow;
+  const step = binaries.jobs.upload.steps.find((step) => step.name === "Upload binaries")?.run;
+  if (step === undefined) throw new Error("binaries.yml uploads no binaries");
+  const directory = await Deno.makeTempDir({ prefix: "kprint-binaries-test-" });
+  try {
+    await Deno.mkdir(`${directory}/bin`);
+    await Deno.mkdir(`${directory}/release-assets`);
+    for (const name of ["kprint-a.zip", "kprint-b.zip"]) await Deno.writeTextFile(`${directory}/release-assets/${name}`, name);
+    await Deno.writeTextFile(
+      `${directory}/bin/gh`,
+      `#!/bin/bash
+printf '%s\\n' "$*" >> "${directory}/calls"
+if [[ "$2" == view ]]; then printf '%s\\n' kprint-a.zip dprint-a.zip dprint-b.zip; fi
+`,
+    );
+    await Deno.chmod(`${directory}/bin/gh`, 0o755);
+    const result = await new Deno.Command("bash", {
+      args: ["-e", "-c", step],
+      cwd: directory,
+      clearEnv: true,
+      env: { PATH: `${directory}/bin:${Deno.env.get("PATH")}`, RELEASE_TAG: "1.2.3" },
+      stderr: "piped",
+    }).output();
+    deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
+    deepStrictEqual((await Deno.readTextFile(`${directory}/calls`)).trim().split("\n"), [
+      "release view 1.2.3 --json assets --jq .assets[].name | select(endswith(\".zip\"))",
+      "release delete-asset 1.2.3 dprint-a.zip --yes",
+      "release delete-asset 1.2.3 dprint-b.zip --yes",
+      "release upload 1.2.3 release-assets/kprint-a.zip release-assets/kprint-b.zip --clobber",
+    ]);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
 });
 
 Deno.test("finalization accepts the checksum manifest the binaries workflow writes, and no other", async () => {

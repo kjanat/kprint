@@ -438,6 +438,7 @@ mod test {
   use crate::plugins::implementations::builtin_exec::configuration::Configuration;
   use crate::plugins::implementations::builtin_exec::handler::SetupState;
   use crate::plugins::implementations::builtin_exec::handler::format_bytes;
+  use crate::plugins::implementations::builtin_exec::sh_quoted;
 
   const UPPERCASE: &str = r#"
 /"text":"crash"/ { print "oops" > "/dev/stderr"; exit 3 }
@@ -482,8 +483,8 @@ function field(name,   value) {
       let mut command_config = serde_json::json!({
         "command": format!(
           "sh -c \"echo $$ >> {}; exec awk -f {}\"",
-          self.dir.path().join("starts").display(),
-          self.dir.path().join("worker.awk").display()
+          sh_quoted(&self.dir.path().join("starts")),
+          sh_quoted(&self.dir.path().join("worker.awk"))
         ),
         "exts": ["txt"],
         "serve": true,
@@ -606,7 +607,7 @@ function field(name,   value) {
   #[test]
   fn starts_a_command_with_its_environment() {
     let worker = Worker::new(r#"{ printf "{\"text\":\"%s\"}\n", ENVIRON["GREETING"]; fflush() }"#);
-    let script = format!("exec awk -f {}", worker.dir.path().join("worker.awk").display());
+    let script = format!("exec awk -f {}", sh_quoted(&worker.dir.path().join("worker.awk")));
     let config = worker.config(
       serde_json::json!({ "lineWidth": 80 }),
       serde_json::json!({ "command": { "executable": "sh", "args": ["-c", script], "env": { "GREETING": "width {{line_width}}" } } }),

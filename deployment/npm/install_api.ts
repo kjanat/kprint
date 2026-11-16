@@ -97,7 +97,8 @@ function downloadExecutable(target: string, dprintFileName: string, destinationP
   ).replace(/\/+$/, "");
   // npm tarball urls drop the scope from the file name (e.g.
   // https://registry.npmjs.org/@kprint/kprint-win32-x64/-/kprint-win32-x64-1.0.0.tgz)
-  const tarballUrl = `${registry}/${packageName(target)}/-/${platformDir(target)}-${version}.tgz`;
+  const tarballUrl = dependencyTarballUrl(target)
+    ?? `${registry}/${packageName(target)}/-/${platformDir(target)}-${version}.tgz`;
   console.error(
     `[kprint] Optional dependency ${packageName(target)} was not installed. Downloading from ${tarballUrl}`,
   );
@@ -109,6 +110,13 @@ function downloadExecutable(target: string, dprintFileName: string, destinationP
   );
   verifyExecutableHash(target, executableBuffer);
   atomicWriteFile(destinationPath, executableBuffer);
+}
+
+function dependencyTarballUrl(target: string): string | undefined {
+  const dependencies = readPackageField("package.json", "optionalDependencies");
+  if (typeof dependencies !== "object" || dependencies === null) return undefined;
+  const spec: unknown = Object.fromEntries(Object.entries(dependencies))[packageName(target)];
+  return typeof spec === "string" && /^https?:\/\//.test(spec) ? spec : undefined;
 }
 
 /**
@@ -187,9 +195,8 @@ function downloadBufferWithCurl(url: string): Buffer | undefined {
  */
 function downloadBufferWithNode(url: string): Buffer {
   const script = `\
-const https = require("node:https");
 function f(u) {
-  https.get(u, r => {
+  require(u.startsWith("http:") ? "node:http" : "node:https").get(u, r => {
     const s = r.statusCode;
     if ((s === 301 || s === 302 || s === 303 || s === 307 || s === 308) && r.headers.location) {
       f(new URL(r.headers.location, u).toString());

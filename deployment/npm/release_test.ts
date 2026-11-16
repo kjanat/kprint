@@ -7,6 +7,7 @@ Deno.test("every declared npm target requires its binary, even on partial matrix
   for (const name of expectedArchives) throws(() => validateArchives(expectedArchives.filter((other) => other !== name)), /Expected exactly one/);
   throws(() => validateArchives([...expectedArchives, expectedArchives[0]]), /Expected exactly one/);
   throws(() => validateArchives([...expectedArchives, "kprint-unknown.zip"]), /Unexpected archives/);
+  throws(() => validateArchives([...expectedArchives, "dprint-x86_64-unknown-linux-gnu.zip"]), /Unexpected archives: dprint-x86_64-unknown-linux-gnu\.zip/);
   deepStrictEqual(expectedArchives.length, 16);
 });
 

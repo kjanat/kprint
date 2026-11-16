@@ -6,6 +6,8 @@ import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { fmtPackage, mainPackage, platformPackage } from "./names.ts";
+import targets from "./targets.json" with { type: "json" };
 
 interface CommandResult {
   code: number;
@@ -24,6 +26,8 @@ const run: Run = async (command, args) => {
     return { code: typeof failed.code === "number" ? failed.code : 1, stdout: failed.stdout ?? "", stderr: failed.stderr || failed.message };
   }
 };
+
+const nightlyPackages = [...targets.targets.map((target) => platformPackage(target.pkg)), mainPackage, fmtPackage];
 
 export async function registryValue(spec: string, field: string, command: Run = run): Promise<string | undefined> {
   const result = await command("npm", ["view", spec, field, "--json"]);
@@ -49,6 +53,7 @@ interface Receipt {
 }
 interface PublishOptions {
   command?: Run;
+  packages?: string[];
   wait?: (milliseconds: number) => Promise<unknown>;
   report?: string;
 }
@@ -60,13 +65,21 @@ export async function publishNightly(directory: string, tag: string, options: Pu
   const receipts: Receipt[] = [];
   const files = (await readdir(directory)).filter((name) => name.endsWith(".tgz")).sort();
   if (!files.length) throw new Error("No tested npm tarballs remain; recover the original artifact before retrying publication");
+  const tarballs = [];
   for (const file of files) {
-    const path = join(directory, file);
-    const metadata = await command("tar", ["-xzOf", path, "package/package.json"]);
+    const metadata = await command("tar", ["-xzOf", join(directory, file), "package/package.json"]);
     if (metadata.code !== 0) throw new Error(`Cannot read ${file}: ${metadata.stderr}`);
     const { name, version } = JSON.parse(metadata.stdout);
     if (typeof name !== "string" || typeof version !== "string" || !name || !version) throw new Error(`Invalid package metadata in ${file}`);
-    const spec = `${name}@${version}`;
+    tarballs.push({ file, name, spec: `${name}@${version}` });
+  }
+  const expected = [...options.packages ?? nightlyPackages].sort();
+  const actual = tarballs.map(({ name }) => name).sort();
+  if (actual.join("\n") !== expected.join("\n")) {
+    throw new Error(`The tarballs hold ${actual.join(", ")}; a nightly publishes ${expected.join(", ")}`);
+  }
+  for (const { file, spec } of tarballs) {
+    const path = join(directory, file);
     const integrity = `sha512-${createHash("sha512").update(await readFile(path)).digest("base64")}`;
     const matches = (listed: string | undefined) => {
       if (listed !== undefined && listed !== integrity) throw new Error(`npm has a different ${spec}`);
@@ -82,16 +95,25 @@ export async function publishNightly(directory: string, tag: string, options: Pu
       } else {
         // Only ambiguous failures reconcile visibility. Successful uploads do
         // not wait for npm's asynchronous scanning or registry propagation.
+        const failure = `npm publish failed for ${spec}: ${uploaded.stderr.trim() || uploaded.stdout.trim() || `exit ${uploaded.code}`}`;
         let reconciled = false;
-        for (const delay of [0, 2_000, 5_000, 15_000, 30_000]) {
-          if (delay) await wait(delay);
-          if (matches(await registryValue(spec, "dist.integrity", command))) {
-            reconciled = true;
-            break;
+        try {
+          for (const delay of [0, 2_000, 5_000, 15_000, 30_000]) {
+            if (delay) await wait(delay);
+            if (matches(await registryValue(spec, "dist.integrity", command))) {
+              reconciled = true;
+              break;
+            }
           }
+        } catch (error) {
+          throw new Error(`${failure}\n${error instanceof Error ? error.message : String(error)}`, { cause: error });
         }
-        if (!reconciled) throw new Error(`npm publish failed for ${spec}: ${uploaded.stderr.trim() || uploaded.stdout.trim() || `exit ${uploaded.code}`}`);
+        if (!reconciled) throw new Error(failure);
       }
+    }
+    if (outcome === "available") {
+      const tagged = await command("npm", ["dist-tag", "add", spec, tag]);
+      if (tagged.code !== 0) throw new Error(`npm dist-tag failed for ${spec}: ${tagged.stderr.trim() || tagged.stdout.trim() || `exit ${tagged.code}`}`);
     }
     receipts.push({ spec, integrity, outcome });
     const temporary = `${report}.tmp`;

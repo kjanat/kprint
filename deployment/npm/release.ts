@@ -11,7 +11,7 @@ export function validateArchives(names: string[]) {
   for (const name of expectedArchives) {
     if (names.filter((actual) => actual === name).length !== 1) throw new Error(`Expected exactly one archive: ${name}`);
   }
-  const unexpected = names.filter((name) => name.startsWith("kprint-") && name.endsWith(".zip") && !expectedArchives.includes(name));
+  const unexpected = names.filter((name) => name.endsWith(".zip") && !expectedArchives.includes(name));
   if (unexpected.length) throw new Error(`Unexpected archives: ${unexpected.join(", ")}`);
 }
 

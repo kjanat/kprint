@@ -702,10 +702,10 @@ where
       if stamp.checksum.is_empty() {
         return false;
       }
-      // Missing stored identities get one rebuild when a stable identity first
-      // becomes available. Unsupported or recent timestamps still require hashing.
-      if let Some(current) = self.environment.file_change_id(Path::new(&stamp.path)) {
-        return stamp.change_id.as_ref() == Some(&current)
+      if let Some(stored) = &stamp.change_id
+        && let Some(current) = self.environment.file_change_id(Path::new(&stamp.path))
+      {
+        return *stored == current
           && self
             .file_size_and_mtime(&stamp.path)
             .is_some_and(|(len, modified)| len == stamp.len && to_unix_millis(modified) == stamp.modified_ms);
@@ -1181,13 +1181,14 @@ mod test {
     let reads = environment.file_read_count(&path);
     assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
     assert_eq!(environment.file_read_count(&path), reads);
-    // Digest-bearing metadata from the first PR revision gains an identity once.
+    // Digest-bearing metadata from the first PR revision is checked by its digest.
     let hash = entry_hash(&cache.compute_cache_key(&source.path_source)?, &environment);
     let mut meta = read_meta(&hash, &environment).unwrap();
     meta.local_stamps.as_mut().unwrap()[0].change_id = None;
     write_meta(&hash, &meta, &environment)?;
-    assert!(cache.get_plugin_cache_item(&source).await?.was_set_up);
+    let reads = environment.file_read_count(&path);
     assert!(!cache.get_plugin_cache_item(&source).await?.was_set_up);
+    assert_eq!(environment.file_read_count(&path), reads + 1);
     environment.clear_logs();
     Ok(())
   }

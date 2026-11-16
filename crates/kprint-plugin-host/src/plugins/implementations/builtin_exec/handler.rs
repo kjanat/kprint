@@ -874,6 +874,8 @@ mod test {
   use crate::environment::CanonicalizedPathBuf;
   use crate::plugins::implementations::builtin_exec::configuration::Configuration;
   use crate::plugins::implementations::builtin_exec::served::ServedCommands;
+  #[cfg(unix)]
+  use crate::plugins::implementations::builtin_exec::sh_quoted;
 
   fn resolve(config: serde_json::Value) -> Arc<Configuration> {
     let config: ConfigKeyMap = serde_json::from_value(config).unwrap();
@@ -968,8 +970,8 @@ mod test {
       std::fs::write(
         dir.path().join("formatter.sh"),
         format!(
-          "(while :; do echo x >> '{0}'; sleep 0.1; done) &\nwhile [ ! -s '{0}' ]; do sleep 0.05; done\n",
-          heartbeat.display()
+          "(while :; do echo x >> {0}; sleep 0.1; done) &\nwhile [ ! -s {0} ]; do sleep 0.05; done\n",
+          sh_quoted(&heartbeat)
         ),
       )
       .unwrap();
@@ -1201,7 +1203,7 @@ mod test {
     let config = resolve(serde_json::json!({
       "commands": [{
         "command": "cat",
-        "setupCommand": format!("sh -c \"printf x >> {}\"", marker.display()),
+        "setupCommand": format!("sh -c \"printf x >> {}\"", sh_quoted(&marker)),
         "exts": ["txt"]
       }]
     }));
@@ -1218,7 +1220,7 @@ mod test {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("marker.txt");
     // the same text when the arguments are joined with spaces
-    let setup_command = |args: &str| format!("sh -c \"echo ran >> {}\" {}", marker.display(), args);
+    let setup_command = |args: &str| format!("sh -c \"echo ran >> {}\" {}", sh_quoted(&marker), args);
     let config = resolve(serde_json::json!({
       "commands": [
         { "command": "cat", "setupCommand": setup_command("\"a b\" c"), "associations": "**/*.txt" },
@@ -1271,7 +1273,7 @@ mod test {
     let setup_command = |mark: &str| {
       serde_json::json!({
         "executable": "sh",
-        "args": ["-c", format!("echo \"$MARK\" >> {}", marker.display())],
+        "args": ["-c", format!("echo \"$MARK\" >> {}", sh_quoted(&marker))],
         "env": { "MARK": mark }
       })
     };
@@ -1394,7 +1396,7 @@ mod test {
   /// A setup command that records each start of it in `dir`, as the id of the
   /// process that then runs for `seconds`.
   fn counting_setup_command(dir: &std::path::Path, seconds: u32) -> String {
-    format!("sh -c \"echo $$ >> {}; exec sleep {}\"", dir.join("starts").display(), seconds)
+    format!("sh -c \"echo $$ >> {}; exec sleep {}\"", sh_quoted(&dir.join("starts")), seconds)
   }
 
   #[cfg(unix)]
@@ -1568,7 +1570,7 @@ mod test {
     let formatted = dir.path().join("formatted");
     let config = resolve(serde_json::json!({
       "commands": [{
-        "command": format!("sh -c \"echo x >> {}; cat\"", formatted.display()),
+        "command": format!("sh -c \"echo x >> {}; cat\"", sh_quoted(&formatted)),
         "setupCommand": counting_setup_command(dir.path(), 0),
         "exts": ["txt"],
       }]
@@ -1665,7 +1667,7 @@ mod test {
     let config = resolve(serde_json::json!({
       "commands": [{
         "command": "tr a-z A-Z",
-        "setupCommand": format!("sh -c \"echo $$ >> {}; test -f {}\"", dir.path().join("starts").display(), ok.display()),
+        "setupCommand": format!("sh -c \"echo $$ >> {}; test -f {}\"", sh_quoted(&dir.path().join("starts")), sh_quoted(&ok)),
         "exts": ["txt"]
       }]
     }));
@@ -1707,7 +1709,7 @@ mod test {
     let config = resolve(serde_json::json!({
       "commands": [{
         "command": "tr a-z A-Z",
-        "setupCommand": format!("sh -c \"echo $$ >> {}; exit 1\"", dir.path().join("starts").display()),
+        "setupCommand": format!("sh -c \"echo $$ >> {}; exit 1\"", sh_quoted(&dir.path().join("starts"))),
         "exts": ["txt"]
       }]
     }));
@@ -1742,7 +1744,7 @@ mod test {
         "command": "tr a-z A-Z",
         "setupCommand": format!(
           "sh -c \"echo $$ >> {}; while ! test -f {}; do sleep 0.01; done\"",
-          dir.path().join("starts").display(), ready.display()
+          sh_quoted(&dir.path().join("starts")), sh_quoted(&ready)
         ),
         "exts": ["txt"]
       }]
@@ -1765,10 +1767,20 @@ mod test {
         };
         let (result, ()) = tokio::join!(format_with_token(&config, "text", &setup_state, Arc::new(token.clone())), cancel);
         assert_eq!(result, Ok(None));
+        let process_id = setup_starts(dir.path()).pop().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+          while is_running(&process_id) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+          }
+        })
+        .await
+        .expect("the cancelled setup process should exit");
       }
       // it still runs, and right away rather than after a delay
       std::fs::write(&ready, "").unwrap();
+      let start = Instant::now();
       assert_eq!(format(&config, "text", &setup_state).await, Ok(Some("TEXT".to_string())));
+      assert!(start.elapsed() < super::FIRST_SETUP_RETRY_DELAY);
     });
     assert_eq!(setup_starts(dir.path()).len(), attempts + 1);
   }

@@ -174,3 +174,120 @@ Deno.test("real npm tarballs retain commit-specific dependencies when uploaded u
     deepStrictEqual(uploads[0].length, 5);
   });
 });
+
+Deno.test("a duplicated, missing or unreferenced package fails before packing", async () => {
+  const cases: [string, Record<string, unknown>, RegExp][] = [
+    ["@kprint/linux-copy", { name: "@kprint/linux", version: "1.0.0-preview" }, /Duplicate preview packages: @kprint\/linux/],
+    ["kprint", {
+      name: "@kprint/kprint",
+      version: "1.0.0-preview",
+      optionalDependencies: {
+        "@kprint/linux": "1.0.0-preview",
+        "@kprint/mac": "1.0.0-preview",
+        "@kprint/win": "1.0.0-preview",
+        "@kprint/bsd": "1.0.0-preview",
+      },
+    }, /Missing preview packages: @kprint\/bsd/],
+    ["@kprint/stale", { name: "@kprint/stale", version: "1.0.0-preview" }, /No preview package depends on @kprint\/stale/],
+  ];
+  for (const [path, json, error] of cases) {
+    await fixture(async (directory, originals) => {
+      const file = join(directory, path, "package.json");
+      await Deno.mkdir(join(directory, path), { recursive: true });
+      const text = JSON.stringify(json) + "\n";
+      await Deno.writeTextFile(file, text);
+      if (originals.has(file)) originals.set(file, text);
+      const p = publisher(sizes);
+      await rejects(() => publishPreview(directory, "kjanat/kprint", sha, p.command, 19), error);
+      deepStrictEqual(p.packed, []);
+    });
+  }
+});
+
+Deno.test("a failed manifest restore still removes staging and keeps the upload's error", async () => {
+  await fixture(async (directory, originals) => {
+    const p = publisher(sizes, true);
+    const main = join(directory, "kprint", "package.json");
+    const command = async (args: string[], cwd: string) => {
+      if (args[0] !== "npm") {
+        await Deno.remove(main);
+        await Deno.mkdir(main);
+      }
+      return await p.command(args, cwd);
+    };
+    const failure = await publishPreview(directory, "kjanat/kprint", sha, command, 19).then(() => undefined, (error: unknown) => error);
+    if (!(failure instanceof AggregateError)) throw new Error(`Expected an AggregateError, got ${failure}`);
+    match(String(failure.errors[0]), /upload failed/);
+    deepStrictEqual(failure.errors[1] instanceof Deno.errors.IsADirectory, true, String(failure.errors[1]));
+    await rejects(() => Deno.stat(p.packed[0]), Deno.errors.NotFound);
+    await Deno.remove(main);
+    await Deno.writeTextFile(main, originals.get(main) ?? "");
+  });
+});
+
+Deno.test({
+  name: "the launcher downloads a preview's omitted platform package from its preview URL",
+  ignore: Deno.build.os !== "linux" || Deno.build.arch !== "x86_64",
+  async fn() {
+    const directory = await Deno.makeTempDir({ prefix: "kprint-fallback-test-" });
+    const binary = "#!/bin/sh\necho preview\n";
+    await Deno.mkdir(join(directory, "source", "package"), { recursive: true });
+    await Deno.writeTextFile(join(directory, "source", "package", "kprint"), binary);
+    const tarball = join(directory, "platform.tgz");
+    const packed = await new Deno.Command("bash", { args: ["-c", "exec tar -czf \"$1\" -C \"$2\" package", "tar", tarball, join(directory, "source")] })
+      .output();
+    deepStrictEqual(packed.code, 0);
+    const requests: string[] = [];
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
+      requests.push(new URL(request.url).pathname);
+      return new Response(await Deno.readFile(tarball));
+    });
+    try {
+      const root = join(directory, "root");
+      await Deno.mkdir(root);
+      const bundled = await new Deno.Command("bash", {
+        args: [
+          "-c",
+          "exec \"$@\"",
+          "deno",
+          Deno.execPath(),
+          "bundle",
+          "--platform=deno",
+          "--format=cjs",
+          `--output=${join(root, "bin.cjs")}`,
+          fileURLToPath(new URL("./bin.ts", import.meta.url)),
+        ],
+      }).output();
+      deepStrictEqual(bundled.code, 0, new TextDecoder().decode(bundled.stderr));
+      const url = `http://127.0.0.1:${server.addr.port}/kjanat/kprint/@kprint/kprint-linux-x64-musl@${sha}`;
+      await Deno.writeTextFile(
+        join(root, "package.json"),
+        JSON.stringify({ version: "1.0.0-preview", optionalDependencies: { "@kprint/kprint-linux-x64-musl": url } }),
+      );
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(binary)));
+      const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      await Deno.writeTextFile(join(root, "hashes.json"), JSON.stringify({ "linux-x64-musl": hash }));
+      const node = await new Deno.Command("bash", { args: ["-c", "exec node -p process.execPath"], stdout: "piped" }).output();
+      const nodeOnly = join(directory, "node-only");
+      await Deno.mkdir(nodeOnly);
+      await Deno.symlink(new TextDecoder().decode(node.stdout).trim(), join(nodeOnly, "node"));
+      // curl downloads first, and node without it
+      for (const path of [Deno.env.get("PATH") ?? "", nodeOnly]) {
+        await Deno.remove(join(root, "kprint")).catch(() => {});
+        const result = await new Deno.Command("bash", {
+          args: ["-c", "export PATH=\"$1\"; exec node \"$2\"", "node", path, join(root, "bin.cjs")],
+          clearEnv: true,
+          env: { PATH: Deno.env.get("PATH") ?? "" },
+          stdout: "piped",
+          stderr: "piped",
+        }).output();
+        deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
+        deepStrictEqual(new TextDecoder().decode(result.stdout), "preview\n");
+      }
+      deepStrictEqual(requests, Array(2).fill(`/kjanat/kprint/@kprint/kprint-linux-x64-musl@${sha}`));
+    } finally {
+      await server.shutdown();
+      await Deno.remove(directory, { recursive: true });
+    }
+  },
+});
