@@ -49,7 +49,7 @@ fn get_plugin_config_map_inner(plugin: &PluginWrapper, config_map: &mut ConfigMa
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginConfigFileState {
   Missing { path: PathBuf },
-  Local { path: PathBuf, text: String },
+  Local { path: PathBuf, target: PathBuf, text: String },
   Confined { directory: PathBuf, path: PathBuf, text: String },
   Remote { expires_at: u64 },
 }
@@ -60,7 +60,9 @@ impl PluginConfigFileState {
       Self::Missing { path } => !environment.path_is_file(path),
       Self::Confined { directory, path, text } => environment.read_file_within(directory, path).is_ok_and(|current| current == *text),
       Self::Remote { expires_at } => environment.get_time_secs() < *expires_at,
-      Self::Local { path, text } => environment.read_file(path).is_ok_and(|current| current == *text),
+      Self::Local { path, target, text } => {
+        resolve_directory(environment, path).is_ok_and(|current| current == *target) && environment.read_file(target).is_ok_and(|current| current == *text)
+      }
     }
   }
 }
@@ -305,17 +307,14 @@ async fn read_plugin_config(
     let content = parse_config_file(Path::new(remote.url.path()), &resolved.content)?;
     return Ok(Some((content, remote.url, resolved.content)));
   }
-  let path = base_dir.join(&reference.path);
-  if !environment.path_is_file(&path) {
-    files_read.push(PluginConfigFileState::Missing { path });
+  let selected = base_dir.join(&reference.path);
+  if !environment.path_is_file(&selected) {
+    files_read.push(PluginConfigFileState::Missing { path: selected });
     return Ok(None);
   }
   let path = match access {
-    ConfigFileAccess::UserSelected => environment
-      .canonicalize(&path)
-      .with_context(|| format!("Failed reading {}.", path.display()))?
-      .into_path_buf(),
-    ConfigFileAccess::Within(_) => path,
+    ConfigFileAccess::UserSelected => resolve_directory(environment, &selected).with_context(|| format!("Failed reading {}.", selected.display()))?,
+    ConfigFileAccess::Within(_) => selected.clone(),
   };
   let text = match access {
     ConfigFileAccess::UserSelected => environment.read_file(&path),
@@ -324,7 +323,8 @@ async fn read_plugin_config(
   .with_context(|| format!("Failed reading {}.", path.display()))?;
   files_read.push(match access {
     ConfigFileAccess::UserSelected => PluginConfigFileState::Local {
-      path: path.clone(),
+      path: selected.clone(),
+      target: path.clone(),
       text: text.clone(),
     },
     ConfigFileAccess::Within(directory) => PluginConfigFileState::Confined {
@@ -334,7 +334,14 @@ async fn read_plugin_config(
     },
   });
   let source = file_url(&path)?;
-  Ok(Some((parse_config_file(&path, &text)?, source, text)))
+  Ok(Some((parse_config_file(&selected, &text)?, source, text)))
+}
+
+fn resolve_directory(environment: &impl HostEnvironment, path: &Path) -> std::io::Result<PathBuf> {
+  match (path.parent(), path.file_name()) {
+    (Some(directory), Some(name)) => Ok(environment.canonicalize(directory)?.into_path_buf().join(name)),
+    _ => Ok(path.to_owned()),
+  }
 }
 
 fn user_selected_root(source: &url::Url, base_dir: &Path) -> PathBuf {
@@ -1352,48 +1359,71 @@ line-width = 100
 
   #[cfg(unix)]
   #[test]
-  fn resolves_a_user_selected_config_file_through_symlinks() {
+  fn resolves_the_directories_of_a_user_selected_config_file_through_symlinks() {
     use kprint_platform::environment::*;
     let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = environment.canonicalize(dir.path()).unwrap().into_path_buf();
-    for directory in ["project/sub", "other/child"] {
+    for directory in ["project/sub", "other/child", "elsewhere/child", "dotfiles"] {
       environment.mk_dir_all(root.join(directory)).unwrap();
     }
+    let schemas = "[[schemas]]\npath = 'schema.json'\n";
+    for (file, text) in [
+      ("other/tombi.toml", schemas),
+      ("elsewhere/tombi.toml", schemas),
+      ("dotfiles/tombi", schemas),
+      ("dotfiles/changed", "[format.rules]\nline-width = 1\n"),
+      ("other/schema.json", r#"{"title":"other"}"#),
+      ("project/schema.json", r#"{"title":"project"}"#),
+      ("dotfiles/schema.json", r#"{"title":"dotfiles"}"#),
+    ] {
+      environment.write_file(root.join(file), text).unwrap();
+    }
     std::os::unix::fs::symlink(root.join("other/child"), root.join("project/link")).unwrap();
-    environment
-      .write_file(root.join("other/tombi.toml"), "[[schemas]]\npath = 'schema.json'\n")
-      .unwrap();
-    environment.write_file(root.join("other/schema.json"), r#"{"title":"other"}"#).unwrap();
-    environment.write_file(root.join("project/schema.json"), r#"{"title":"project"}"#).unwrap();
+    std::os::unix::fs::symlink(root.join("dotfiles/tombi"), root.join("project/tombi.toml")).unwrap();
     let mut info = tombi_info(Some(vec!["tombi.toml"]));
     info.config_schema_paths = vec![vec!["schemas".into(), "*".into(), "path".into()]];
-    let result = tokio::runtime::Builder::new_current_thread()
-      .enable_all()
-      .build()
-      .unwrap()
-      .block_on(super::resolve_plugin_config_file(
-        &info,
-        Some(PluginConfigFile::Path("../link/../tombi.toml".into())),
-        properties(&[]),
-        &root.join("project/sub"),
-        &environment,
-        &mut Vec::new(),
-      ))
-      .unwrap();
-    let ConfigKeyValue::Object(config) = &result[CONFIG_FILE_CONTENT_PROPERTY] else {
-      panic!("missing config")
-    };
-    let ConfigKeyValue::Object(files) = &config["files"] else {
-      panic!("missing schemas")
-    };
-    assert_eq!(
-      files
+    let resolve = |selected: &str, base_dir: &str| {
+      let mut states = Vec::new();
+      let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(super::resolve_plugin_config_file(
+          &info,
+          Some(PluginConfigFile::Path(selected.into())),
+          properties(&[]),
+          &root.join(base_dir),
+          &environment,
+          &mut states,
+        ))
+        .unwrap();
+      let ConfigKeyValue::Object(config) = &result[CONFIG_FILE_CONTENT_PROPERTY] else {
+        panic!("missing config")
+      };
+      let ConfigKeyValue::Object(files) = &config["files"] else {
+        panic!("missing schemas")
+      };
+      let files = files
         .iter()
-        .map(|(path, text)| (path.as_str(), text.as_string().unwrap().as_str()))
-        .collect::<Vec<_>>(),
-      [(root.join("other/schema.json").to_str().unwrap(), r#"{"title":"other"}"#)]
-    );
+        .map(|(path, text)| (path.clone(), text.as_string().unwrap().clone()))
+        .collect::<Vec<_>>();
+      assert!(states.iter().all(|state| state.is_current(&environment)), "{selected}");
+      (files, states)
+    };
+    let schema = |file: &str, title: &str| vec![(root.join(file).to_string_lossy().into_owned(), format!(r#"{{"title":"{title}"}}"#))];
+
+    let (files, through_link) = resolve("../link/../tombi.toml", "project/sub");
+    assert_eq!(files, schema("other/schema.json", "other"));
+    let (files, symlinked_file) = resolve("tombi.toml", "project");
+    assert_eq!(files, schema("project/schema.json", "project"));
+
+    environment.remove_file(root.join("project/tombi.toml")).unwrap();
+    std::os::unix::fs::symlink(root.join("dotfiles/changed"), root.join("project/tombi.toml")).unwrap();
+    assert!(!symlinked_file.iter().all(|state| state.is_current(&environment)));
+    environment.remove_file(root.join("project/link")).unwrap();
+    std::os::unix::fs::symlink(root.join("elsewhere/child"), root.join("project/link")).unwrap();
+    assert!(!through_link.iter().all(|state| state.is_current(&environment)));
   }
 
   #[test]
