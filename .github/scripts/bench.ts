@@ -367,7 +367,7 @@ function barChart(title: string, axis: string[], unit: string, values: number[],
     "config:",
     "  xyChart:",
     "    width: 600",
-    "    height: 200",
+    "    height: 220",
     "---",
     "xychart-beta horizontal",
     `    title "${title}"`,
@@ -404,7 +404,7 @@ async function render(results: string): Promise<string> {
   const labels: Record<Name, string> = { official: "official", master: "master", pr };
   const { columns, definitions } = headings(meta, pr);
   const header = `| | ${columns.join(" | ")} |`;
-  const axis = [meta.versions.official, "master", `PR #${meta.pull}`];
+  const axis = [meta.versions.official, "kprint master", `kprint PR #${meta.pull}`];
   const loaded = [];
   for (const scenario of SCENARIOS) {
     loaded.push({ name: scenario.name, label: scenario.label, title: scenario.label.replaceAll("`", ""), merged: await measurements(results, scenario.name) });
