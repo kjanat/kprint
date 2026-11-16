@@ -413,14 +413,26 @@ async fn read_config_references(
 fn config_reference_base(plugin: &PluginInfo, source: &url::Url) -> Result<url::Url> {
   if source.scheme() == "file" {
     let path = source.to_file_path().map_err(|()| anyhow::anyhow!("Invalid configuration URI: {source}"))?;
-    if let Some((_, directory)) = plugin
+    if let Some((suffix, directory)) = plugin
       .config_relative_path_bases
       .iter()
       .filter(|(suffix, _)| !suffix.is_empty() && path.ends_with(suffix))
       .max_by_key(|(suffix, _)| suffix.len())
     {
-      if directory.contains(':') || directory.contains('\\') || directory.starts_with('/') {
+      if directory.contains(':') || directory.contains('\\') || directory.contains('%') || directory.starts_with('/') {
         bail!("Plugin configuration path bases must be relative directories: {directory}");
+      }
+      let mut depth = Path::new(suffix).components().count().saturating_sub(1);
+      for part in directory.split('/') {
+        match part {
+          "" | "." => {}
+          ".." => {
+            depth = depth
+              .checked_sub(1)
+              .with_context(|| format!("Plugin configuration path base {directory} leaves the directory that contains {suffix}."))?;
+          }
+          _ => depth += 1,
+        }
       }
       return Ok(source.join(&format!("{}/", directory.trim_end_matches('/')))?);
     }
@@ -1098,6 +1110,15 @@ line-width = 100
       .config_relative_path_bases
       .insert(".config/tombi.toml".into(), "https://elsewhere.example/".into());
     assert!(config_reference_base(&info, &file).is_err());
+    for directory in ["../..", "../a/../..", "%2e%2e/%2e%2e"] {
+      info.config_relative_path_bases.insert(".config/tombi.toml".into(), directory.into());
+      assert!(config_reference_base(&info, &file).is_err(), "{directory}");
+    }
+    info.config_relative_path_bases.insert(".config/tombi.toml".into(), "a/../..".into());
+    assert_eq!(
+      config_reference_base(&info, &file).unwrap().join("tombi.toml").unwrap().as_str(),
+      "file:///C:/project/tombi.toml"
+    );
   }
 
   fn create_plugin() -> TestPlugin {
