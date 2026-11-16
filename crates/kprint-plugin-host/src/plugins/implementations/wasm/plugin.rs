@@ -487,16 +487,16 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
             self.release_instance(plugin);
             Ok(result)
           }
-          Err(reinitialize_err) if crate::plugins::maybe_critical_format_error(&original_err).is_some() => Err(
+          Err(restart_err) if crate::plugins::maybe_critical_format_error(&restart_err).is_some() => Err(
             CriticalFormatError(FormatError::new(anyhow!(
               concat!(
-                "Originally panicked in {}, then failed reinitialize. ",
+                "{} failed, then failed again after a restart. ",
                 "This may be a bug in the plugin, the kprint cli is out of date, or the ",
-                "plugin is out of date.\nOriginal error: {}\nReinitialize error: {}",
+                "plugin is out of date.\nOriginal error: {}\nError after restart: {}",
               ),
               self.name,
               original_err,
-              reinitialize_err,
+              restart_err,
             )))
             .into(),
           ),
@@ -1112,5 +1112,76 @@ mod test {
     assert!(module.get().await.is_ok());
     assert!(module.is_loaded());
     assert_eq!(loads.get(), 2);
+  }
+
+  fn interpreting_plugin(environment: &TestEnvironment) -> InitializedWasmPlugin<TestEnvironment> {
+    let load_native: LoadModule<WasmModule> = Box::new(|| async { Err(anyhow!("not compiled in this test")) }.boxed_local());
+    let formatting = Rc::new(Formatting {
+      native: Rc::new(LazyModule::new(load_native)),
+      load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
+      invalid_native: Cell::new(false),
+      native_module_path: PathBuf::from("/plugin.cwasm"),
+      native_exists: Cell::new(None),
+      format_rate_path: PathBuf::from("/plugin.rate.json"),
+      chosen: Cell::new(Some(Choice {
+        engine: FormatEngine::Interpreter,
+        bytes_to_format: 4,
+      })),
+      environment: environment.clone(),
+    });
+    let log: LogFn = Arc::new(|_| {});
+    let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
+    InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting, environment.clone())
+  }
+
+  fn critical_error(message: &'static str) -> anyhow::Error {
+    CriticalFormatError(FormatError::new(message)).into()
+  }
+
+  async fn retry_after_a_critical_error(plugin: &InitializedWasmPlugin<TestEnvironment>, after_restart: fn() -> anyhow::Error) -> (anyhow::Error, usize) {
+    let attempts = Rc::new(Cell::new(0));
+    let err = plugin
+      .with_instance(None, {
+        let attempts = attempts.clone();
+        move |_| {
+          attempts.set(attempts.get() + 1);
+          let err = if attempts.get() == 1 { critical_error("trapped") } else { after_restart() };
+          async move { Err::<(), _>(err) }.boxed_local()
+        }
+      })
+      .await
+      .err()
+      .unwrap();
+    (err, attempts.get())
+  }
+
+  #[tokio::test]
+  async fn an_ordinary_error_after_a_restart_stays_ordinary() {
+    let environment = TestEnvironment::new();
+    let plugin = interpreting_plugin(&environment);
+    let (err, attempts) = retry_after_a_critical_error(&plugin, || anyhow!("Did error.")).await;
+    assert_eq!(attempts, 2);
+    assert!(crate::plugins::maybe_critical_format_error(&err).is_none());
+    assert_eq!(err.to_string(), "Did error.");
+    assert_eq!(plugin.pending_instances.borrow().len(), 1);
+  }
+
+  #[tokio::test]
+  async fn a_critical_error_after_a_restart_reports_both_failures() {
+    let environment = TestEnvironment::new();
+    let plugin = interpreting_plugin(&environment);
+    let (err, attempts) = retry_after_a_critical_error(&plugin, || critical_error("trapped again")).await;
+    assert_eq!(attempts, 2);
+    assert!(crate::plugins::maybe_critical_format_error(&err).is_some());
+    assert_eq!(
+      err.to_string(),
+      concat!(
+        "test-plugin failed, then failed again after a restart. ",
+        "This may be a bug in the plugin, the kprint cli is out of date, or the plugin is out of date.\n",
+        "Original error: trapped\n",
+        "Error after restart: trapped again",
+      )
+    );
+    assert!(plugin.pending_instances.borrow().is_empty());
   }
 }
