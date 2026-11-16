@@ -325,7 +325,7 @@ function headings(meta: Meta, pr: string): { columns: string[]; definitions: str
       tag ? reference(official, `https://github.com/dprint/dprint/releases/tag/${tag}`) : official,
       `master${commit(meta.shas.master, `${meta.repository}/commit/${meta.shas.master}`)}`,
       `${pr}${commit(meta.shas.pr, `${meta.repository}/pull/${meta.pull}/commits/${meta.shas.pr}`)}`,
-      "vs master",
+      `vs${NBSP}master`,
     ],
     definitions,
   };
@@ -360,7 +360,7 @@ function cells(merged: Record<Name, Measurement[]>, metric: keyof Measurement, f
 
 async function render(results: string): Promise<string> {
   const meta: Meta = JSON.parse(await readFile(join(results, "meta.json"), "utf8"));
-  const pr = `PR #${meta.pull}`;
+  const pr = `PR <span>#</span>${meta.pull}`;
   const labels: Record<Name, string> = { official: "official", master: "master", pr };
   const { columns, definitions } = headings(meta, pr);
   const header = `| | ${columns.join(" | ")} |`;
@@ -394,13 +394,13 @@ async function render(results: string): Promise<string> {
     "",
     header,
     "| --- | ---: | ---: | ---: | ---: |",
-    ...loaded.map(({ label, merged }) => `| ${label} | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
+    ...loaded.map(({ label, merged }) => `| ${label.replaceAll(" ", NBSP)} | ${cells(merged, "time_wall_clock", formatSeconds).join(" | ")} |`),
     "",
     "Peak memory, mean ± σ, with the reduction against the official release.",
     "",
     header,
     "| --- | ---: | ---: | ---: | ---: |",
-    ...loaded.map(({ label, merged }) => `| ${label} | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
+    ...loaded.map(({ label, merged }) => `| ${label.replaceAll(" ", NBSP)} | ${cells(merged, "memory_peak_resident", formatBytes).join(" | ")} |`),
     "",
     `<sub>${meta.files} files of ${pr}'s checkout, formatted with:</sub>`,
     ...meta.plugins.map((plugin, index) => `- <sub>\`${plugin}\`${index === meta.plugins.length - 1 ? "." : ","}</sub>`),
