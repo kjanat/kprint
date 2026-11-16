@@ -422,19 +422,16 @@ fn config_reference_base(plugin: &PluginInfo, source: &url::Url) -> Result<url::
       if directory.contains(':') || directory.contains('\\') || directory.contains('%') || directory.starts_with('/') {
         bail!("Plugin configuration path bases must be relative directories: {directory}");
       }
-      let mut depth = Path::new(suffix).components().count().saturating_sub(1);
-      for part in directory.split('/') {
-        match part {
-          "" | "." => {}
-          ".." => {
-            depth = depth
-              .checked_sub(1)
-              .with_context(|| format!("Plugin configuration path base {directory} leaves the directory that contains {suffix}."))?;
-          }
-          _ => depth += 1,
-        }
+      let base = source.join(&format!("{}/", directory.trim_end_matches('/')))?;
+      let suffix_root = path
+        .components()
+        .take(path.components().count().saturating_sub(Path::new(suffix).components().count()))
+        .collect::<PathBuf>();
+      let base_path = base.to_file_path().map_err(|()| anyhow::anyhow!("Invalid configuration URI: {base}"))?;
+      if !base_path.starts_with(&suffix_root) || base_path.components().any(|component| component == Component::ParentDir) {
+        bail!("Plugin configuration path base {directory} leaves the directory that contains {suffix}.");
       }
-      return Ok(source.join(&format!("{}/", directory.trim_end_matches('/')))?);
+      return Ok(base);
     }
   }
   Ok(source.clone())
@@ -1110,9 +1107,22 @@ line-width = 100
       .config_relative_path_bases
       .insert(".config/tombi.toml".into(), "https://elsewhere.example/".into());
     assert!(config_reference_base(&info, &file).is_err());
-    for directory in ["../..", "../a/../..", "%2e%2e/%2e%2e"] {
-      info.config_relative_path_bases.insert(".config/tombi.toml".into(), directory.into());
-      assert!(config_reference_base(&info, &file).is_err(), "{directory}");
+    for source in ["file:///C:/project/.config/tombi.toml", "file:///project/.config/tombi.toml"] {
+      let source = url::Url::parse(source).unwrap();
+      for (suffix, directory) in [
+        (".config/tombi.toml", "../.."),
+        (".config/tombi.toml", "../a/../.."),
+        (".config/tombi.toml", "%2e%2e/%2e%2e"),
+        (".config/tombi.toml", ".\t./.\t."),
+        (".config/tombi.toml", ".\n./.\r."),
+        (".config/tombi.toml", "a%2F..%2F..%2F.."),
+        ("tombi.toml", ".."),
+        ("tombi.toml", ".\t."),
+      ] {
+        let mut info = tombi_info(Some(vec![]));
+        info.config_relative_path_bases.insert(suffix.into(), directory.into());
+        assert!(config_reference_base(&info, &source).is_err(), "{source} {suffix} {directory:?}");
+      }
     }
     info.config_relative_path_bases.insert(".config/tombi.toml".into(), "a/../..".into());
     assert_eq!(
