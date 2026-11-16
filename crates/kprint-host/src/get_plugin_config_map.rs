@@ -1344,6 +1344,45 @@ line-width = 100
   }
 
   #[test]
+  fn remote_config_file_chain_loads_schemas_of_extended_remote_configs() {
+    let environment = crate::environment::TestEnvironment::new();
+    let root = if cfg!(windows) { "C:/project" } else { "/project" };
+    write(
+      &environment,
+      &format!("{root}/dprint.json"),
+      r#"{"extends":"https://example.com/team/dprint.json"}"#,
+    );
+    environment.set_cwd(root);
+    environment.add_remote_file("https://example.com/team/dprint.json", br#"{"toml":{"configFile":"./tombi.toml"}}"#);
+    environment.add_remote_file("https://example.com/team/tombi.toml", b"extends = ['base/tombi.toml']\n");
+    environment.add_remote_file("https://example.com/team/base/tombi.toml", b"[[schemas]]\npath = 'schema.json'\n");
+    environment.add_remote_file("https://example.com/team/schema.json", br#"{"title":"root"}"#);
+    environment.add_remote_file("https://example.com/team/base/schema.json", br#"{"title":"base"}"#);
+    let mut info = tombi_info(Some(vec!["tombi.toml"]));
+    info.config_schema_paths = vec![vec!["schemas".into(), "*".into(), "path".into()]];
+    info.config_reference_paths = vec![vec!["extends".into(), "*".into()]];
+    for use_root in [true, false] {
+      info.config_local_schemas_use_root = use_root;
+      let (properties, states) = resolve_inline_config(&environment, &format!("{root}/dprint.json"), &info).unwrap();
+      let ConfigKeyValue::Object(config) = &properties[CONFIG_FILE_CONTENT_PROPERTY] else {
+        panic!("missing config")
+      };
+      assert_eq!(config["source"].as_string().unwrap(), "https://example.com/team/tombi.toml");
+      let ConfigKeyValue::Object(documents) = &config["documents"] else {
+        panic!("missing documents")
+      };
+      assert_eq!(documents.keys().collect::<Vec<_>>(), ["https://example.com/team/base/tombi.toml"]);
+      let ConfigKeyValue::Object(files) = &config["files"] else {
+        panic!("missing schemas")
+      };
+      assert_eq!(files.len(), 1, "{use_root}");
+      assert_eq!(files["https://example.com/team/base/schema.json"].as_string().unwrap(), r#"{"title":"base"}"#);
+      assert!(states.iter().all(|state| matches!(state, PluginConfigFileState::Remote { .. })));
+    }
+    assert_eq!(environment.remote_file_download_count("https://example.com/team/schema.json"), 0);
+  }
+
+  #[test]
   fn remote_inline_schemas_use_the_declaring_url() {
     for config_files in [None, Some(vec![]), Some(vec!["tombi.toml"])] {
       let environment = crate::environment::TestEnvironment::new();
