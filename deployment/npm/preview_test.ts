@@ -221,3 +221,62 @@ Deno.test("a failed manifest restore still removes staging and keeps the upload'
     await Deno.writeTextFile(main, originals.get(main) ?? "");
   });
 });
+
+Deno.test({
+  name: "the launcher downloads a preview's omitted platform package from its preview URL",
+  ignore: Deno.build.os !== "linux" || Deno.build.arch !== "x86_64",
+  async fn() {
+    const directory = await Deno.makeTempDir({ prefix: "kprint-fallback-test-" });
+    const binary = "#!/bin/sh\necho preview\n";
+    await Deno.mkdir(join(directory, "source", "package"), { recursive: true });
+    await Deno.writeTextFile(join(directory, "source", "package", "kprint"), binary);
+    const tarball = join(directory, "platform.tgz");
+    const packed = await new Deno.Command("bash", { args: ["-c", "exec tar -czf \"$1\" -C \"$2\" package", "tar", tarball, join(directory, "source")] })
+      .output();
+    deepStrictEqual(packed.code, 0);
+    const requests: string[] = [];
+    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
+      requests.push(new URL(request.url).pathname);
+      return new Response(await Deno.readFile(tarball));
+    });
+    try {
+      const root = join(directory, "root");
+      await Deno.mkdir(root);
+      const bundled = await new Deno.Command("bash", {
+        args: [
+          "-c",
+          "exec \"$@\"",
+          "deno",
+          Deno.execPath(),
+          "bundle",
+          "--platform=deno",
+          "--format=cjs",
+          `--output=${join(root, "bin.cjs")}`,
+          fileURLToPath(new URL("./bin.ts", import.meta.url)),
+        ],
+      }).output();
+      deepStrictEqual(bundled.code, 0, new TextDecoder().decode(bundled.stderr));
+      const url = `http://127.0.0.1:${server.addr.port}/kjanat/kprint/@kprint/kprint-linux-x64-musl@${sha}`;
+      await Deno.writeTextFile(
+        join(root, "package.json"),
+        JSON.stringify({ version: "1.0.0-preview", optionalDependencies: { "@kprint/kprint-linux-x64-musl": url } }),
+      );
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(binary)));
+      const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      await Deno.writeTextFile(join(root, "hashes.json"), JSON.stringify({ "linux-x64-musl": hash }));
+      const result = await new Deno.Command("bash", {
+        args: ["-c", "exec node \"$1\"", "node", join(root, "bin.cjs")],
+        clearEnv: true,
+        env: { PATH: Deno.env.get("PATH") ?? "" },
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      deepStrictEqual(result.code, 0, new TextDecoder().decode(result.stderr));
+      deepStrictEqual(new TextDecoder().decode(result.stdout), "preview\n");
+      deepStrictEqual(requests, [`/kjanat/kprint/@kprint/kprint-linux-x64-musl@${sha}`]);
+    } finally {
+      await server.shutdown();
+      await Deno.remove(directory, { recursive: true });
+    }
+  },
+});
