@@ -1,12 +1,30 @@
-# dprint
+# kprint
 
-<!--
-[![npm](https://img.shields.io/npm/v/dprint.svg)](https://www.npmjs.com/package/dprint)
-[![crates.io](https://img.shields.io/crates/v/dprint.svg)](https://crates.io/crates/kprint)
-[![Homebrew](https://img.shields.io/badge/dynamic/json.svg?url=https://formulae.brew.sh/api/formula/dprint.json&query=$.versions.stable&label=homebrew)](https://formulae.brew.sh/formula/dprint)
--->
+[![NPM](https://img.shields.io/npm/v/@kprint/kprint?logo=npm&labelColor=CB3837&color=black)][npm:kprint]
+[![License: MIT](https://img.shields.io/npm/l/@kprint/kprint?color=blue)](LICENSE)
 
-Monorepo for dprint—a pluggable and configurable code formatting platform.
+kprint is a pluggable and configurable code formatter written in Rust, forked
+from [dprint](https://github.com/dprint/dprint). It runs dprint's plugins and
+has formatters built in, such as `exec`.
+
+## Install
+
+```sh
+npm install --global @kprint/kprint
+kprint help
+```
+
+This installs `kprint`, and `dprint` for the tools and editor extensions that
+call that. npm downloads only the binary for your platform. For Homebrew, Scoop,
+the AUR, mise, Cargo, Docker and the install scripts, see
+[Install](https://dprint.kjanat.dev/install).
+
+## npm packages
+
+| Package                        | Version                                                                                                  | Contents                                                                                                    |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [`@kprint/kprint`][npm:kprint] | [![NPM](https://img.shields.io/npm/v/@kprint/kprint?logo=npm&labelColor=CB3837&color=black)][npm:kprint] | The `kprint` and `dprint` commands. npm installs the matching `@kprint/kprint-<platform>` package with it.  |
+| [`@kjanat/fmt`][npm:fmt]       | [![NPM](https://img.shields.io/npm/v/@kjanat/fmt?logo=npm&labelColor=CB3837&color=black)][npm:fmt]       | `fmt` and `kfmt`, which run `kprint fmt`, with kjanat's configuration when the project has none of its own. |
 
 ## Links
 
@@ -19,7 +37,22 @@ Monorepo for dprint—a pluggable and configurable code formatting platform.
 
 See <https://dprint.kjanat.dev/plugins/>
 
-Repos:
+### kjanat's plugins
+
+| Plugin                                      | Formats                         | npm                                                                                                                                      |
+| ------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| [svg][plugin:svg]                           | SVG                             |                                                                                                                                          |
+| [svgo][plugin:svgo]                         | SVG, with SVGO (process plugin) |                                                                                                                                          |
+| [shfmt][plugin:shfmt]                       | Shell scripts, with shfmt       |                                                                                                                                          |
+| [shuck][plugin:shuck]                       | Shell scripts, with Shuck       |                                                                                                                                          |
+| [tombi][plugin:tombi]                       | TOML, with Tombi                |                                                                                                                                          |
+| [zig][plugin:zig]                           | Zig                             | [![NPM](https://img.shields.io/npm/v/@kjanat/dprint-zig?logo=npm&labelColor=CB3837&color=black)][npm:zig]                                |
+| [tex-fmt][plugin:tex-fmt]                   | TeX, with tex-fmt               |                                                                                                                                          |
+| [pwsh][plugin:pwsh]                         | PowerShell                      | [![NPM](https://img.shields.io/npm/v/dprint-plugin-pwsh?logo=npm&labelColor=CB3837&color=black)][npm:pwsh]                               |
+| [sortpackagejson][plugin:sortpackagejson]   | Sorts `package.json`            | [![NPM](https://img.shields.io/npm/v/@kjanat/dprint-plugin-sortpackagejson?logo=npm&labelColor=CB3837&color=black)][npm:sortpackagejson] |
+| [json-schema-sort][plugin:json-schema-sort] | Sorts JSON Schema files         |                                                                                                                                          |
+
+### Other plugins
 
 - [dprint-plugin-typescript](https://github.com/dprint/dprint-plugin-typescript) - TypeScript/JavaScript code formatter.
 - [dprint-plugin-json](https://github.com/dprint/dprint-plugin-json) - JSON/JSONC code formatter.
@@ -45,6 +78,23 @@ Repos:
 - [fatou](https://github.com/jolars/dprint-plugin-fatou) - Julia formatter.
 - [dprint-plugin-swift](https://github.com/drluckyspin/dprint-plugin-swift) - Swift (SwiftFormat) formatter.
 
-## Notes
+## Credits
 
-I do a lot of this development in my spare time. Please consider [sponsoring](https://dprint.dev/sponsor) if you are a commercial company using this.
+David Sherret wrote dprint in his spare time. If your company uses it, please
+consider [sponsoring](https://dprint.dev/sponsor) him.
+
+[npm:kprint]: https://npm.im/@kprint/kprint
+[npm:fmt]: https://npm.im/@kjanat/fmt
+[npm:zig]: https://npm.im/@kjanat/dprint-zig
+[npm:pwsh]: https://npm.im/dprint-plugin-pwsh
+[npm:sortpackagejson]: https://npm.im/@kjanat/dprint-plugin-sortpackagejson
+[plugin:svg]: https://github.com/kjanat/dprint-plugin-svg
+[plugin:svgo]: https://github.com/kjanat/dprint-plugin-svgo
+[plugin:shfmt]: https://github.com/kjanat/dprint-plugin-shfmt
+[plugin:shuck]: https://github.com/kjanat/dprint-plugin-shuck
+[plugin:tombi]: https://github.com/kjanat/dprint-plugin-tombi
+[plugin:zig]: https://github.com/kjanat/dprint-plugin-zig
+[plugin:tex-fmt]: https://github.com/kjanat/dprint-plugin-tex-fmt
+[plugin:pwsh]: https://github.com/kjanat/dprint-plugin-pwsh
+[plugin:sortpackagejson]: https://github.com/kjanat/dprint-plugin-sortpackagejson
+[plugin:json-schema-sort]: https://github.com/kjanat/dprint-plugin-json-schema-sort

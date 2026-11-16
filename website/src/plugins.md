@@ -46,6 +46,21 @@ For the latest version and copy-paste URL of every plugin, see [plugins.dprint.d
 - [Swift](/plugins/swift) (SwiftFormat)
 - [Exec](/plugins/exec) - Works with any formatting CLI installed on the system.
 
+## kjanat's Plugins
+
+Wasm plugins, unless noted:
+
+- [SVG](https://github.com/kjanat/dprint-plugin-svg)
+- [SVGO](https://github.com/kjanat/dprint-plugin-svgo) (SVG, process plugin)
+- [shfmt](https://github.com/kjanat/dprint-plugin-shfmt) (shell scripts)
+- [Shuck](https://github.com/kjanat/dprint-plugin-shuck) (shell scripts)
+- [Tombi](https://github.com/kjanat/dprint-plugin-tombi) (TOML)
+- [Zig](https://github.com/kjanat/dprint-plugin-zig)
+- [tex-fmt](https://github.com/kjanat/dprint-plugin-tex-fmt) (TeX)
+- [PowerShell](https://github.com/kjanat/dprint-plugin-pwsh)
+- [sortpackagejson](https://github.com/kjanat/dprint-plugin-sortpackagejson) (sorts `package.json`)
+- [JSON Schema sort](https://github.com/kjanat/dprint-plugin-json-schema-sort) (sorts JSON Schema files)
+
 ## Using Wasm Plugins in the Browser, Deno, or Node.js
 
 See https://github.com/dprint/js-formatter
