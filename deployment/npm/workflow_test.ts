@@ -4,7 +4,7 @@ import matrix from "../../.github/build-matrix.json" with { type: "json" };
 import targets from "./targets.json" with { type: "json" };
 
 interface Workflow {
-  jobs: Record<string, { needs?: string[]; steps: { id?: string; name?: string; run?: string; env?: Record<string, string> }[] }>;
+  jobs: Record<string, { needs?: string[]; steps: { id?: string; name?: string; uses?: string; run?: string; env?: Record<string, string> }[] }>;
 }
 const workflow = parse(await Deno.readTextFile(new URL("../../.github/workflows/publish.yml", import.meta.url))) as Workflow;
 const plan = workflow.jobs.plan.steps.find((step) => step.id === "plan")!.run!;
@@ -271,6 +271,11 @@ Deno.test("tested tarballs and partial nightly receipts retain the documented re
   match(receipts, /always\(\)/);
   match(receipts, /"retention-days":30/);
   match(receipts, /github.run_attempt/);
+});
+
+Deno.test("finalization publishes refs with an empty identity when Beepboop returns none", () => {
+  const step = workflow.jobs["finalize-release"]?.steps.find((step) => step.uses?.startsWith("kjanat/beepboop/actions/publish-refs@"));
+  deepStrictEqual(step?.env, { "${{ insert }}": "${{ fromJSON(steps.bot.outputs.gitId || '{}') }}" });
 });
 
 Deno.test("a reused draft release loses the archives this build doesn't upload", async () => {
