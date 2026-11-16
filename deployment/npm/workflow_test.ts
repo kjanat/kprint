@@ -1,4 +1,5 @@
 import { deepStrictEqual, match } from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { parse } from "@std/yaml";
 import matrix from "../../.github/build-matrix.json" with { type: "json" };
 import targets from "./targets.json" with { type: "json" };
@@ -309,6 +310,74 @@ if [[ "$2" == view ]]; then printf '%s\\n' kprint-a.zip dprint-a.zip dprint-b.zi
       "release delete-asset 1.2.3 dprint-b.zip --yes",
       "release upload 1.2.3 release-assets/kprint-a.zip release-assets/kprint-b.zip --clobber",
     ]);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("finalization accepts the checksum manifest the binaries workflow writes, and no other", async () => {
+  const binaries = parse(await Deno.readTextFile(new URL("../../.github/workflows/binaries.yml", import.meta.url))) as Workflow;
+  const write = binaries.jobs.upload.steps.find((step) => step.name === "Update checksums for the complete release")?.run;
+  const verify = stepOf("finalize-release", "Verify draft assets before publishing").run;
+  if (write === undefined || verify === undefined) throw new Error("A checksum step runs no script");
+  const directory = await Deno.makeTempDir({ prefix: "kprint-checksums-test-" });
+  const hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  try {
+    await Deno.mkdir(`${directory}/bin`);
+    await Deno.mkdir(`${directory}/work`);
+    await Deno.writeTextFile(
+      `${directory}/bin/gh`,
+      `#!/bin/bash
+case "$2" in
+  view) cat "${directory}/release.json" ;;
+  upload) cp "$4" "${directory}/SHASUMS256.txt" ;;
+  download) cp "${directory}/SHASUMS256.txt" "$7/" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+    await Deno.writeTextFile(`${directory}/bin/deno`, `#!/bin/bash\nexec '${Deno.execPath()}' "$@"\n`);
+    for (const name of ["gh", "deno"]) await Deno.chmod(`${directory}/bin/${name}`, 0o755);
+    const archives = targets.targets.map(({ zipFileName }) => ({
+      name: zipFileName,
+      state: "uploaded",
+      size: 1,
+      digest: `sha256:${hex(new TextEncoder().encode(zipFileName))}`,
+    }));
+    const release = (checksums: string) => ({
+      isDraft: true,
+      targetCommitish: sha,
+      assets: [...archives, { name: "SHASUMS256.txt", state: "uploaded", size: 1, digest: `sha256:${checksums}` }],
+    });
+    await Deno.writeTextFile(`${directory}/release.json`, JSON.stringify({ assets: archives }));
+    const run = (script: string, cwd: string) =>
+      new Deno.Command("bash", {
+        args: ["-e", "-c", script],
+        cwd,
+        clearEnv: true,
+        env: {
+          PATH: `${directory}/bin:${Deno.env.get("PATH")}`,
+          RELEASE_TAG: "1.2.3",
+          SOURCE_SHA: sha,
+          RUNNER_TEMP: `${directory}/work`,
+          DENO_DIR: `${directory}/deno`,
+        },
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+    const written = await run(write, `${directory}/work`);
+    deepStrictEqual(written.code, 0, new TextDecoder().decode(written.stderr));
+    const manifest = await Deno.readFile(`${directory}/SHASUMS256.txt`);
+    await Deno.writeTextFile(`${directory}/release.json`, JSON.stringify(release(hex(manifest))));
+    const repository = new URL("../..", import.meta.url).pathname;
+    const accepted = await run(verify, repository);
+    deepStrictEqual(accepted.code, 0, new TextDecoder().decode(accepted.stderr));
+    const tampered = new TextEncoder().encode(new TextDecoder().decode(manifest).replace(/^[0-9a-f]/, (digit) => digit === "0" ? "1" : "0"));
+    await Deno.writeFile(`${directory}/SHASUMS256.txt`, tampered);
+    await Deno.writeTextFile(`${directory}/release.json`, JSON.stringify(release(hex(tampered))));
+    const rejected = await run(verify, repository);
+    deepStrictEqual(rejected.code, 1);
+    match(new TextDecoder().decode(rejected.stderr), /SHASUMS256\.txt doesn't list the digests/);
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
