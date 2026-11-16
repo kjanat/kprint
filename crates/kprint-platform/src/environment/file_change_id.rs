@@ -5,13 +5,54 @@ use std::path::Path;
 pub(super) fn file_change_id(path: &Path) -> Option<FileChangeId> {
   #[cfg(unix)]
   {
-    from_metadata(&std::fs::metadata(path).ok()?, std::time::SystemTime::now())
+    from_metadata(&std::fs::metadata(path).ok()?, std::time::SystemTime::now()).filter(|_| keeps_change_times(path))
   }
   #[cfg(not(unix))]
   {
     let _ = path;
     None
   }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn statfs(path: &Path) -> Option<libc::statfs> {
+  use std::os::unix::ffi::OsStrExt;
+  let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+  let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+  // SAFETY: the path is NUL terminated, and `stats` is a statfs for it to write to
+  if unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+    return None;
+  }
+  // SAFETY: statfs succeeded, so it wrote `stats`
+  Some(unsafe { stats.assume_init() })
+}
+
+// Network and FUSE filesystems report the change times their server or daemon chooses.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn keeps_change_times(path: &Path) -> bool {
+  const EXT4: u32 = 0xEF53;
+  const XFS: u32 = 0x5846_5342;
+  const BTRFS: u32 = 0x9123_683E;
+  const TMPFS: u32 = 0x0102_1994;
+  const F2FS: u32 = 0xF2F5_2010;
+  const BCACHEFS: u32 = 0xCA45_1A4E;
+  const ZFS: u32 = 0x2FC1_2FC1;
+  // f_type is a word wide and signed on some targets, and the magic numbers are 32 bits
+  statfs(path).is_some_and(|stats| matches!(stats.f_type as u32, EXT4 | XFS | BTRFS | TMPFS | F2FS | BCACHEFS | ZFS))
+}
+
+#[cfg(target_os = "macos")]
+fn keeps_change_times(path: &Path) -> bool {
+  statfs(path).is_some_and(|stats| {
+    // SAFETY: statfs writes f_fstypename NUL terminated
+    let name = unsafe { std::ffi::CStr::from_ptr(stats.f_fstypename.as_ptr()) };
+    name == c"apfs"
+  })
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android", target_os = "macos"))))]
+fn keeps_change_times(_path: &Path) -> bool {
+  false
 }
 
 #[cfg(unix)]
@@ -83,5 +124,27 @@ mod tests {
     assert_ne!(before.ino(), replaced.ino());
     assert_ne!(first, from_metadata(&replaced, seconds_after_change(&replaced, 2)).unwrap());
     assert!(file_change_id(dir.path()).is_none());
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn trusts_the_change_times_of_local_filesystems_only() {
+    assert!(keeps_change_times(std::path::Path::new("/dev/shm")));
+    assert!(!keeps_change_times(std::path::Path::new("/proc/self/status")));
+    assert!(!keeps_change_times(std::path::Path::new("/sys/kernel")));
+    assert!(!keeps_change_times(std::path::Path::new("/nonexistent")));
+  }
+
+  #[cfg(target_os = "macos")]
+  #[test]
+  fn trusts_the_change_times_of_apfs_only() {
+    assert!(keeps_change_times(&std::env::temp_dir()));
+    assert!(!keeps_change_times(std::path::Path::new("/dev")));
+  }
+
+  #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+  #[test]
+  fn hashes_plugins_on_other_systems() {
+    assert!(!keeps_change_times(&std::env::temp_dir()));
   }
 }
