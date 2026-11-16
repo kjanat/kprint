@@ -310,6 +310,13 @@ async fn read_plugin_config(
     files_read.push(PluginConfigFileState::Missing { path });
     return Ok(None);
   }
+  let path = match access {
+    ConfigFileAccess::UserSelected => environment
+      .canonicalize(&path)
+      .with_context(|| format!("Failed reading {}.", path.display()))?
+      .into_path_buf(),
+    ConfigFileAccess::Within(_) => path,
+  };
   let text = match access {
     ConfigFileAccess::UserSelected => environment.read_file(&path),
     ConfigFileAccess::Within(directory) => environment.read_file_within(directory, &path),
@@ -1341,6 +1348,52 @@ line-width = 100
       .await?;
       Ok((properties, states))
     })
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn resolves_a_user_selected_config_file_through_symlinks() {
+    use kprint_platform::environment::*;
+    let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = environment.canonicalize(dir.path()).unwrap().into_path_buf();
+    for directory in ["project/sub", "other/child"] {
+      environment.mk_dir_all(root.join(directory)).unwrap();
+    }
+    std::os::unix::fs::symlink(root.join("other/child"), root.join("project/link")).unwrap();
+    environment
+      .write_file(root.join("other/tombi.toml"), "[[schemas]]\npath = 'schema.json'\n")
+      .unwrap();
+    environment.write_file(root.join("other/schema.json"), r#"{"title":"other"}"#).unwrap();
+    environment.write_file(root.join("project/schema.json"), r#"{"title":"project"}"#).unwrap();
+    let mut info = tombi_info(Some(vec!["tombi.toml"]));
+    info.config_schema_paths = vec![vec!["schemas".into(), "*".into(), "path".into()]];
+    let result = tokio::runtime::Builder::new_current_thread()
+      .enable_all()
+      .build()
+      .unwrap()
+      .block_on(super::resolve_plugin_config_file(
+        &info,
+        Some(PluginConfigFile::Path("../link/../tombi.toml".into())),
+        properties(&[]),
+        &root.join("project/sub"),
+        &environment,
+        &mut Vec::new(),
+      ))
+      .unwrap();
+    let ConfigKeyValue::Object(config) = &result[CONFIG_FILE_CONTENT_PROPERTY] else {
+      panic!("missing config")
+    };
+    let ConfigKeyValue::Object(files) = &config["files"] else {
+      panic!("missing schemas")
+    };
+    assert_eq!(
+      files
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_string().unwrap().as_str()))
+        .collect::<Vec<_>>(),
+      [(root.join("other/schema.json").to_str().unwrap(), r#"{"title":"other"}"#)]
+    );
   }
 
   #[test]
