@@ -174,3 +174,50 @@ Deno.test("real npm tarballs retain commit-specific dependencies when uploaded u
     deepStrictEqual(uploads[0].length, 5);
   });
 });
+
+Deno.test("a duplicated, missing or unreferenced package fails before packing", async () => {
+  const cases: [string, Record<string, unknown>, RegExp][] = [
+    ["@kprint/linux-copy", { name: "@kprint/linux", version: "1.0.0-preview" }, /Duplicate preview packages: @kprint\/linux/],
+    ["kprint", {
+      name: "@kprint/kprint",
+      version: "1.0.0-preview",
+      optionalDependencies: {
+        "@kprint/linux": "1.0.0-preview",
+        "@kprint/mac": "1.0.0-preview",
+        "@kprint/win": "1.0.0-preview",
+        "@kprint/bsd": "1.0.0-preview",
+      },
+    }, /Missing preview packages: @kprint\/bsd/],
+    ["@kprint/stale", { name: "@kprint/stale", version: "1.0.0-preview" }, /No preview package depends on @kprint\/stale/],
+  ];
+  for (const [path, json, error] of cases) {
+    await fixture(async (directory, originals) => {
+      const file = join(directory, path, "package.json");
+      await Deno.mkdir(join(directory, path), { recursive: true });
+      const text = JSON.stringify(json) + "\n";
+      await Deno.writeTextFile(file, text);
+      if (originals.has(file)) originals.set(file, text);
+      const p = publisher(sizes);
+      await rejects(() => publishPreview(directory, "kjanat/kprint", sha, p.command, 19), error);
+      deepStrictEqual(p.packed, []);
+    });
+  }
+});
+
+Deno.test("a failed manifest restore still removes staging and keeps the upload's error", async () => {
+  await fixture(async (directory, originals) => {
+    const p = publisher(sizes, true);
+    const main = join(directory, "kprint", "package.json");
+    const command = async (args: string[], cwd: string) => {
+      if (args[0] !== "npm") await Deno.chmod(main, 0o444);
+      return await p.command(args, cwd);
+    };
+    const failure = await publishPreview(directory, "kjanat/kprint", sha, command, 19).then(() => undefined, (error: unknown) => error);
+    if (!(failure instanceof AggregateError)) throw new Error(`Expected an AggregateError, got ${failure}`);
+    match(String(failure.errors[0]), /upload failed/);
+    deepStrictEqual(failure.errors[1] instanceof Deno.errors.PermissionDenied, true);
+    await rejects(() => Deno.stat(p.packed[0]), Deno.errors.NotFound);
+    await Deno.chmod(main, 0o644);
+    await Deno.writeTextFile(main, originals.get(main) ?? "");
+  });
+});

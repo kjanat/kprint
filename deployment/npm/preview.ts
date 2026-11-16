@@ -25,8 +25,20 @@ export async function publishPreview(directory: string, repository: string, sha:
     const original = await Deno.readTextFile(file);
     return { path, file, original, json: JSON.parse(original) };
   }));
+  const names: string[] = manifests.map(({ json }) => json.name);
+  const duplicates = names.filter((name, index) => names.indexOf(name) !== index);
+  if (duplicates.length) throw new Error(`Duplicate preview packages: ${duplicates.join(", ")}`);
+  const referenced = new Set(
+    manifests.flatMap(({ json }) => [...Object.keys(json.dependencies ?? {}), ...Object.keys(json.optionalDependencies ?? {})])
+      .filter((name) => name.startsWith(`${scope}/`)),
+  );
+  const missing = [...referenced].filter((name) => !names.includes(name));
+  if (missing.length) throw new Error(`Missing preview packages: ${missing.join(", ")}`);
+  const unreferenced = names.slice(0, platforms.length).filter((name) => !referenced.has(name));
+  if (unreferenced.length) throw new Error(`No preview package depends on ${unreferenced.join(", ")}`);
   const urls = new Map(manifests.map(({ json }) => [json.name, `https://pkg.pr.new/${repository}/${json.name}@${sha}`]));
   const temporary = await Deno.makeTempDir({ prefix: "kprint-preview-" });
+  const errors: unknown[] = [];
   try {
     // Prebuilt tarballs are uploaded unchanged by pkg-pr-new.
     for (const { file, json } of manifests) {
@@ -55,10 +67,16 @@ export async function publishPreview(directory: string, repository: string, sha:
     // The service consumes the workflow's authorization after one publication.
     console.log(`Publishing ${packed.length} preview packages (${bytes} compressed bytes)`);
     console.log(await command(["npx", "--yes", "pkg-pr-new@0.0.93", "publish", "--no-compact", "--comment=update", "--bin", ...packed], directory));
-  } finally {
-    await Promise.all(manifests.map(({ file, original }) => Deno.writeTextFile(file, original)));
-    await Deno.remove(temporary, { recursive: true });
+  } catch (error) {
+    errors.push(error);
   }
+  const cleanup = await Promise.allSettled([
+    ...manifests.map(({ file, original }) => Deno.writeTextFile(file, original)),
+    Deno.remove(temporary, { recursive: true }),
+  ]);
+  for (const result of cleanup) if (result.status === "rejected") errors.push(result.reason);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length) throw new AggregateError(errors, "The preview publication or its cleanup failed");
 }
 
 if (import.meta.main) await publishPreview(Deno.args[0], Deno.args[1], Deno.args[2]);
