@@ -77,7 +77,7 @@ jobs:
         with:
           script: |
             const { default: bench } = await import(`${process.env.GITHUB_WORKSPACE}/corpus/.github/scripts/bench.ts`);
-            await bench({ core }, ["bench", "corpus", "results", "builds"]);
+            await bench({ core }, ["bench", "corpus", "results", "builds", String(context.issue.number)]);
       - name: Upload the results
         if: "!cancelled()"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

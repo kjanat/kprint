@@ -48,7 +48,7 @@ interface WorkflowRun {
 
 const USAGE = `Usage:
   bench.ts setup <builds>
-  bench.ts bench <corpus> <results> <builds>
+  bench.ts bench <corpus> <results> <builds> <pull request number>
   bench.ts report <results> <comment.md>
   bench.ts comment <comment.md>`;
 
@@ -114,9 +114,7 @@ async function setup(builds: string): Promise<void> {
   await rm(tarball);
 }
 
-async function bench(corpus: string, results: string, builds: string): Promise<void> {
-  const pull = process.env.GITHUB_REF?.match(/^refs\/pull\/(\d+)\/merge$/)?.[1];
-  if (!pull) throw new Error(`GITHUB_REF ${process.env.GITHUB_REF} is not a pull request's merge ref`);
+async function bench(corpus: string, results: string, builds: string, pull: number): Promise<void> {
   const binary = (name: Name) => join(builds, `dprint-${name}`, "dprint");
   const hyperfine = join(builds, "hyperfine");
   for (const file of [...NAMES.map(binary), hyperfine]) await chmod(file, 0o755);
@@ -177,7 +175,7 @@ async function bench(corpus: string, results: string, builds: string): Promise<v
 
     const meta: Meta = {
       repository: process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` : "",
-      pull: Number(pull),
+      pull,
       versions: { official: version("official"), master: version("master"), pr: version("pr") },
       shas: { master: await sha("master"), pr: await sha("pr") },
       discovery: { master: discovery("master"), pr: discovery("pr") },
@@ -533,8 +531,9 @@ export default async function main({ core, github, context }: Partial<Actions>, 
       return;
     }
     case "bench": {
-      const [corpus, results, builds] = expectArguments(args, 3);
-      await bench(resolve(corpus), resolve(results), resolve(builds));
+      const [corpus, results, builds, pull] = expectArguments(args, 4);
+      if (!/^[1-9]\d*$/.test(pull)) throw new Error(`${pull} is not a pull request number`);
+      await bench(resolve(corpus), resolve(results), resolve(builds), Number(pull));
       return;
     }
     case "report": {
