@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import targets from "./targets.json" with { type: "json" };
 import matrix from "../../.github/build-matrix.json" with { type: "json" };
 
@@ -25,7 +26,7 @@ interface UploadedRelease {
   targetCommitish: string;
   assets: ReleaseAsset[];
 }
-export function validateUploaded(release: UploadedRelease, sha: string) {
+export function validateUploaded(release: UploadedRelease, sha: string, checksums: Uint8Array) {
   if (!/^[a-f0-9]{40}$/.test(sha) || release.targetCommitish !== sha) throw new Error("Release source commit mismatch");
   validateArchives(release.assets.map((asset) => asset.name));
   const required = [...expectedArchives, "SHASUMS256.txt"];
@@ -37,10 +38,17 @@ export function validateUploaded(release: UploadedRelease, sha: string) {
       throw new Error(`Release asset is incomplete: ${name}`);
     }
   }
+  const manifest = release.assets.find((asset) => asset.name === "SHASUMS256.txt");
+  if (manifest?.digest !== `sha256:${createHash("sha256").update(checksums).digest("hex")}`) {
+    throw new Error("The downloaded SHASUMS256.txt differs from the release asset");
+  }
+  const digests = new Map(release.assets.map((asset) => [asset.name, asset.digest.slice("sha256:".length)]));
+  const expected = [...expectedArchives].sort().map((name) => `${digests.get(name)}  ${name}\n`).join("");
+  if (new TextDecoder().decode(checksums) !== expected) throw new Error("SHASUMS256.txt doesn't list the digests of the release archives");
 }
 
 if (import.meta.main) {
-  const [command, path, sha] = Deno.args;
+  const [command, path, sha, checksums] = Deno.args;
   if (command === "assets" && path) {
     const names: string[] = [];
     for await (const entry of Deno.readDir(path)) {
@@ -48,8 +56,8 @@ if (import.meta.main) {
     }
     validateArchives(names);
     console.log(`Verified all ${expectedArchives.length} binary archives`);
-  } else if (command === "uploaded" && path && sha) {
-    validateUploaded(JSON.parse(await Deno.readTextFile(path)), sha);
+  } else if (command === "uploaded" && path && sha && checksums) {
+    validateUploaded(JSON.parse(await Deno.readTextFile(path)), sha, await Deno.readFile(checksums));
     console.log(`Verified complete release assets for ${sha}`);
-  } else throw new Error("Usage: release.ts assets DIRECTORY | uploaded RELEASE_JSON SOURCE_SHA");
+  } else throw new Error("Usage: release.ts assets DIRECTORY | uploaded RELEASE_JSON SOURCE_SHA SHASUMS_FILE");
 }

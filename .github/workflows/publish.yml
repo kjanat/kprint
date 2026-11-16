@@ -462,7 +462,8 @@ jobs:
           SOURCE_SHA: ${{ needs.plan.outputs.ref }}
         run: |
           gh release view "${RELEASE_TAG}" --json isDraft,targetCommitish,assets > "${RUNNER_TEMP}/release.json"
-          deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}"
+          gh release download "${RELEASE_TAG}" --pattern SHASUMS256.txt --dir "${RUNNER_TEMP}"
+          deno run --allow-read deployment/npm/release.ts uploaded "${RUNNER_TEMP}/release.json" "${SOURCE_SHA}" "${RUNNER_TEMP}/SHASUMS256.txt"
       - uses: kjanat/beepboop/actions/publish-refs@36720c127ca101d85b449b13bff3b8bff1b5f557 # v1.6.0
         env:
           ${{ insert }}: ${{ fromJSON(steps.bot.outputs.gitId || '{}') }}
