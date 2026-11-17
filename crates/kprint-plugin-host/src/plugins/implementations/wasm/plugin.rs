@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use kprint_async_runtime::FutureExt;
@@ -27,6 +28,8 @@ use std::time::Instant;
 use sys_traits::FsMetadata;
 use sys_traits::FsMetadataValue;
 
+use kprint_config::plugin_config_file::CONFIG_FILE_CONTENT_PROPERTY;
+use kprint_config::plugin_config_file::CONFIG_FILE_PROPERTY;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::ConfigurationDiagnostic;
 use kprint_plugin_types::PluginInfo;
@@ -158,7 +161,7 @@ pub struct WasmPlugin<TEnvironment: Environment> {
   wasm_module_path: PathBuf,
   resolution_cache: PluginResolutionCache,
   environment: TEnvironment,
-  plugin_info: PluginInfo,
+  plugin_info: Rc<PluginInfo>,
 }
 
 /// How a Wasm plugin formats, shared by the plugin and its initialized
@@ -222,7 +225,7 @@ impl<TEnvironment: Environment> WasmPlugin<TEnvironment> {
       wasm_module_path: modules.wasm_module_path,
       resolution_cache,
       environment,
-      plugin_info,
+      plugin_info: Rc::new(plugin_info),
     }
   }
 }
@@ -317,7 +320,7 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
       Arc::new(move |text: &str| environment.log_stderr_with_context(text, &plugin_name))
     };
     let plugin: Rc<dyn InitializedPlugin> = Rc::new(InitializedWasmPlugin::new(
-      plugin_name,
+      self.plugin_info.clone(),
       Arc::new(Interpreter::new(interpreted, log)),
       self.formatting.clone(),
       environment,
@@ -393,7 +396,7 @@ struct WasmPluginSenderWithState {
 type CreateFormatInstance = Box<dyn FnOnce(WasmHostFormatSender) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> + Send>;
 
 pub struct InitializedWasmPlugin<TEnvironment: Environment> {
-  name: String,
+  info: Rc<PluginInfo>,
   interpreter: Arc<Interpreter>,
   pending_instances: RefCell<Vec<WasmPluginSenderWithState>>,
   /// Every instance that formats, including the ones formatting right now.
@@ -434,7 +437,7 @@ impl<TEnvironment: Environment> Drop for InitializedWasmPlugin<TEnvironment> {
     log_debug!(
       self.environment,
       "Dropped {} ({} instances) in {}ms",
-      self.name,
+      self.info.name,
       len,
       start.elapsed().as_millis()
     );
@@ -442,11 +445,11 @@ impl<TEnvironment: Environment> Drop for InitializedWasmPlugin<TEnvironment> {
 }
 
 impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
-  fn new(name: String, interpreter: Arc<Interpreter>, formatting: Rc<Formatting<TEnvironment>>, environment: TEnvironment) -> Self {
+  fn new(info: Rc<PluginInfo>, interpreter: Arc<Interpreter>, formatting: Rc<Formatting<TEnvironment>>, environment: TEnvironment) -> Self {
     let module_len = interpreter.module.wasm_len() as u64;
     let compile_after = engine_choice::compile_time(module_len);
     Self {
-      name,
+      info,
       interpreter,
       pending_instances: Default::default(),
       instance_senders: Default::default(),
@@ -467,6 +470,28 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
     kprint_async_runtime::spawn_blocking(move || interpreter.run(call)).await?
   }
 
+  async fn interpret_config<T: Send + 'static>(
+    &self,
+    operation: &str,
+    config: Arc<FormatConfig>,
+    call: impl FnOnce(&mut dyn InitializedWasmPluginInstance, &FormatConfig) -> Result<T> + Send + 'static,
+  ) -> Result<T> {
+    let call_config = config.clone();
+    self.interpret(move |instance| call(instance, &call_config)).await.with_context(|| {
+      let PluginInfo { name, version, config_key, .. } = self.info.as_ref();
+      let path = config
+        .plugin
+        .get(CONFIG_FILE_CONTENT_PROPERTY)
+        .and_then(|value| value.as_object())
+        .and_then(|file| file.get("path"))
+        .and_then(|path| path.as_string());
+      match path {
+        Some(path) => format!("Wasm plugin {name} v{version} failed while {operation} ({config_key}.{CONFIG_FILE_PROPERTY}: {path})"),
+        None => format!("Wasm plugin {name} v{version} failed while {operation} (plugin configuration key '{config_key}')"),
+      }
+    })
+  }
+
   async fn with_instance<T>(
     &self,
     instance_state: Option<InstanceState>,
@@ -482,7 +507,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
         self.release_instance(plugin);
         Ok(result)
       }
-      Err(err) if is_stack_overflow(&err) => Err(stack_overflow_message(&self.name)),
+      Err(err) if is_stack_overflow(&err) => Err(stack_overflow_message(&self.info.name)),
       Err(original_err) if crate::plugins::maybe_critical_format_error(&original_err).is_some() => {
         let plugin = match self.get_or_create_instance(instance_state).await {
           Ok(plugin) => plugin,
@@ -496,7 +521,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
             self.release_instance(plugin);
             Ok(result)
           }
-          Err(err) if is_stack_overflow(&err) => Err(stack_overflow_message(&self.name)),
+          Err(err) if is_stack_overflow(&err) => Err(stack_overflow_message(&self.info.name)),
           Err(restart_err) if crate::plugins::maybe_critical_format_error(&restart_err).is_some() => Err(
             CriticalFormatError(FormatError::new(anyhow!(
               concat!(
@@ -504,7 +529,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
                 "This may be a bug in the plugin, the kprint cli is out of date, or the ",
                 "plugin is out of date.\nOriginal error: {}\nError after restart: {}",
               ),
-              self.name,
+              self.info.name,
               original_err,
               restart_err,
             )))
@@ -565,7 +590,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
       }
     };
     let start_instant = Instant::now();
-    log_debug!(self.environment, "Creating instance of {} ({:?})", self.name, engine);
+    log_debug!(self.environment, "Creating instance of {} ({:?})", self.info.name, engine);
 
     let (host_format_tx, mut host_format_rx) = tokio::sync::mpsc::unbounded_channel::<(HostFormatRequest, std::sync::mpsc::Sender<FormatResult>)>();
     let instance_state_cell: Rc<RefCell<Option<InstanceState>>> = Default::default();
@@ -671,7 +696,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
     log_debug!(
       self.environment,
       "Created instance of {} in {}ms",
-      self.name,
+      self.info.name,
       start_instant.elapsed().as_millis() as u64
     );
     let sender = Rc::new(tx);
@@ -720,12 +745,12 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
     log_debug!(
       self.environment,
       "Compiling {} in the background after {}ms in the interpreter.",
-      self.name,
+      self.info.name,
       Duration::from_nanos(interpreted.nanos).as_millis()
     );
     let native = self.formatting.native.clone();
     let environment = self.environment.clone();
-    let name = self.name.clone();
+    let name = self.info.name.clone();
     let compile = kprint_async_runtime::spawn(async move {
       if let Err(err) = native.get().await {
         log_debug!(environment, "Error compiling {} in the background: {:#}", name, err);
@@ -742,15 +767,23 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
   }
 
   async fn resolved_config(&self, config: Arc<FormatConfig>) -> Result<String> {
-    self.interpret(move |instance| instance.resolved_config(&config)).await
+    self
+      .interpret_config("resolving configuration", config, |instance, config| instance.resolved_config(config))
+      .await
   }
 
   async fn file_matching_info(&self, config: Arc<FormatConfig>) -> Result<FileMatchingInfo> {
-    self.interpret(move |instance| instance.file_matching_info(&config)).await
+    self
+      .interpret_config("resolving file matching", config, |instance, config| instance.file_matching_info(config))
+      .await
   }
 
   async fn config_diagnostics(&self, config: Arc<FormatConfig>) -> Result<Vec<ConfigurationDiagnostic>> {
-    self.interpret(move |instance| instance.config_diagnostics(&config)).await
+    self
+      .interpret_config("resolving configuration diagnostics", config, |instance, config| {
+        instance.config_diagnostics(config)
+      })
+      .await
   }
 
   async fn check_config_updates(&self, message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>> {
@@ -803,9 +836,9 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
     // in the cache for the next run
     let compile = self.background_compile.borrow_mut().take();
     if let Some(compile) = compile {
-      log_debug!(self.environment, "Waiting for {} to finish compiling in the background.", self.name);
+      log_debug!(self.environment, "Waiting for {} to finish compiling in the background.", self.info.name);
       if let Err(err) = compile.await {
-        log_debug!(self.environment, "Error waiting for {} to compile: {:#}", self.name, err);
+        log_debug!(self.environment, "Error waiting for {} to compile: {:#}", self.info.name, err);
       }
     }
   }
@@ -822,6 +855,49 @@ mod test {
   use super::*;
   use crate::environment::TestEnvironment;
   use crate::test_helpers::WASM_PLUGIN_BYTES;
+
+  fn test_plugin_info() -> Rc<PluginInfo> {
+    Rc::new(
+      serde_json::from_value(serde_json::json!({
+        "name": "test-plugin",
+        "version": "1.2.3",
+        "configKey": "test-plugin",
+        "helpUrl": "",
+        "configSchemaUrl": "",
+      }))
+      .unwrap(),
+    )
+  }
+
+  #[tokio::test]
+  async fn configuration_trap_reports_the_plugin_operation_and_config_file() {
+    let wasm = wat::parse_str(
+      r#"(module
+      (memory (export "memory") 1)
+      (func (export "dprint_plugin_version_4"))
+      (func (export "clear_shared_bytes") (param i32) (result i32) (i32.const 0))
+      (func (export "register_config") (param i32))
+      (func (export "get_config_diagnostics") (param i32) (result i32) unreachable))"#,
+    )
+    .unwrap();
+    let mut plugin = interpreting_plugin(&TestEnvironment::new());
+    plugin.interpreter = Arc::new(Interpreter::new(InterpretedModule::new(&wasm).unwrap(), Arc::new(|_| {})));
+    let config = Arc::new(FormatConfig {
+      id: FormatConfigId::from_raw(1),
+      global: Default::default(),
+      plugin: serde_json::from_value(serde_json::json!({
+        "$configFile": { "path": "https://example.com/test.toml" }
+      }))
+      .unwrap(),
+      base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    });
+
+    let err = plugin.config_diagnostics(config).await.unwrap_err();
+    assert_eq!(
+      format!("{err:#}"),
+      "Wasm plugin test-plugin v1.2.3 failed while resolving configuration diagnostics (test-plugin.configFile: https://example.com/test.toml): wasm `unreachable` instruction executed"
+    );
+  }
 
   async fn format_text(plugin: &InitializedWasmPlugin<TestEnvironment>) -> FormatResult {
     plugin
@@ -870,7 +946,7 @@ mod test {
     });
     let log: LogFn = Arc::new(|_| {});
     let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
-    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    let mut plugin = InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting.clone(), environment.clone());
     plugin.compile_after = Duration::from_secs(3600);
 
     // it interprets while that took less long than compiling would
@@ -919,7 +995,7 @@ mod test {
     });
     let log: LogFn = Arc::new(|_| {});
     let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
-    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    let mut plugin = InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting.clone(), environment.clone());
     plugin.compile_after = Duration::ZERO;
     assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert!(plugin.compiling_in_background.get());
@@ -961,7 +1037,7 @@ mod test {
     });
     let log: LogFn = Arc::new(|_| {});
     let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
-    let plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    let plugin = InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting.clone(), environment.clone());
     // the files it formatted so far took 10s for a KB, so the rest of the
     // megabyte would take far longer than compiling
     *plugin.interpreted.lock() = FormatRate {
@@ -996,7 +1072,7 @@ mod test {
     });
     let log: LogFn = Arc::new(|_| {});
     let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
-    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    let mut plugin = InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting.clone(), environment.clone());
     // however long it interpreted, the ski rental of a run without a choice
     // doesn't apply
     plugin.compile_after = Duration::ZERO;
@@ -1032,7 +1108,7 @@ mod test {
     });
     let log: LogFn = Arc::new(|_| {});
     let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
-    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    let mut plugin = InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting.clone(), environment.clone());
     plugin.compile_after = Duration::ZERO;
     assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
     tokio::task::yield_now().await;
@@ -1064,7 +1140,7 @@ mod test {
     });
     let log: LogFn = Arc::new(|_| {});
     let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
-    let plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    let plugin = InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting.clone(), environment.clone());
     let config = Arc::new(FormatConfig {
       id: FormatConfigId::from_raw(1),
       global: Default::default(),
@@ -1141,7 +1217,7 @@ mod test {
     });
     let log: LogFn = Arc::new(|_| {});
     let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
-    InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting, environment.clone())
+    InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting, environment.clone())
   }
 
   fn critical_error(message: &'static str) -> anyhow::Error {
