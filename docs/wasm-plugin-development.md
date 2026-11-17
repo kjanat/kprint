@@ -1,6 +1,10 @@
 # Creating a Wasm Plugin (Schema Version 4)
 
-Wasm plugins are the preferred way of developing plugins (as opposed to process plugins) because they are portable and run sandboxed in a Wasm runtime. They can be written in any language that supports compiling to a WebAssembly file (_.wasm_)—emscripten solutions do not work.
+Wasm plugins are the preferred way of developing plugins (as opposed to process plugins) because they are portable and run sandboxed in a Wasm runtime. A plugin must implement kprint's core-module exports, imports and byte-buffer protocol.
+A language's ability to emit a `.wasm` file or WASI module is not sufficient. These
+plugins are not Component Model components; generating Canonical ABI bindings from
+WIT requires an adapter to the core ABI. The [WIT reference](../wit/README.md)
+describes the logical interface and the actual export signatures.
 
 See [the crate layout](crate-layout.md) to use the Wasm API directly through `kprint-wasm-plugin`. The examples below use the compatible `kprint-core` facade.
 
@@ -96,6 +100,7 @@ Implementing a Wasm plugin is easier if you're using Rust as there are several h
            // set to true to format a matched file in addition to the plugin
            // that claims it, rather than claiming the file
            additive: false,
+           additive_associations: vec![],
          },
        }
      }
@@ -173,7 +178,7 @@ Initialization functions:
 
 - `dprint_plugin_version_4() -> u32` - Return `4`, but the CLI never calls this function (it only checks for it in the exports)
 - `register_config(config_id: u32)` - Called when the plugin and global configuration is done transferring over. Store it somewhere.
-- `release_config(config_id: u32)` - Release the config from memory.
+- `release_config(config_id: u32)` - Release a config registered in this instance. The host forwards release only once for a registered ID and can register it again later. Older plugins without this export remain supported.
 - `get_config_diagnostics(config_id: u32) -> u32` - Called by the CLI to get the configuration diagnostics. Serialize the diagnostics as a JSON string, store it in the local bytes, and return the byte length.
 - `get_resolved_config(config_id: u32) -> u32` - Called by the CLI to get the resolved configuration for display in the CLI. Serialize it as a JSON string, store it in the local bytes, and return the byte length.
 - `get_license_text() -> u32` - Store the plugin's license text in the local bytes and return the byte length.
@@ -181,9 +186,66 @@ Initialization functions:
   - `name` - String saying the plugin name.
   - `version` - Version of the plugin (ex. `"0.1.0"`)
   - `configKey` - Configuration key to use for this plugin in the dprint configuration file.
-  - `fileExtensions` - An array of strings that say the file extensions this plugin supports (it should NOT have a leading period on the extension)
   - `helpUrl` - A string containing the URL to some web help.
-  - `configSchemaUrl` - Return an empty string for now.
+  - `configSchemaUrl` - URL of the plugin's configuration JSON Schema, or an empty string.
+  - `updateUrl` - Optional plugin update URL.
+- `get_config_file_matching(config_id: u32) -> u32` - Put a JSON object in shared bytes and return its byte length. `fileExtensions` lists extensions without a leading dot; `fileNames` lists exact names. Both default to `[]`. `additive` defaults to `false`; setting it to `true` also runs this plugin on files claimed by another plugin. The optional `additiveAssociations` list supplies patterns for additional formatting and defaults to `[]`.
+
+### Optional kprint configuration metadata
+
+These additions use the existing schema-4 marker. Plugins built with upstream
+dprint crates may implement the discovery exports directly. Plugins built with
+kprint can return the fields in `get_plugin_info` JSON. All discovery exports
+have the core signature `() -> i32`: put UTF-8 JSON in the plugin-owned shared
+buffer and return its byte length. The host reads through
+`get_shared_bytes_ptr` before making the next call; keep those bytes valid until
+then. Invalid JSON or an incompatible value is a metadata error.
+
+| Plugin-info field           | Default | Optional discovery export           | Export precedence                                                                     |
+| --------------------------- | ------- | ----------------------------------- | ------------------------------------------------------------------------------------- |
+| `configFiles`               | absent  | `get_config_files`                  | Used when the inline field is absent or null; an inline `[]` suppresses the fallback. |
+| `configSchemaPaths`         | `[]`    | `get_config_schema_paths`           | Used when the inline list is empty.                                                   |
+| `configReferencePaths`      | `[]`    | `get_config_reference_paths`        | Used when the inline list is empty.                                                   |
+| `configLocalSchemasUseRoot` | `false` | `get_config_local_schemas_use_root` | Always overrides the inline boolean when the export exists.                           |
+| `configRelativePathBases`   | `{}`    | `get_config_relative_path_bases`    | Used when the inline object is empty.                                                 |
+
+`configFiles` is an ordered array of filenames to try when `configFile` is not
+set. Automatic discovery stays inside the kprint configuration directory: no
+absolute paths, parent traversal or symlinks outside it. An explicit
+`configFile` can select a part of a file with a fragment such as
+`pyproject.toml#tool.ruff`.
+
+`configSchemaPaths` and `configReferencePaths` are arrays of paths through the
+plugin configuration. Each path segment selects an object key; `*` selects all
+array elements. For example, `[["schemas", "*", "path"]]` selects `path` from
+each element of `schemas`.
+
+The host passes the selected configuration under `$configFile` in the plugin
+configuration supplied to `register_config`:
+
+- `path` identifies the selected configuration; `content` is its parsed content
+  serialized as a JSON string. `text` holds the original file text; `source`
+  is its resolved source URL. `baseDirectory` is the local configuration
+  directory; `absolutePath` is the local filename or null for remote files.
+- `files` supplies JSON Schemas selected by `configSchemaPaths` and their `$ref`
+  dependencies. Keys are absolute local filenames or remote URLs. Local
+  schema paths normally resolve from each configuration file; setting
+  `configLocalSchemasUseRoot` uses the selected root configuration directory.
+  Remote relative URLs always resolve from their own document URL.
+- `fileSources` maps schema keys to their final source URLs, including redirects.
+- `documents` supplies recursively referenced configurations selected by
+  `configReferencePaths`. Each URL maps to `{ "text": "...", "source": "..." }`;
+  `source` is the final URL after redirects. The plugin decides how to merge
+  the documents. Downloads use the host's existing HTTP cache.
+
+`configRelativePathBases` maps local configuration filename suffixes, such as
+`.config/tombi.toml`, to directories relative to that file's parent. HTTP(S)
+configurations continue to use their URL as the base.
+
+`supportsRangeFormatting` is an optional boolean. `allowPluginOverrideConfig`
+is an optional boolean controlling non-global overrides for process plugins;
+omission restricts them to global settings. See [WASI and formatting
+capabilities](#wasi-and-formatting-capabilities).
 
 Formatting functions:
 

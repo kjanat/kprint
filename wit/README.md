@@ -9,6 +9,11 @@ Each directory describes one plugin system schema version of dprint's Wasm plugi
 | 2      | `dprint:plugin@2.0.0` | 0.7.0 to 0.7.4              | 0.26.x                  | historical                                  |
 | 1      | `dprint:plugin@1.0.0` | 0.4.0 to 0.6.x              | 0.20.0-alpha3 to 0.25.x | historical                                  |
 
+Version 4 also documents kprint's optional metadata and configuration extensions.
+These keep the `dprint_plugin_version_4` marker and byte-buffer protocol. Existing
+dprint plugins can omit the extensions. See the [plugin development guide](../docs/wasm-plugin-development.md#optional-kprint-configuration-metadata)
+for payloads, defaults and discovery-export precedence.
+
 ## What these files are, and aren't
 
 A dprint plugin is a **core Wasm module**, not a component. It exports a linear `memory` and plain functions whose parameters and results are all `i32` (on wasm32 `u32`, `u8`, `usize` and pointers are one type), and it passes every payload as bytes through a buffer it owns. WIT can't express that core ABI directly (the component model's canonical ABI lifts and lowers values itself), so these files describe the ABI's _logical_ interface:

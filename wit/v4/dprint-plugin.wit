@@ -1,7 +1,8 @@
 /// dprint Wasm plugin ABI, plugin system schema version 4.
 ///
 /// Current. Introduced in dprint 0.47.0 (dprint-core 0.67.0, 2024-06-30);
-/// what `generate_plugin_code!` in dprint-core emits today.
+/// extended here with optional kprint metadata. The v1-v3 descriptions
+/// remain historical upstream interfaces.
 ///
 /// This is not a component-model interface: a plugin is a core module that
 /// exports a linear `memory` and these functions, and passes byte payloads
@@ -46,6 +47,21 @@ interface types {
     config-schema-url: string,
     /// The url of the plugin's `latest.json`, for `dprint config update`.
     update-url: option<string>,
+    /// Optional capabilities. Missing values leave range support unknown and
+    /// restrict process-plugin overrides to global formatting settings.
+    supports-range-formatting: option<bool>,
+    allow-plugin-override-config: option<bool>,
+    /// Optional kprint extensions, serialized in camelCase. Absence of
+    /// configFiles differs from an explicitly empty list (see the guide).
+    config-files: option<list<string>>,
+    /// Object-key paths, with "*" selecting array elements. Default: [].
+    config-schema-paths: list<list<string>>,
+    /// Default false. An optional export overrides this inline value.
+    config-local-schemas-use-root: bool,
+    config-reference-paths: list<list<string>>,
+    /// JSON object mapping local filename suffixes to relative directories.
+    /// Default: {}. Map entries have string keys and string values.
+    config-relative-path-bases: json,
   }
 
   /// `get-config-file-matching`: which files a config matches.
@@ -57,6 +73,8 @@ interface types {
     /// Whether these add to (rather than replace) what the plugin matches
     /// by default. Since dprint-core 0.70.0; default false.
     additive: bool,
+    /// Optional kprint file patterns for additional formatting. Default: [].
+    additive-associations: list<string>,
   }
 
   /// What the host sends before `register-config`:
@@ -155,6 +173,30 @@ interface plugin-exports {
   /// `get_license_text() -> usize`. Shared bytes get the license (UTF-8).
   get-license-text: func() -> u32;
 
+  // Optional kprint metadata exports. Each returns a JSON byte length in the
+  // plugin-owned shared buffer, read through get-shared-bytes-ptr before the
+  // next call. Missing exports leave inline metadata/defaults in place.
+
+  /// `get_config_files() -> usize`: JSON list<string>. Used only when
+  /// plugin-info.config-files is absent or null, including when this returns [].
+  get-config-files: func() -> u32;
+
+  /// `get_config_schema_paths() -> usize`: JSON list<list<string>>. Used
+  /// only when the inline list is absent or empty.
+  get-config-schema-paths: func() -> u32;
+
+  /// `get_config_reference_paths() -> usize`: JSON list<list<string>>.
+  /// Used only when the inline list is absent or empty.
+  get-config-reference-paths: func() -> u32;
+
+  /// `get_config_local_schemas_use_root() -> usize`: JSON boolean. When
+  /// present, overrides the inline value even when that value is true.
+  get-config-local-schemas-use-root: func() -> u32;
+
+  /// `get_config_relative_path_bases() -> usize`: JSON object of strings.
+  /// Used only when the inline object is absent or empty.
+  get-config-relative-path-bases: func() -> u32;
+
   // --- configuration ---
 
   /// `register_config(config_id: u32)`. Shared bytes hold
@@ -162,8 +204,10 @@ interface plugin-exports {
   /// under `config-id`. Called once per id.
   register-config: func(config-id: config-id);
 
-  /// `release_config(config_id: u32)`. Drops a registered config. The
-  /// host never calls it.
+  /// `release_config(config_id: u32)`. Drops a registered config. kprint
+  /// forwards release only for an id registered in this instance; missing
+  /// exports are tolerated for compatibility. A released id may be registered
+  /// again when needed.
   release-config: func(config-id: config-id);
 
   /// `get_resolved_config(config_id: u32) -> usize`. Shared bytes get the
