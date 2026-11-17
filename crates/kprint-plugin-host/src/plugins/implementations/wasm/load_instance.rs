@@ -193,9 +193,10 @@ impl WasmModuleCreator {
 
 /// The amount of wasm stack the plugin may use. wasmtime's default is 512KB,
 /// which overflows on deeply nested source files (the formatter recurses over
-/// the AST); 1 MiB handles them. The thread that runs the instance needs a
+/// the AST). Managed-language plugins need larger frames; allow 8 MiB.
+/// The thread that runs the instance needs a
 /// native stack at least this large (see `WASM_PLUGIN_THREAD_STACK_SIZE`).
-pub const MAX_WASM_STACK_SIZE: usize = 1024 * 1024;
+pub const MAX_WASM_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 /// Native stack size for the (tokio blocking) thread that runs a wasm plugin
 /// instance. wasmtime executes wasm on this native stack, so it must exceed
@@ -231,6 +232,7 @@ fn new_engine(optimize: bool) -> wasmtime::Engine {
   #[cfg(not(windows))]
   config.native_unwind_info(false);
   config.max_wasm_stack(MAX_WASM_STACK_SIZE);
+  config.async_stack_size(WASM_PLUGIN_THREAD_STACK_SIZE);
   let engine = Engine::new(&config).expect("failed to create wasmtime engine");
   let weak = engine.weak();
   std::thread::spawn(move || {

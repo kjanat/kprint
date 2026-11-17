@@ -268,6 +268,7 @@ fn format_engine() -> &'static Engine {
 /// The error for a call that failed, which says when the plugin ran out of fuel.
 fn call_error(name: &str, err: wasmi::Error) -> anyhow::Error {
   match err.as_trap_code() {
+    Some(TrapCode::StackOverflow) => super::instance::WasmStackOverflowError.into(),
     Some(TrapCode::OutOfFuel) => anyhow!("Stopped the plugin's {}, which ran {} instructions without finishing.", name, FUEL_PER_CALL),
     _ => anyhow!(err),
   }
@@ -461,6 +462,8 @@ mod test {
     let recurse = instance.get_typed_func::<u32, ()>(&store, "recurse").unwrap();
     recurse.call(&mut store, 2_000).unwrap();
     // The larger stack still has a limit and traps rather than growing forever.
-    assert_eq!(recurse.call(&mut store, 20_000).unwrap_err().as_trap_code(), Some(TrapCode::StackOverflow));
+    let error = recurse.call(&mut store, 20_000).unwrap_err();
+    assert_eq!(error.as_trap_code(), Some(TrapCode::StackOverflow));
+    assert!(call_error("recurse", error).is::<super::super::instance::WasmStackOverflowError>());
   }
 }
