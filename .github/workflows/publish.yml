@@ -147,32 +147,6 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}"
         run: cargo publish ${DRY_RUN:+--dry-run}
-  publish-package-managers:
-    name: Homebrew and Scoop
-    needs: plan
-    if: needs.plan.outputs.channel == 'distribution' && !github.event.release.prerelease
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions: { contents: read }
-    env:
-      TAG: ${{ needs.plan.outputs.version }}
-      MANIFESTS: manifests
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { persist-credentials: false }
-      - name: Render the cask and the Scoop manifest
-        env: { GH_TOKEN: "${{ github.token }}" }
-        run: |
-          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --pattern SHASUMS256.txt --dir "${RUNNER_TEMP}"
-          .github/scripts/package-managers.sh render "${TAG}" "${RUNNER_TEMP}/SHASUMS256.txt" "${MANIFESTS}"
-          cat "${MANIFESTS}/kprint.rb" "${MANIFESTS}/kprint.json"
-      - name: Publish to kjanat/homebrew-tap and kjanat/scoop-bucket
-        if: "!(inputs.dry_run || false)"
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
-        run: .github/scripts/package-managers.sh publish "${TAG}" "${MANIFESTS}"
   publish-aur:
     name: AUR ${{ matrix.package }}
     needs: plan
