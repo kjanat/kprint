@@ -213,7 +213,11 @@ then. Invalid JSON or an incompatible value is a metadata error.
 set. Automatic discovery stays inside the kprint configuration directory: no
 absolute paths, parent traversal or symlinks outside it. An explicit
 `configFile` can select a part of a file with a fragment such as
-`pyproject.toml#tool.ruff`.
+`pyproject.toml#tool.ruff`. Absence of `configFiles` is not the same as `[]`.
+When `configFiles` is absent and `configSchemaPaths` is empty, an explicit
+`configFile` stays a plain property and the host does not inject `$configFile`.
+Set `configFiles` to `[]` to opt in to explicit selection without automatic
+discovery.
 
 `configSchemaPaths` and `configReferencePaths` are arrays of paths through the
 plugin configuration. Each path segment selects an object key; `*` selects all
@@ -228,8 +232,9 @@ configuration supplied to `register_config`:
   is its resolved source URL. `baseDirectory` is the local configuration
   directory; `absolutePath` is the local filename or null for remote files.
 - `files` supplies JSON Schemas selected by `configSchemaPaths` and their `$ref`
-  dependencies. Keys are absolute local filenames or remote URLs. Local
-  schema paths normally resolve from each configuration file; setting
+  dependencies. Keys are absolute local filenames or remote URLs. Each value is
+  a JSON text string of the schema, not a parsed schema object. Local schema
+  paths normally resolve from each configuration file; setting
   `configLocalSchemasUseRoot` uses the selected root configuration directory.
   Remote relative URLs always resolve from their own document URL.
 - `fileSources` maps schema keys to their final source URLs, including redirects.
