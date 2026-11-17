@@ -10,7 +10,6 @@ use kprint_configuration::GlobalConfiguration;
 use kprint_plugin_types::CancellationToken;
 use kprint_plugin_types::CheckConfigUpdatesMessage;
 use kprint_plugin_types::ConfigChange;
-use kprint_plugin_types::CriticalFormatError;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatError;
@@ -28,6 +27,7 @@ use super::InitializedWasmPluginInstance;
 use super::Linker;
 use super::PluginExports;
 use super::checked_range;
+use super::critical_format_error;
 use super::ensure_in_memory;
 
 enum WasmFormatResult {
@@ -394,7 +394,7 @@ impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmP
     self.ensure_config(config).map_err(FormatError::new)?;
     match self.inner_format_text(file_path, file_bytes, override_config) {
       Ok(inner) => inner,
-      Err(err) => Err(CriticalFormatError(FormatError::new(err)).into()),
+      Err(err) => Err(critical_format_error(err)),
     }
   }
 

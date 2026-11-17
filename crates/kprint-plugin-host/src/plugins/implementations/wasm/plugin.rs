@@ -39,6 +39,14 @@ use super::engine_choice::FormatRate;
 use super::instance::InitializedWasmPluginInstance;
 use super::instance::LogFn;
 use super::instance::create_host_state;
+fn is_stack_overflow(err: &anyhow::Error) -> bool {
+  crate::plugins::maybe_critical_format_error(err).is_some_and(|critical| critical.0.downcast_ref::<super::instance::WasmStackOverflowError>().is_some())
+}
+
+fn stack_overflow_message(name: &str) -> anyhow::Error {
+  FormatError::new(format!("{} ran out of stack, which happens when the code is nested too deeply.", name)).into()
+}
+
 #[cfg(test)]
 use super::interpreter::InterpretedModule;
 use super::interpreter::MetadataModule;
@@ -474,6 +482,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
         self.release_instance(plugin);
         Ok(result)
       }
+      Err(err) if is_stack_overflow(&err) => Err(stack_overflow_message(&self.name)),
       Err(original_err) if crate::plugins::maybe_critical_format_error(&original_err).is_some() => {
         let plugin = match self.get_or_create_instance(instance_state).await {
           Ok(plugin) => plugin,
@@ -487,6 +496,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
             self.release_instance(plugin);
             Ok(result)
           }
+          Err(err) if is_stack_overflow(&err) => Err(stack_overflow_message(&self.name)),
           Err(restart_err) if crate::plugins::maybe_critical_format_error(&restart_err).is_some() => Err(
             CriticalFormatError(FormatError::new(anyhow!(
               concat!(
@@ -1182,6 +1192,46 @@ mod test {
         "Error after restart: trapped again",
       )
     );
+    assert!(plugin.pending_instances.borrow().is_empty());
+  }
+  #[tokio::test]
+  async fn a_stack_overflow_drops_the_instance_without_retrying() {
+    let environment = TestEnvironment::new();
+    let plugin = interpreting_plugin(&environment);
+    let attempts = Rc::new(Cell::new(0));
+    let err = plugin
+      .with_instance(None, {
+        let attempts = attempts.clone();
+        move |_| {
+          attempts.set(attempts.get() + 1);
+          async { Err::<(), _>(CriticalFormatError(FormatError::new(super::super::instance::WasmStackOverflowError)).into()) }.boxed_local()
+        }
+      })
+      .await
+      .err()
+      .unwrap();
+    assert_eq!(attempts.get(), 1);
+    assert!(crate::plugins::maybe_critical_format_error(&err).is_none());
+    assert_eq!(
+      err.to_string(),
+      "test-plugin ran out of stack, which happens when the code is nested too deeply."
+    );
+    assert!(plugin.pending_instances.borrow().is_empty());
+    let result = plugin.with_instance(None, |_| async { Ok(()) }.boxed_local()).await;
+    assert!(result.is_ok());
+    assert_eq!(plugin.pending_instances.borrow().len(), 1);
+  }
+
+  #[tokio::test]
+  async fn a_stack_overflow_after_restart_stays_a_file_error() {
+    let environment = TestEnvironment::new();
+    let plugin = interpreting_plugin(&environment);
+    let (err, attempts) = retry_after_a_critical_error(&plugin, || {
+      CriticalFormatError(FormatError::new(super::super::instance::WasmStackOverflowError)).into()
+    })
+    .await;
+    assert_eq!(attempts, 2);
+    assert!(crate::plugins::maybe_critical_format_error(&err).is_none());
     assert!(plugin.pending_instances.borrow().is_empty());
   }
 }

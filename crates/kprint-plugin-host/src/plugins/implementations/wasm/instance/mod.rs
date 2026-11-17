@@ -26,6 +26,28 @@ mod v3;
 mod v4;
 pub(crate) mod wasi;
 
+/// Formatting this input again would exhaust the Wasm stack again.
+#[derive(Debug, thiserror::Error)]
+#[error("The plugin ran out of stack, which happens when the code is nested too deeply.")]
+pub(super) struct WasmStackOverflowError;
+
+fn map_native_call_error(err: wasmtime::Error) -> anyhow::Error {
+  if matches!(err.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::StackOverflow)) {
+    WasmStackOverflowError.into()
+  } else {
+    err.into()
+  }
+}
+
+fn critical_format_error(err: anyhow::Error) -> kprint_plugin_types::FormatError {
+  use kprint_plugin_types::CriticalFormatError;
+  use kprint_plugin_types::FormatError;
+  match err.downcast::<WasmStackOverflowError>() {
+    Ok(err) => CriticalFormatError(FormatError::new(err)).into(),
+    Err(err) => CriticalFormatError(FormatError::new(err)).into(),
+  }
+}
+
 pub type WasmHostFormatSender = tokio::sync::mpsc::UnboundedSender<(HostFormatRequest, std::sync::mpsc::Sender<FormatResult>)>;
 
 /// The data in the store of an instance that formats, on either engine.
@@ -319,7 +341,7 @@ impl NativeExports {
     for (value, param) in values.iter_mut().zip(params) {
       *value = wasmtime::Val::I32(*param as i32);
     }
-    Ok(func.call(&mut self.store, &values[..params.len()], results)?)
+    func.call(&mut self.store, &values[..params.len()], results).map_err(map_native_call_error)
   }
 }
 
@@ -630,5 +652,12 @@ mod test {
     instance.release_config(FormatConfigId::from_raw(1)).unwrap();
     format_with(instance.as_mut(), 1).unwrap();
     assert_eq!(calls_named(&calls, "set_plugin_config").len(), 2);
+  }
+  #[test]
+  fn stack_overflow_keeps_its_type_through_the_critical_error() {
+    let error = map_native_call_error(wasmtime::Trap::StackOverflow.into());
+    let error = critical_format_error(error);
+    let critical = error.downcast_ref::<kprint_plugin_types::CriticalFormatError>().unwrap();
+    assert!(critical.0.downcast_ref::<WasmStackOverflowError>().is_some());
   }
 }
