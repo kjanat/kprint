@@ -216,6 +216,10 @@ absolute paths, parent traversal or symlinks outside it. An explicit
 `pyproject.toml#tool.ruff`. Absence of `configFiles` is not the same as `[]`.
 When `configFiles` is absent and `configSchemaPaths` is empty, an explicit
 `configFile` stays a plain property and the host does not inject `$configFile`.
+When `configFiles` is absent and `configSchemaPaths` is not empty, an explicit
+`configFile` also stays a plain property, and the host does not read the file it
+names. The host can inject a synthetic `$configFile` when `configSchemaPaths`
+selects paths from the inline configuration.
 Set `configFiles` to `[]` to opt in to explicit selection without automatic
 discovery.
 
