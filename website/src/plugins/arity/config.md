@@ -1,6 +1,6 @@
 ---
 title: Configuration - Arity
-description: Documentation on the configuration file for the Arity code formatting plugin for dprint.
+description: Documentation on the configuration file for the Arity code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -14,7 +14,7 @@ layout: layouts/documentation.njk
 
 # Arity - Configuration
 
-Specify configuration under the `"arity"` key in your dprint configuration file.
+Specify configuration under the `"arity"` key in your kprint configuration file.
 
 | Property          | Values                                 | Default                           |
 | ----------------- | -------------------------------------- | --------------------------------- |

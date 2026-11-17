@@ -18,7 +18,7 @@ use crate::utils::parse_npm_specifier;
 
 /// File names checked at the root of an npm package when it doesn't otherwise
 /// say what its configuration file is.
-const DEFAULT_CONFIG_FILE_NAMES: [&str; 3] = ["dprint.json", "dprint.jsonc", "dprint.toml"];
+const DEFAULT_CONFIG_FILE_NAMES: [&str; 6] = ["kprint.toml", "kprint.json", "kprint.jsonc", "dprint.toml", "dprint.json", "dprint.jsonc"];
 
 /// Resolves the npm specifiers in the `extends` of a configuration file and
 /// of everything it extends.
@@ -276,7 +276,7 @@ impl NpmExtendsResolver {
   /// The `exports` of the package's package.json have the highest precedence. When
   /// they don't have a match, a sub path is the path of a file in the package and
   /// no sub path is the package.json's `main` if it's a JSON file or otherwise a
-  /// dprint.json file at the root of the package.
+  /// kprint.json or dprint.json file at the root of the package.
   ///
   /// Falling back when there's no match is more lenient than Node.js, which only
   /// allows what's in the `exports`. It's done because a package's `exports` are
@@ -334,7 +334,7 @@ impl NpmExtendsResolver {
     bail!(
       concat!(
         "Could not determine the configuration file of npm package {}. Specify a file in the package ",
-        "(ex. npm:{}/config.json) or have the package provide a dprint.json file, a \".\" entry ",
+        "(ex. npm:{}/config.json) or have the package provide a kprint.json file, a \".\" entry ",
         "in its package.json's \"exports\", or a JSON file as its package.json's \"main\"."
       ),
       package_name,
@@ -550,6 +550,31 @@ mod tests {
   }
 
   #[test]
+  fn should_prefer_a_packages_kprint_files_over_its_dprint_files() {
+    for (files, expected) in [
+      (&["kprint.json", "dprint.toml"][..], 0),
+      (&["kprint.json", "kprint.toml", "dprint.json"][..], 1),
+    ] {
+      let mut builder = TestEnvironmentBuilder::new();
+      builder.write_file("/project/kprint.json", r#"{ "extends": "npm:config" }"#);
+      for (index, file) in files.iter().enumerate() {
+        let text = if file.ends_with(".toml") {
+          format!("[prop1]\nvalue = {index}\n")
+        } else {
+          format!(r#"{{ "prop1": {{ "value": {index} }} }}"#)
+        };
+        builder.write_file(format!("/project/node_modules/config/{file}"), text);
+      }
+      let environment = builder.build();
+
+      environment.clone().run_in_runtime(async move {
+        let result = resolve_config("/project/kprint.json", &environment).await.unwrap();
+        assert_eq!(get_number(&result, "prop1"), expected, "{files:?}");
+      });
+    }
+  }
+
+  #[test]
   fn should_extend_export_and_file_in_ancestor_node_modules() {
     let environment = TestEnvironmentBuilder::new()
       .write_file(
@@ -661,7 +686,7 @@ mod tests {
           .unwrap(),
         concat!(
           "Could not determine the configuration file of npm package other. Specify a file in the package ",
-          "(ex. npm:other/config.json) or have the package provide a dprint.json file, a \".\" entry ",
+          "(ex. npm:other/config.json) or have the package provide a kprint.json file, a \".\" entry ",
           "in its package.json's \"exports\", or a JSON file as its package.json's \"main\"."
         ),
       );

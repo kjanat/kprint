@@ -1,6 +1,6 @@
 ---
 title: Exec Plugin
-description: Documentation on the Exec code formatting plugin for dprint.
+description: Documentation on the Exec code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -14,7 +14,7 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
   </div>
 </div>
 
-The CLI has exec built in, and formats every reference to this plugin with it rather than downloading anything: any release, the latest one or none in particular, with any checksum, written any way (ex. `npm:@dprint/exec@0.7.3/plugin.json`, `npm:@dprint/exec`, `https://plugins.dprint.dev/exec-0.5.0.json`, `https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json`, its GitHub releases or the npm package on jsDelivr or unpkg). So it works on every platform the CLI does (ex. FreeBSD), and `dprint config update` leaves such references alone. Exec always uses the built-in formatter and its host-owned configuration contract.
+The CLI has exec built in, and formats every reference to this plugin with it rather than downloading anything: any release, the latest one or none in particular, with any checksum, written any way (ex. `npm:@dprint/exec@0.7.3/plugin.json`, `npm:@dprint/exec`, `https://plugins.dprint.dev/exec-0.5.0.json`, `https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json`, its GitHub releases or the npm package on jsDelivr or unpkg). So it works on every platform the CLI does (ex. FreeBSD), and `kprint config update` leaves such references alone. Exec always uses the built-in formatter and its host-owned configuration contract.
 
 An `exec` section in your local configuration activates the built-in formatter directly. No entry in `plugins` or download is required. To place it among the plugins, list it as `"exec"`:
 
@@ -37,11 +37,11 @@ Compared to the downloaded plugin, the built-in one:
 - Runs a `setupCommand` once for the files that need it, also when formatting them in parallel. Each file waits for it until its own `"setupTimeout"` or until its formatting is cancelled, while it keeps running for the files that still wait. Its success applies to every file after it. A failure (it couldn't start, it exited unsuccessfully, or the last file waiting for it timed out) applies to every file for 10 seconds rather than being retried for each one, after which the next file runs it again, waiting twice as long after each failure in a row. So a long running process such as an editor's language server recovers from a failure that was transient. After 5 failures in a row (about two and a half minutes), the failure is final until the plugin restarts. A file whose formatting is cancelled doesn't count as a failure.
 - On Windows, finds commands through the `PATHEXT` extensions like the Windows shell does, so `.cmd` and `.bat` commands (ex. ones installed with `npm install -g`) work.
 - Passes `{{file_path}}`, `{{file_path_with_ext}}`, `{{ext}}`, `{{line_width}}`, `{{use_tabs}}`, `{{indent_width}}`, `{{cwd}}` and `{{timeout}}` to commands as they are, without HTML escaping. They may also be written `{{ file_path }}` or `{{{file_path}}}`, and `\{{` is a literal `{{`. Anything else in `{{` and `}}` (ex. `{{filePath}}`) is reported as a configuration error, rather than failing each file.
-- Has its configuration schema built in, so [`dprint schema`](/config#schema) and the language server describe all of the options above without downloading it.
+- Has its configuration schema built in, so [`kprint schema`](/config#schema) and the language server describe all of the options above without downloading it.
 - Takes a `"command"` and `"setupCommand"` as an array or an object too (see [Command forms](#command-forms)).
-- Formats the files a command's `"associations"` glob matches, relative to the configuration file's directory like dprint's own `"associations"`, after the formatter that owns them (ex. markdown for `.md`), or alone when none does. The plugin also needed the glob in its own `"associations"`, which takes the files from their formatter.
+- Formats the files a command's `"associations"` glob matches, relative to the configuration file's directory like kprint's own `"associations"`, after the formatter that owns them (ex. markdown for `.md`), or alone when none does. The plugin also needed the glob in its own `"associations"`, which takes the files from their formatter.
 
-The built-in exec is part of the CLI, not a release of this plugin. It's named `exec` (ex. in `dprint help` and in configuration diagnostics), has the CLI's version, and is updated by upgrading the CLI: `dprint config update` and `dprint add exec` leave a reference it serves as it is. When an upgrade changes how it formats a file, the incremental cache forgets the files it formatted, and only then.
+The built-in exec is part of the CLI, not a release of this plugin. It's named `exec` (ex. in `kprint help` and in configuration diagnostics), has the CLI's version, and is updated by upgrading the CLI: `kprint config update` and `kprint add exec` leave a reference it serves as it is. When an upgrade changes how it formats a file, the incremental cache forgets the files it formatted, and only then.
 
 ### Command forms
 
@@ -65,7 +65,7 @@ exts    = ["toml"]
 ```
 
 - An array or `"args"` passes each argument as it is, through no shell. Empty arguments, spaces and quotes stay.
-- `"env"` sets variables over the ones dprint runs with. The program is looked up on the `"PATH"` it sets.
+- `"env"` sets variables over the ones kprint runs with. The program is looked up on the `"PATH"` it sets.
 - A command's arguments and `"env"` values may use `{{file_path}}` and the other variables. A setup command's arguments and `"env"` values are used as they are.
 
 ### Served commands
@@ -80,7 +80,7 @@ serve   = true
 workers = 2
 ```
 
-dprint writes each file to the command's stdin as one line of JSON:
+kprint writes each file to the command's stdin as one line of JSON:
 
 ```json
 { "path": "src/Program.cs", "text": "...", "lineWidth": 120, "indentWidth": 4, "useTabs": false }
@@ -96,7 +96,7 @@ The rest of how it runs:
 - `"workers"` (default: `1`) sets how many processes of the command format files at once.
 - Its arguments and `"env"` values can't use `{{file_path}}`, `{{file_path_with_ext}}`, or `{{ext}}`, as one process formats every file. Each request carries the file's path and settings, and the other variables are available.
 - `"timeout"` applies to each answer. A process that exits, answers with something else, or takes longer fails the file it was formatting and is killed. The next file starts a new process.
-- A process that formats no file for 5 minutes ends, and every process ends with dprint.
+- A process that formats no file for 5 minutes ends, and every process ends with kprint.
 - Files travel as JSON text, so a file that isn't UTF-8 fails.
 
 ### Commands in remote configuration
@@ -105,7 +105,7 @@ Commands run programs, so like process plugins and `"includes"`, the exec comman
 
 ```jsonc
 {
-  "extends": "https://example.com/dprint.json",
+  "extends": "https://example.com/kprint.json",
   "exec": {
     // run any program the remote configuration's commands specify
     "playWithFire": true
@@ -151,9 +151,9 @@ identity check cannot establish what an unknown executable will do before it run
 ## Install, Setup, and Configuration
 
 ```shellsession
-dprint add exec
+kprint add exec
 # legacy alias, also handled by the built-in formatter
-dprint add npm:@dprint/exec
+kprint add npm:@dprint/exec
 ```
 
 Configure commands under the `exec` key. The configuration schema describes the host formatter's supported options.

@@ -1,6 +1,6 @@
 ---
 title: TOML Plugin
-description: Documentation on the TOML code formatting plugin for dprint.
+description: Documentation on the TOML code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -10,12 +10,12 @@ Formats [TOML](https://toml.io) files.
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add toml
+kprint add toml
 # or install from npm
-dprint add npm:@dprint/toml
+kprint add npm:@dprint/toml
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"toml"` property to add configuration:

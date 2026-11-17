@@ -1,6 +1,6 @@
 ---
 title: Configuration - Oxc
-description: Documentation on the configuration file for the Oxc code formatting plugin for dprint.
+description: Documentation on the configuration file for the Oxc code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Roslyn Plugin (C#/VB)
-description: Documentation on the Roslyn code formatting plugin for dprint.
+description: Documentation on the Roslyn code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -16,12 +16,12 @@ Adapter plugin that formats C# and Visual Basic code via [Roslyn](https://github
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add roslyn
+kprint add roslyn
 # or install from npm
-dprint add npm:@dprint/roslyn
+kprint add npm:@dprint/roslyn
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"roslyn"` property to add configuration:

@@ -1,6 +1,6 @@
 ---
 title: Configuration - Pretty YAML
-description: Documentation on the configuration file for the YAML formatting plugin for dprint.
+description: Documentation on the configuration file for the YAML formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

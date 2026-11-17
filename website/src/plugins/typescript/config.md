@@ -1,6 +1,6 @@
 ---
 title: Configuration - TypeScript / JavaScript
-description: Documentation on the configuration file for the TypeScript / JavaScript code formatting plugin for dprint.
+description: Documentation on the configuration file for the TypeScript / JavaScript code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

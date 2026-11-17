@@ -1,6 +1,6 @@
 ---
 title: Pretty GraphQL Plugin
-description: Documentation on the GraphQL code formatting plugin for dprint.
+description: Documentation on the GraphQL code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -10,10 +10,10 @@ Adapter plugin that formats GraphQL files via [Pretty GraphQL](https://github.co
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add g-plane/pretty_graphql
+kprint add g-plane/pretty_graphql
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"graphql"` property to add configuration:

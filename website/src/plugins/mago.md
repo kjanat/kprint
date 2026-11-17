@@ -1,6 +1,6 @@
 ---
 title: Mago Plugin
-description: Documentation on the Mago code formatting plugin for dprint.
+description: Documentation on the Mago code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -12,12 +12,12 @@ Formats .php files.
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add mago
+kprint add mago
 # or install from npm
-dprint add npm:@dprint/mago
+kprint add npm:@dprint/mago
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"mago"` property to add configuration:

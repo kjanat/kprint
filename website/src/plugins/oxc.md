@@ -1,6 +1,6 @@
 ---
 title: Oxc Plugin
-description: Documentation on the Oxc code formatting plugin for dprint.
+description: Documentation on the Oxc code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -10,12 +10,12 @@ Adapter plugin that formats JavaScript and TypeScript files via [Oxc](https://ox
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add oxc
+kprint add oxc
 # or install from npm
-dprint add npm:@dprint/oxc
+kprint add npm:@dprint/oxc
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"oxc"` property to add configuration:

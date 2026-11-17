@@ -1,6 +1,6 @@
 ---
 title: Malva Plugin
-description: Documentation on the Malva code formatting plugin for dprint.
+description: Documentation on the Malva code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -10,10 +10,10 @@ Adapter plugin that formats CSS, SCSS, Sass (indented syntax), and Less files vi
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add g-plane/malva
+kprint add g-plane/malva
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"malva"` property to add configuration:

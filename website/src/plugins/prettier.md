@@ -1,6 +1,6 @@
 ---
 title: Prettier Plugin
-description: Documentation on the Prettier code formatting plugin for dprint.
+description: Documentation on the Prettier code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -17,9 +17,9 @@ Adapter plugin that formats [many languages](https://prettier.io/docs/en/index.h
 ## Install and Setup
 
 ```shellsession
-dprint add prettier
+kprint add prettier
 # or install from npm
-dprint add npm:@dprint/prettier
+kprint add npm:@dprint/prettier
 ```
 
 ## Configuration

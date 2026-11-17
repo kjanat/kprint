@@ -1,6 +1,6 @@
 ---
 title: YAML Plugin
-description: Documentation on the YAML code formatting plugin for dprint.
+description: Documentation on the YAML code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -10,10 +10,10 @@ Adapter plugin that formats YAML files via [Pretty YAML](https://github.com/g-pl
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add g-plane/pretty_yaml
+kprint add g-plane/pretty_yaml
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"yaml"` property to add configuration:

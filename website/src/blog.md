@@ -1,6 +1,6 @@
 ---
 title: Blog
-description: Updates about dprint.
+description: Updates about kprint.
 robots: false
 layout: layouts/full_page.njk
 ---

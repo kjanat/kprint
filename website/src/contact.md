@@ -6,4 +6,4 @@ layout: layouts/full_page.njk
 
 # Contact Us
 
-The easiest way to get in touch is via email: david@dprint.dev
+Open an issue on [GitHub](https://github.com/kjanat/kprint/issues).

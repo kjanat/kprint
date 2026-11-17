@@ -1,6 +1,6 @@
 ---
 title: Panache Plugin
-description: Documentation on the Panache code formatting plugin for dprint.
+description: Documentation on the Panache code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -19,10 +19,10 @@ Formats .md, .qmd, .Rmd, and related files.
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add jolars/panache
+kprint add jolars/panache
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"panache"` property to add configuration:

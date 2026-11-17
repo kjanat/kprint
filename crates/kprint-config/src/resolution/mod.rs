@@ -9,7 +9,7 @@ mod resolve_main_config_path;
 pub(crate) mod resolve_npm_extends;
 mod types;
 
-pub use crate::CONFIG_SCHEMA_FILE_NAME;
+pub use crate::CONFIG_SCHEMA_FILE_NAMES;
 #[cfg(feature = "schema")]
 pub use crate::PluginSchema;
 #[cfg(feature = "schema")]
@@ -26,6 +26,7 @@ pub use config_settings::PropertyOrigins;
 pub use get_global_config::*;
 pub use manipulation::*;
 pub use resolve_config::*;
+pub use resolve_main_config_path::GLOBAL_CONFIG_FILE_NAMES;
 pub use resolve_main_config_path::POSSIBLE_CONFIG_FILE_NAMES;
 pub use resolve_main_config_path::ResolvedConfigPathWithText;
 pub use resolve_main_config_path::config_needs_file_message;

@@ -651,7 +651,7 @@ mod test {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .write_file(
         "/dprint.toml",
-        "#:schema https://dprint.dev/schemas/v0.json\nplugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
+        "#:schema https://dprint.kjanat.dev/schemas/v0.json\nplugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
       )
       .write_file("/file.txt", "text")
       .build();
@@ -662,7 +662,7 @@ mod test {
   }
 
   #[test]
-  fn should_prefer_json_config_over_toml_config() {
+  fn should_prefer_toml_config_over_json_config() {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .write_file(
         "/dprint.toml",
@@ -677,7 +677,7 @@ mod test {
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
-    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_json");
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_toml");
   }
 
   #[test]
@@ -1568,7 +1568,7 @@ mod test {
       err.to_string(),
       format!(
         concat!(
-          "No config file found at /dprint.json. ",
+          "No config file found at /kprint.json. ",
           "Did you mean to create (kprint init) or specify one (--config <path>)?",
           "\n\n{}",
         ),
@@ -6330,7 +6330,7 @@ text_formatted"
     err.assert_exit_code(11);
     assert_eq!(
       err.to_string(),
-      "Could not find global dprint.json file. Create one with `kprint init --global`"
+      "Could not find a global configuration file. Create one with `kprint init --global`"
     );
   }
 

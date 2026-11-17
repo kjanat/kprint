@@ -1,6 +1,6 @@
 ---
 title: Badness Plugin
-description: Documentation on the Badness code formatting plugin for dprint.
+description: Documentation on the Badness code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -19,10 +19,10 @@ Formats .tex, .sty, .cls, .dtx, .ins, and .bib files.
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add jolars/badness
+kprint add jolars/badness
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"badness"` property to add configuration:

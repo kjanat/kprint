@@ -17,7 +17,20 @@ pub mod environment {
   #[cfg(test)]
   pub use kprint_test_support::environment::*;
 }
-pub const POSSIBLE_CONFIG_FILE_NAMES: &[&str] = &["dprint.json", "dprint.jsonc", ".dprint.json", ".dprint.jsonc", "dprint.toml", ".dprint.toml"];
+pub const POSSIBLE_CONFIG_FILE_NAMES: &[&str] = &[
+  "kprint.toml",
+  ".kprint.toml",
+  "kprint.json",
+  "kprint.jsonc",
+  ".kprint.json",
+  ".kprint.jsonc",
+  "dprint.toml",
+  ".dprint.toml",
+  "dprint.json",
+  "dprint.jsonc",
+  ".dprint.json",
+  ".dprint.jsonc",
+];
 mod utils {
   pub(crate) use crate::gitignore;
   pub use crate::glob::*;
@@ -29,9 +42,16 @@ pub use kprint_test_support::test_helpers;
 pub fn config_file_names<'a>(dir: &std::path::Path, environment: &impl environment::DirectoriesEnvironment) -> impl Iterator<Item = &'a str> {
   let search_dot_config = environment.get_home_dir().is_none_or(|home| home.as_ref() != dir);
   POSSIBLE_CONFIG_FILE_NAMES.iter().copied().chain(
-    [".config/dprint.json", ".config/dprint.jsonc", ".config/dprint.toml"]
-      .into_iter()
-      .filter(move |_| search_dot_config),
+    [
+      ".config/kprint.toml",
+      ".config/kprint.json",
+      ".config/kprint.jsonc",
+      ".config/dprint.toml",
+      ".config/dprint.json",
+      ".config/dprint.jsonc",
+    ]
+    .into_iter()
+    .filter(move |_| search_dot_config),
   )
 }
 

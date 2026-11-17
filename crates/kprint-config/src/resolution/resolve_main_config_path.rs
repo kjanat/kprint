@@ -17,9 +17,12 @@ use crate::utils::ResolvedFilePathWithTextRef;
 use crate::utils::resolve_url_or_file_path_to_path_source;
 use kprint_discovery::ConfigDiscovery;
 
-/// The names of configuration files, in order of preference. The TOML ones are
-/// last so a directory with both keeps using its JSON file.
+/// The names of configuration files, in order of preference: kprint's before
+/// dprint's, and for each the TOML ones before the JSON ones.
 pub use kprint_discovery::POSSIBLE_CONFIG_FILE_NAMES;
+
+/// The names of global configuration files, in order of preference.
+pub const GLOBAL_CONFIG_FILE_NAMES: [&str; 6] = ["kprint.toml", "kprint.jsonc", "kprint.json", "dprint.toml", "dprint.jsonc", "dprint.json"];
 
 #[derive(Debug)]
 pub struct ResolvedConfigPathWithText {
@@ -297,7 +300,7 @@ fn resolve_uncanonicalized_local_path(config: &str, cwd: &CanonicalizedPathBuf, 
 fn resolve_global_config_path_or_error(environment: &impl Environment) -> Result<ResolvedConfigPathWithText> {
   match resolve_global_config_path_and_text_detail(environment)? {
     ResolveGlobalConfigPathResult::Found(resolved_config_path) => Ok(resolved_config_path),
-    ResolveGlobalConfigPathResult::NotFound => anyhow::bail!("Could not find global dprint.json file. Create one with `kprint init --global`"),
+    ResolveGlobalConfigPathResult::NotFound => anyhow::bail!("Could not find a global configuration file. Create one with `kprint init --global`"),
     ResolveGlobalConfigPathResult::FailedResolvingSystemDir(err) => Err(anyhow::Error::from(err).context(concat!(
       "Could not find system config directory. ",
       "Maybe specify the DPRINT_CONFIG_DIR environment ",
@@ -324,7 +327,7 @@ fn resolve_global_config_path_and_text_detail(environment: &impl Environment) ->
     Ok(dir) => dir,
     Err(err) => return Ok(ResolveGlobalConfigPathResult::FailedResolvingSystemDir(err)),
   };
-  for name in ["dprint.jsonc", "dprint.json", "dprint.toml"] {
+  for name in GLOBAL_CONFIG_FILE_NAMES {
     let file_path = global_folder.join_panic_relative(name);
     if let Some(content) = environment.maybe_read_file(&file_path)? {
       return Ok(ResolveGlobalConfigPathResult::Found(ResolvedConfigPathWithText {
@@ -484,6 +487,59 @@ mod tests {
       resolved.source,
       PathSource::new_local(environment.canonicalize("/project/dprint.json").unwrap())
     );
+  }
+
+  #[test]
+  fn prefers_kprint_names_over_dprint_names_in_a_directory() {
+    for (files, expected) in [
+      (&["/project/dprint.toml", "/project/kprint.json"][..], "/project/kprint.json"),
+      (&["/project/kprint.json", "/project/kprint.toml"][..], "/project/kprint.toml"),
+      (&["/project/dprint.json", "/project/dprint.toml"][..], "/project/dprint.toml"),
+      (&["/project/.dprint.json", "/project/.kprint.jsonc"][..], "/project/.kprint.jsonc"),
+      (&["/project/dprint.jsonc"][..], "/project/dprint.jsonc"),
+      (
+        &["/project/.config/dprint.toml", "/project/.config/kprint.json"][..],
+        "/project/.config/kprint.json",
+      ),
+      (
+        &["/project/.config/kprint.jsonc", "/project/.config/kprint.toml"][..],
+        "/project/.config/kprint.toml",
+      ),
+      (&["/project/.config/kprint.json", "/project/dprint.json"][..], "/project/dprint.json"),
+    ] {
+      let environment = TestEnvironment::new();
+      for file in files {
+        environment.mk_dir_all(Path::new(file).parent().unwrap()).unwrap();
+        environment.write_file(file, "{}").unwrap();
+      }
+      let resolved = get_default_config_file_in_ancestor_directories(&environment, Path::new("/project"))
+        .unwrap()
+        .unwrap();
+      assert_eq!(resolved.source, PathSource::new_local(environment.canonicalize(expected).unwrap()), "{files:?}");
+    }
+  }
+
+  #[test]
+  fn prefers_a_global_kprint_file_over_a_dprint_file() {
+    for (files, expected) in [
+      (&["dprint.toml", "kprint.jsonc"][..], "kprint.jsonc"),
+      (&["kprint.jsonc", "kprint.toml"][..], "kprint.toml"),
+      (&["dprint.jsonc", "dprint.toml"][..], "dprint.toml"),
+      (&["dprint.json"][..], "dprint.json"),
+    ] {
+      let environment = TestEnvironment::new();
+      environment.set_env_var("DPRINT_CONFIG_DIR", Some("/global"));
+      environment.mk_dir_all("/global").unwrap();
+      for file in files {
+        environment.write_file(Path::new("/global").join(file), "{}").unwrap();
+      }
+      let resolved = resolve_global_config_path_and_text(&environment).unwrap().unwrap();
+      assert_eq!(
+        resolved.source,
+        PathSource::new_local(environment.canonicalize(Path::new("/global").join(expected)).unwrap()),
+        "{files:?}"
+      );
+    }
   }
 
   #[test]

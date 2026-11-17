@@ -1,6 +1,6 @@
 ---
 title: Jupyter Plugin
-description: Documentation on the Jupyter Notebook code block formatting plugin for dprint.
+description: Documentation on the Jupyter Notebook code block formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -10,12 +10,12 @@ Formats code blocks in Jupyter Notebooks.
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add jupyter
+kprint add jupyter
 # or install from npm
-dprint add npm:@dprint/jupyter
+kprint add npm:@dprint/jupyter
 ```
 
 This will update your config file to have an entry for the plugin.
@@ -31,9 +31,9 @@ This will update your config file to have an entry for the plugin.
 Then add some additional formatting plugins to format the code blocks with. For example:
 
 ```shellsession
-dprint add typescript
-dprint add markdown
-dprint add ruff
+kprint add typescript
+kprint add markdown
+kprint add ruff
 ```
 
 If you find a code block isn't being formatted with a plugin, please verify it's not a syntax error. After, open an [issue](https://github.com/dprint/dprint-plugin-jupyter/issues) about adding support for that plugin (if you're interested in opening a PR, it's potentially an easy contribution).

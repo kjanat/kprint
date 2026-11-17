@@ -1,6 +1,6 @@
 ---
 title: Swift Plugin
-description: Documentation on the Swift code formatting plugin for dprint.
+description: Documentation on the Swift code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -18,10 +18,10 @@ Formats `.swift` files on macOS and Linux (x86_64 and aarch64).
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add drluckyspin/swift
+kprint add drluckyspin/swift
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"swiftformat"` property to add configuration:
@@ -37,7 +37,7 @@ This will update your config file to have an entry for the plugin. Then optional
 }
 ```
 
-Update to the latest release with `dprint config update`.
+Update to the latest release with `kprint config update`.
 
 ## Configuration
 

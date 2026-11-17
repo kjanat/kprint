@@ -1,6 +1,6 @@
 ---
 title: Ruff Plugin
-description: Documentation on the Ruff code formatting plugin for dprint.
+description: Documentation on the Ruff code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -14,12 +14,12 @@ Note: For formatting .ipynb files, use the [Jupyter plugin](/plugins/jupyter) al
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add ruff
+kprint add ruff
 # or install from npm
-dprint add npm:@dprint/ruff
+kprint add npm:@dprint/ruff
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"ruff"` property to add configuration:

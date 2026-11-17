@@ -1,12 +1,12 @@
 ---
 title: Plugins
-description: Links to dprint formatting plugins.
+description: Links to kprint formatting plugins.
 layout: layouts/documentation.njk
 ---
 
 # Plugins
 
-Dprint is made up of Wasm and process plugins.
+kprint is made up of Wasm and process plugins.
 
 - Wasm plugins are compiled to a `.wasm` file and run sandboxed.
 - Process plugins are compiled to an executable file and do NOT run sandboxed.

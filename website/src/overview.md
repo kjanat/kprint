@@ -1,25 +1,25 @@
 ---
 title: Overview
-description: Getting started with dprint.
+description: Getting started with kprint.
 layout: layouts/documentation.njk
 ---
 
 # Overview
 
-dprint is a command line application that automatically formats code.
+kprint is a command line application that automatically formats code.
 
 ```sh
 # add a config file
-dprint init
+kprint init
 
 # add plugins to config
-dprint add typescript markdown json
+kprint add typescript markdown json
 
 # format
-dprint fmt
+kprint fmt
 
 # check to ensure code is formatted
-dprint check
+kprint check
 ```
 
 ## Editor Demo
