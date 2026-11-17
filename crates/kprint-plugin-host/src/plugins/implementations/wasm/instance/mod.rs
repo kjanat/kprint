@@ -40,7 +40,8 @@ fn map_native_call_error(err: wasmtime::Error) -> anyhow::Error {
 }
 
 fn critical_format_error(err: anyhow::Error) -> kprint_plugin_types::FormatError {
-  use kprint_plugin_types::{CriticalFormatError, FormatError};
+  use kprint_plugin_types::CriticalFormatError;
+  use kprint_plugin_types::FormatError;
   match err.downcast::<WasmStackOverflowError>() {
     Ok(err) => CriticalFormatError(FormatError::new(err)).into(),
     Err(err) => CriticalFormatError(FormatError::new(err)).into(),
