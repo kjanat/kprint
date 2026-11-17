@@ -396,9 +396,8 @@ mod test {
   #[cfg(unix)]
   #[test]
   fn shutdown_interrupts_stalled_liveness_and_replacement_handshakes() {
+    use kprint_test_support::test_helpers::write_executable;
     use sys_traits::FsRead;
-    use sys_traits::FsSetPermissions;
-    use sys_traits::FsWrite;
     for stalled_handshake in [false, true] {
       let real_fs = sys_traits::impls::RealSys;
       let dir = tempfile::tempdir().unwrap();
@@ -410,8 +409,7 @@ mod test {
       } else {
         format!("#!/bin/sh\n{handshake}\nhead -c 12 | wc -c > '{}'\nexec sleep 120\n", marker.display())
       };
-      real_fs.fs_write(&script, initial).unwrap();
-      real_fs.fs_set_permissions(&script, 0o700).unwrap();
+      write_executable(&script, &initial);
       let environment = TestEnvironmentBuilder::new().build();
       environment.clone().run_in_runtime(async move {
         let communicator = InitializedProcessPluginCommunicator::new("stalled".into(), script.clone(), environment.clone())
@@ -420,9 +418,7 @@ mod test {
         let failed = communicator.get_inner().await;
         if stalled_handshake {
           failed.kill();
-          real_fs
-            .fs_write(&script, format!("#!/bin/sh\nprintf 'handshake' > '{}'\nexec sleep 120\n", marker.display()))
-            .unwrap();
+          write_executable(&script, &format!("#!/bin/sh\nprintf 'handshake' > '{}'\nexec sleep 120\n", marker.display()));
         }
         tokio::time::timeout(Duration::from_secs(5), async {
           let shutdown = async {
