@@ -41,6 +41,26 @@ Deno.test("the home directory's .config holds no project configuration", () => {
   });
 });
 
+Deno.test("a search from a project's .config directory starts at the project", () => {
+  withProject((root) => {
+    const dotConfig = join(root, ".config");
+    mkdirSync(dotConfig);
+    writeFileSync(join(dotConfig, ".kprint.json"), "{}");
+    strictEqual(hasConfigFile(dotConfig, undefined), false);
+    writeFileSync(join(dotConfig, "kprint.json"), "{}");
+    strictEqual(hasConfigFile(dotConfig, undefined), true);
+  });
+});
+
+Deno.test("a search from the home directory's .config starts there", () => {
+  withProject((root) => {
+    const dotConfig = join(root, ".config");
+    mkdirSync(dotConfig);
+    writeFileSync(join(dotConfig, ".kprint.json"), "{}");
+    strictEqual(hasConfigFile(dotConfig, root), true);
+  });
+});
+
 Deno.test("a directory without a configuration file has none", () => {
   withProject((_root, nested) => {
     writeFileSync(join(nested, "notkprint.json"), "{}");

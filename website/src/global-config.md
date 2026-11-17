@@ -50,7 +50,7 @@ The editor to use for the global config follows the same rules as [Editing Confi
 
 ## Using the Global Configuration
 
-Once setup, the global configuration will be used by default when there's no kprint configuration file in the current directory tree; however, to prevent accidentally formatting such directories, a prompt is shown when calling `kprint fmt`:
+Once setup, the global configuration will be used by default when there's no kprint or dprint configuration file in the current directory tree; however, to prevent accidentally formatting such directories, a prompt is shown when calling `kprint fmt`:
 
 ```
 > kprint fmt

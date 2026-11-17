@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 // POSSIBLE_CONFIG_FILE_NAMES and config_file_names in kprint-discovery
 export const configFileNames = [
@@ -26,7 +26,8 @@ const dotConfigFileNames = [
 ];
 
 export function hasConfigFile(dir: string, home: string | undefined): boolean {
-  for (let current = dir;; current = dirname(current)) {
+  const start = basename(dir) === ".config" && dirname(dir) !== home ? dirname(dir) : dir;
+  for (let current = start;; current = dirname(current)) {
     const names = current === home ? configFileNames : [...configFileNames, ...dotConfigFileNames];
     if (names.some((name) => existsSync(join(current, name)))) {
       return true;
