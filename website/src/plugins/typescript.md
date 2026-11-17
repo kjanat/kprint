@@ -1,6 +1,6 @@
 ---
 title: TypeScript / JavaScript Plugin
-description: Documentation on the TypeScript / JavaScript code formatting plugin for dprint.
+description: Documentation on the TypeScript / JavaScript code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -14,12 +14,12 @@ Supports:
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add typescript
+kprint add typescript
 # or install from npm
-dprint add npm:@dprint/typescript
+kprint add npm:@dprint/typescript
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"typescript"` property to add configuration:
@@ -76,7 +76,7 @@ const identity = /* dprint-ignore */ [
 
 ## Explicit Newlines
 
-For the most part, dprint allows you to place certain nodes like binary, logical, and member expressions on different lines as you see fit. It does this because newlines can often convey meaning or grouping.
+For the most part, kprint allows you to place certain nodes like binary, logical, and member expressions on different lines as you see fit. It does this because newlines can often convey meaning or grouping.
 
 <!-- dprint-ignore -->
 ```ts
@@ -118,7 +118,7 @@ if (
 
 ### Forcing a Line Per Expression
 
-By default, dprint will leave line breaks between expressions in member expressions (ex. `myObj.prop`) and binary expressions (ex. `value + other`). If you don't want this behaviour, you can disable it by setting the following configuration:
+By default, kprint will leave line breaks between expressions in member expressions (ex. `myObj.prop`) and binary expressions (ex. `value + other`). If you don't want this behaviour, you can disable it by setting the following configuration:
 
 - `"memberExpression.linePerExpression": true`
 - `"binaryExpression.linePerExpression": true`

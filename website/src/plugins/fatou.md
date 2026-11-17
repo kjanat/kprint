@@ -1,6 +1,6 @@
 ---
 title: Fatou Plugin
-description: Documentation on the Fatou code formatting plugin for dprint.
+description: Documentation on the Fatou code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -19,10 +19,10 @@ Formats .jl files.
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add jolars/fatou
+kprint add jolars/fatou
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"fatou"` property to add configuration:

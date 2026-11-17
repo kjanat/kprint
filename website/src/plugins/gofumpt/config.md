@@ -1,6 +1,6 @@
 ---
 title: Configuration - Gofumpt
-description: Documentation on the configuration file for the gofumpt code formatting plugin for dprint.
+description: Documentation on the configuration file for the gofumpt code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Rustfmt Plugin
-description: Documentation on the rustfmt code formatting plugin for dprint.
+description: Documentation on the rustfmt code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

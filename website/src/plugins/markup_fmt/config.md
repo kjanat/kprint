@@ -1,6 +1,6 @@
 ---
 title: Configuration - markup_fmt
-description: Documentation on the configuration file for the markup_fmt formatting plugin for dprint.
+description: Documentation on the configuration file for the markup_fmt formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

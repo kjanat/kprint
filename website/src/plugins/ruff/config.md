@@ -1,6 +1,6 @@
 ---
 title: Configuration - Ruff
-description: Documentation on the configuration file for the Ruff code formatting plugin for dprint.
+description: Documentation on the configuration file for the Ruff code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

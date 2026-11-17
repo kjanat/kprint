@@ -1,6 +1,6 @@
 ---
 title: markup_fmt Plugin
-description: Documentation on the markup_fmt code formatting plugin for dprint.
+description: Documentation on the markup_fmt code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -10,10 +10,10 @@ Adapter plugin that formats HTML, Vue, Svelte, Astro, Angular, Jinja, Twig, Nunj
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add g-plane/markup_fmt
+kprint add g-plane/markup_fmt
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"markup"` property (not `"markup_fmt"`) to add configuration:

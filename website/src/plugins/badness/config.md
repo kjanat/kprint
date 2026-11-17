@@ -1,6 +1,6 @@
 ---
 title: Configuration - Badness
-description: Documentation on the configuration file for the Badness code formatting plugin for dprint.
+description: Documentation on the configuration file for the Badness code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -14,7 +14,7 @@ layout: layouts/documentation.njk
 
 # Badness - Configuration
 
-Specify configuration under the `"badness"` key in your dprint configuration file.
+Specify configuration under the `"badness"` key in your kprint configuration file.
 
 | Property               | Values                                                            | Default                           |
 | ---------------------- | ----------------------------------------------------------------- | --------------------------------- |

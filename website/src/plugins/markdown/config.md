@@ -1,6 +1,6 @@
 ---
 title: Configuration - Markdown
-description: Documentation on the configuration file for the Markdown code formatting plugin for dprint.
+description: Documentation on the configuration file for the Markdown code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

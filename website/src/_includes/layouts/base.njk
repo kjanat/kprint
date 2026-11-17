@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>{% if title %}{{ title }} - dprint - Code Formatter{% else %}dprint - Code Formatter{% endif %}</title>
+    <title>{% if title %}{{ title }} - kprint - Code Formatter{% else %}kprint - Code Formatter{% endif %}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="/icons/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
@@ -19,9 +19,8 @@
     </script>
     <script async src="/scripts.js"></script>
     <meta name="description" content="{{ description }}" />
-    <meta name="author" content="Dprint Code Formatting" />
+    <meta name="author" content="kprint Code Formatting" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:site" content="@dprintfmt" />
     <meta name="twitter:title" content="{{ title }}" />
     <meta name="twitter:description" content="{{ description }}" />
     {% if robots == false %}<meta name="robots" content="noindex">{% endif %}
@@ -34,7 +33,7 @@
   <body>
     <nav class="site-nav" aria-label="Main">
       <div class="nav-inner">
-        <a class="brand" href="/">dprint</a>
+        <a class="brand" href="/">kprint</a>
         <div class="nav-links">
           <a href="/overview" {% if isDocumentation and "/plugin" not in url %}class="active"{% endif %}>Guide</a>
           <a href="/plugins" {% if "/plugin" in url %}class="active"{% endif %}>Plugins</a>
@@ -58,12 +57,11 @@
 
     <footer class="site-footer">
       <div class="footer-inner">
-        <div class="footer-brand">dprint</div>
+        <div class="footer-brand">kprint</div>
         <div class="footer-links">
           <a href="/">Home</a>
           <a href="/contact">Contact</a>
-          <a href="https://twitter.com/dprintfmt">Twitter</a>
-          <a href="https://github.com/dprint">GitHub</a>
+          <a href="https://github.com/kjanat/kprint">GitHub</a>
         </div>
         <div class="footer-tag">A code formatting platform · Rust + Wasm</div>
       </div>

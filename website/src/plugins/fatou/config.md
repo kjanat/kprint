@@ -1,6 +1,6 @@
 ---
 title: Configuration - Fatou
-description: Documentation on the configuration file for the Fatou code formatting plugin for dprint.
+description: Documentation on the configuration file for the Fatou code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -14,7 +14,7 @@ layout: layouts/documentation.njk
 
 # Fatou - Configuration
 
-Specify configuration under the `"fatou"` key in your dprint configuration file.
+Specify configuration under the `"fatou"` key in your kprint configuration file.
 
 | Property      | Values                                 | Default                           |
 | ------------- | -------------------------------------- | --------------------------------- |

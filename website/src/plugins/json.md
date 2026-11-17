@@ -1,6 +1,6 @@
 ---
 title: JSON Plugin
-description: Documentation on the JSON code formatting plugin for dprint.
+description: Documentation on the JSON code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 
@@ -13,12 +13,12 @@ Supports:
 
 ## Install and Setup
 
-In your project's directory with a dprint.json file, run:
+In your project's directory with a kprint.json file, run:
 
 ```shellsession
-dprint add json
+kprint add json
 # or install from npm
-dprint add npm:@dprint/json
+kprint add npm:@dprint/json
 ```
 
 This will update your config file to have an entry for the plugin. Then optionally specify a `"json"` property to add configuration:

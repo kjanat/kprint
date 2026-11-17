@@ -1,6 +1,6 @@
 ---
 title: Configuration - Biome
-description: Documentation on the configuration file for the Biome code formatting plugin for dprint.
+description: Documentation on the configuration file for the Biome code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

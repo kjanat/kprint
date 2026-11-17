@@ -1,12 +1,12 @@
 ---
 title: Configuration
-description: Documentation on dprint's configuration file.
+description: Documentation on kprint's configuration file.
 layout: layouts/documentation.njk
 ---
 
 # Configuration
 
-Configuration allows you to modify how dprint and its plugins behave.
+Configuration allows you to modify how kprint and its plugins behave.
 
 ## Setup
 
@@ -85,39 +85,39 @@ indentWidth = 2
 
 Property names with a dot in them are quoted, like they are in JSON. Arrays of objects (ex. `"overrides"` or the exec plugin's `"commands"`) are arrays of tables, ex. `[[exec.commands]]`.
 
-Create one with `dprint init --config dprint.toml`. Commands that edit the configuration (ex. `dprint add` and `dprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
+Create one with `kprint init --config kprint.toml`. Commands that edit the configuration (ex. `kprint add` and `kprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
 
 ### Schema
 
-`dprint schema` prints a JSON schema of the configuration file that includes each plugin's configuration, so an editor can validate and complete the plugins' properties too. Save it next to the configuration file and refer to it:
+`kprint schema` prints a JSON schema of the configuration file that includes each plugin's configuration, so an editor can validate and complete the plugins' properties too. Save it next to the configuration file and refer to it:
 
 ```shellsession
-dprint schema > dprint.schema.json
+kprint schema > kprint.schema.json
 ```
 
 <!-- dprint-ignore -->
 ```toml
-#:schema ./dprint.schema.json
+#:schema ./kprint.schema.json
 ```
 
-In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add`, `dprint config update` and `dprint init` (when it adds plugins to an existing configuration file) regenerate it. After `dprint add --package-json`, that's with the version added to `package.json`, before it's installed.
+In a JSON configuration file, that's `"$schema": "./kprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `kprint.schema.json` next to the configuration file, `kprint add`, `kprint config update` and `kprint init` (when it adds plugins to an existing configuration file) regenerate it. After `kprint add --package-json`, that's with the version added to `package.json`, before it's installed.
 
-That's done once the configuration file (and `package.json`) is changed, and takes at most about 30 seconds, downloads included. When a plugin's schema can't be retrieved (ex. its download fails, it's over 8 MiB, or it isn't valid JSON), or it takes longer, the schema file is kept as it was rather than replaced with one missing that plugin's configuration, and dprint warns about it. The configuration file stays changed either way. Likewise, `dprint schema` errors rather than prints a schema without a plugin whose schema it couldn't retrieve, unless `--allow-incomplete` is specified.
+That's done once the configuration file (and `package.json`) is changed, and takes at most about 30 seconds, downloads included. When a plugin's schema can't be retrieved (ex. its download fails, it's over 8 MiB, or it isn't valid JSON), or it takes longer, the schema file is kept as it was rather than replaced with one missing that plugin's configuration, and kprint warns about it. The configuration file stays changed either way. Likewise, `kprint schema` errors rather than prints a schema without a plugin whose schema it couldn't retrieve, unless `--allow-incomplete` is specified.
 
 The schema describes one configuration file, so it doesn't require what another file may provide (ex. the commands of an [extended](#extending-a-different-configuration-file) configuration). For a configuration file that [inherits](#directory-specific-configuration) (`"inherit": true`), it includes the plugins it inherits, from the configuration file of the closest ancestor directory with one (or else the global configuration file).
 
-The schema is JSON schema 2020-12, which bundles schemas by embedding each as a resource of its own: each plugin's schema is under `$defs`, keeping its `$id` (or getting the url it was downloaded from as one) and its references, which are resolved against that as in the plugin's own document. Where a plugin's schema is of an earlier draft (draft-04 to 2019-09), the syntax that draft had for the same thing is translated (ex. an `items` array becomes `prefixItems`, and what a draft before 2019-09 ignored next to a `$ref` is dropped); a schema of a draft dprint doesn't know is referred to by its url instead, which `dprint schema` warns about, as editors may then report dprint's own properties of that plugin's table (ex. `associations`) as unknown. The same goes for a plugin schema whose table is described by another file (ex. a `$ref` to another url). What's under a keyword that isn't JSON schema's (ex. an editor extension's `x-` keyword) is kept as it is.
+The schema is JSON schema 2020-12, which bundles schemas by embedding each as a resource of its own: each plugin's schema is under `$defs`, keeping its `$id` (or getting the url it was downloaded from as one) and its references, which are resolved against that as in the plugin's own document. Where a plugin's schema is of an earlier draft (draft-04 to 2019-09), the syntax that draft had for the same thing is translated (ex. an `items` array becomes `prefixItems`, and what a draft before 2019-09 ignored next to a `$ref` is dropped); a schema of a draft kprint doesn't know is referred to by its url instead, which `kprint schema` warns about, as editors may then report kprint's own properties of that plugin's table (ex. `associations`) as unknown. The same goes for a plugin schema whose table is described by another file (ex. a `$ref` to another url). What's under a keyword that isn't JSON schema's (ex. an editor extension's `x-` keyword) is kept as it is.
 
-A plugin's schema describes the plugin's own properties: what dprint hands the plugin is its table without `associations`, `locked` and `overrides`, and each override without `files`. So its properties apply in the table, and in each override (where nothing is required) as far as the schema declares them unconditionally: what it says on a condition (ex. in an `anyOf` branch) isn't checked in an override, as the table the override is merged into decides the condition. A plugin schema that describes its table as a whole (ex. with `maxProperties` or `propertyNames`), which can't say what it does of that, isn't applied at all. `dprint schema` warns about both.
+A plugin's schema describes the plugin's own properties: what kprint hands the plugin is its table without `associations`, `locked` and `overrides`, and each override without `files`. So its properties apply in the table, and in each override (where nothing is required) as far as the schema declares them unconditionally: what it says on a condition (ex. in an `anyOf` branch) isn't checked in an override, as the table the override is merged into decides the condition. A plugin schema that describes its table as a whole (ex. with `maxProperties` or `propertyNames`), which can't say what it does of that, isn't applied at all. `kprint schema` warns about both.
 
-dprint's own part of the schema (the configuration file's properties, and what every plugin's table has) is generated from the types dprint reads a configuration file into, so what dprint accepts and what the schema says are one definition. The schema of the built-in [exec plugin](/plugins/exec) is generated the same way from what it reads its configuration into, and comes with dprint rather than being downloaded, so it describes what this version accepts (ex. `playWithFire` and `setupTimeout`).
+kprint's own part of the schema (the configuration file's properties, and what every plugin's table has) is generated from the types kprint reads a configuration file into, so what kprint accepts and what the schema says are one definition. The schema of the built-in [exec plugin](/plugins/exec) is generated the same way from what it reads its configuration into, and comes with kprint rather than being downloaded, so it describes what this version accepts (ex. `playWithFire` and `setupTimeout`).
 
 The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
 
 ```toml
 [[schemas]]
-path    = "dprint.schema.json"
-include = ["dprint.toml"]
+path    = "kprint.schema.json"
+include = ["kprint.toml"]
 ```
 
 ## Plugins
@@ -145,7 +145,7 @@ Note: The order of the plugins in this array defines the precedence. If two plug
 You may add a plugin via the CLI by running:
 
 ```sh
-dprint add
+kprint add
 ```
 
 This will prompt asking you which of the standard plugins you want to add.
@@ -153,52 +153,52 @@ This will prompt asking you which of the standard plugins you want to add.
 Alternatively, specify the specific name of the plugin to add based on its GitHub repo:
 
 ```sh
-dprint add dprint/dprint-plugin-typescript
+kprint add dprint/dprint-plugin-typescript
 ```
 
 Or for the standard plugins, you can just do:
 
 ```sh
-dprint add typescript
+kprint add typescript
 ```
 
 You can also add multiple plugins at once:
 
 ```sh
-dprint add typescript json markdown
+kprint add typescript json markdown
 ```
 
 Or specify a plugin url:
 
 ```sh
-dprint add https://plugins.dprint.dev/json-x.x.x.wasm
+kprint add https://plugins.dprint.dev/json-x.x.x.wasm
 ```
 
 Or from npm:
 
 ```sh
-dprint add npm:@dprint/json
+kprint add npm:@dprint/json
 ```
 
 By default Wasm plugins are added without a checksum (process plugins always get one). Use `--checksum` to pin a checksum on the added plugin regardless:
 
 ```sh
-dprint add --checksum typescript
+kprint add --checksum typescript
 ```
 
-Note: `dprint config add` also works and is equivalent.
+Note: `kprint config add` also works and is equivalent.
 
 ### Minimum Dependency Age
 
 For plugins on npm, you can specify a `--minimum-dependency-age`:
 
 ```sh
-dprint config update --minimum-dependency-age=P3D
+kprint config update --minimum-dependency-age=P3D
 ```
 
 The value takes the following forms: an ISO-8601 duration (`P3D`, `PT72H`), a plain number of minutes (`1440`), an absolute date (`2026-01-15`) or RFC3339 timestamp to hold back everything published after it, or `0` to turn the requirement off.
 
-With no flag, dprint uses the configuration file's `minimumDependencyAge`, which takes the same forms:
+With no flag, kprint uses the configuration file's `minimumDependencyAge`, which takes the same forms:
 
 ```jsonc
 {
@@ -208,22 +208,22 @@ With no flag, dprint uses the configuration file's `minimumDependencyAge`, which
 
 The flag takes precedence, so `--minimum-dependency-age=0` turns a configured age off for one run. There is no minimum otherwise — a version is only ever held back when you ask for one. Some other notes:
 
-- It applies to npm-distributed plugins. Plugins served from a URL carry no publish date for dprint to check, so they resolve as they always have.
-- It never downgrades an entry you already have. Existing plugin versions are left alone, and a version you write out yourself (`dprint config add npm:@dprint/json@1.2.3`) is taken as your decision and added as-is — so an explicit version is a way to opt a single plugin out.
+- It applies to npm-distributed plugins. Plugins served from a URL carry no publish date for kprint to check, so they resolve as they always have.
+- It never downgrades an entry you already have. Existing plugin versions are left alone, and a version you write out yourself (`kprint config add npm:@dprint/json@1.2.3`) is taken as your decision and added as-is — so an explicit version is a way to opt a single plugin out.
 - Only stable releases at or below the package's `latest` tag are considered when walking back, so a prerelease can't be selected by a walk back you didn't ask for. A package whose `latest` tag is itself a prerelease walks back through prereleases, since that's all it has.
-- `dprint config update` leaves a plugin where it is when no version of its package is old enough, reporting it rather than failing. `dprint init` and `dprint config add` error in the same situation, since there's nothing to write.
+- `kprint config update` leaves a plugin where it is when no version of its package is old enough, reporting it rather than failing. `kprint init` and `kprint config add` error in the same situation, since there's nothing to write.
 
 ### Updating Plugins via CLI
 
 Plugins can be updated to the latest version in the configuration file by running:
 
 ```sh
-dprint config update
+kprint config update
 ```
 
-To update configuration files in descendant directories, run `dprint config update --recursive`.
+To update configuration files in descendant directories, run `kprint config update --recursive`.
 
-To preview the updates that would be made without modifying any files, run `dprint config update --dry-run`.
+To preview the updates that would be made without modifying any files, run `kprint config update --dry-run`.
 
 ### Using Plugins from npm
 
@@ -252,11 +252,11 @@ Supported `npm:` specifier forms:
 
 Behaviour:
 
-- A version after `@` makes dprint download the plugin and cache it. A Wasm plugin without a checksum comes straight from jsDelivr (`https://cdn.jsdelivr.net/npm/<name>@<version>/<path>`). A checksum covers the package tarball, so a checksummed reference and a process plugin download the tarball from `registry.npmjs.org` and verify it. Wasm plugins don't need a checksum; process plugins do (the `@<sha256>` after the path).
-- Omitting the version (`npm:@scope/name`) tells dprint to look up the package in `node_modules` walking up from the config file's directory. Use this when you want npm and your lockfile to be the source of truth.
-- `dprint config update` will bump versioned npm specifiers to the latest published version (and compute the new checksum for process plugins). The latest version comes from jsDelivr's package API (`https://data.jsdelivr.com/v1/packages/npm/<name>/resolved?specifier=latest`). A minimum dependency age needs publish times, so it reads the package's metadata from `registry.npmjs.org` instead. Unversioned specifiers are managed by your package manager, so they're skipped. See [Minimum Dependency Age](#minimum-dependency-age) to hold off on npm dependencies that are only days old.
+- A version after `@` makes kprint download the plugin and cache it. A Wasm plugin without a checksum comes straight from jsDelivr (`https://cdn.jsdelivr.net/npm/<name>@<version>/<path>`). A checksum covers the package tarball, so a checksummed reference and a process plugin download the tarball from `registry.npmjs.org` and verify it. Wasm plugins don't need a checksum; process plugins do (the `@<sha256>` after the path).
+- Omitting the version (`npm:@scope/name`) tells kprint to look up the package in `node_modules` walking up from the config file's directory. Use this when you want npm and your lockfile to be the source of truth.
+- `kprint config update` will bump versioned npm specifiers to the latest published version (and compute the new checksum for process plugins). The latest version comes from jsDelivr's package API (`https://data.jsdelivr.com/v1/packages/npm/<name>/resolved?specifier=latest`). A minimum dependency age needs publish times, so it reads the package's metadata from `registry.npmjs.org` instead. Unversioned specifiers are managed by your package manager, so they're skipped. See [Minimum Dependency Age](#minimum-dependency-age) to hold off on npm dependencies that are only days old.
 - A plugin referenced by URL moves to npm only when its own update metadata declares an `npm` package. A matching plugin name in the global registry does not authorize a migration, even when both plugins use the same hostname. Without that declaration, the plugin continues to update through its own update URL.
-- `dprint add npm:@scope/name` resolves to the latest version and writes the pinned form, unless the package is listed in a nearby `package.json` under `devDependencies` — in which case the unversioned form is written so npm/`package-lock.json` stays the source of truth. When you don't include a plugin path, dprint inspects the package to detect whether it's a Wasm or process plugin and writes the right form automatically — for a process plugin that means `npm:@scope/name@<version>/plugin.json@<sha256>`.
+- `kprint add npm:@scope/name` resolves to the latest version and writes the pinned form, unless the package is listed in a nearby `package.json` under `devDependencies` — in which case the unversioned form is written so npm/`package-lock.json` stays the source of truth. When you don't include a plugin path, kprint inspects the package to detect whether it's a Wasm or process plugin and writes the right form automatically — for a process plugin that means `npm:@scope/name@<version>/plugin.json@<sha256>`.
 
 Available npm packages include `@dprint/typescript`, `@dprint/json`, `@dprint/markdown`, `@dprint/toml`, `@dprint/dockerfile`, `@dprint/biome`, `@dprint/oxc`, `@dprint/ruff`, `@dprint/sql`, `@dprint/mago`, `@dprint/jupyter`, `@dprint/exec`, `@dprint/prettier`, and `@dprint/roslyn`.
 
@@ -273,12 +273,12 @@ A process plugin's `plugin.json` lists per-platform binaries; for npm-installed 
 
 #### Cache layout
 
-Resolved npm packages are extracted under `<dprint-cache>/npm/registry.npmjs.org/<name>@<version>/`. Compiled wasm modules and extracted process-plugin binaries continue to live under `<dprint-cache>/plugins/`. `dprint clear-cache` wipes everything.
+Resolved npm packages are extracted under `<kprint-cache>/npm/registry.npmjs.org/<name>@<version>/`. Compiled wasm modules and extracted process-plugin binaries continue to live under `<kprint-cache>/plugins/`. `kprint clear-cache` wipes everything.
 
 ### Editing Config via CLI
 
 ```sh
-dprint config edit
+kprint config edit
 ```
 
 Editing the configuration file will use the editor configured in the `DPRINT_EDITOR` environment variable, then `VISUAL`, then `EDITOR`. If none of these environment variables are set, it will launch `notepad` on Windows and `nano` elsewhere.
@@ -330,7 +330,7 @@ To match a path that contains glob characters (ex. `[` or `{`) in `includes`/`ex
 
 ## Includes
 
-The `includes` property can be used to limit dprint to only formatting certain files. Generally, you don't need to bother providing this.
+The `includes` property can be used to limit kprint to only formatting certain files. Generally, you don't need to bother providing this.
 
 ```json
 {
@@ -411,7 +411,7 @@ With the above, a file named `build` starting with `#!/bin/sh` is formatted as i
 - It only applies to files that have no extension and didn't otherwise match a plugin (a plugin's `"associations"` still win, and a negated association pattern is checked against the file's real path). A plugin that handles the mapped extension must be in the `"plugins"` list, otherwise the file is skipped.
 - A configured shebang matches when the file's first line equals it or starts with it followed by whitespace, so `#!/usr/bin/env deno run` matches `#!/usr/bin/env deno run --allow-read` but not `#!/usr/bin/env deno runtest`. When multiple entries match, the longest one wins. `#!/usr/bin/env -S deno run` is a different line, so list it separately if you use it.
 - Extensionless files are checked for a matching shebang regardless of the config file's `"includes"` patterns. Negated include patterns, `"excludes"`, gitignore, and file patterns provided on the command line (including `--includes-override`) still apply.
-- dprint only reads the first line of extensionless files to check for a shebang.
+- kprint only reads the first line of extensionless files to check for a shebang.
 - When using `"extends"`, the shebangs are merged with the extending config's entries taking precedence. A nested config inherits them with `"inherit": true` unless it specifies its own.
 
 ## Overrides
@@ -472,7 +472,7 @@ later values win.
 
 ## Embedded Code
 
-Some plugins format code embedded in a file by handing it back to dprint, ex. the markdown plugin with the code blocks of a `.md` file. dprint formats that code with the plugin that formats the code's file extension. The plugin's `"embedded"` config names the plugins to format it with instead, by the code's file extension, in order. An empty array leaves that code as it is.
+Some plugins format code embedded in a file by handing it back to kprint, ex. the markdown plugin with the code blocks of a `.md` file. kprint formats that code with the plugin that formats the code's file extension. The plugin's `"embedded"` config names the plugins to format it with instead, by the code's file extension, in order. An empty array leaves that code as it is.
 
 ```json
 {
@@ -533,7 +533,7 @@ You may extend other configuration files by specifying an `extends` property. Th
 
 ```json
 {
-  "extends": "https://dprint.dev/path/to/config/file.v1.json",
+  "extends": "https://example.com/path/to/config/file.v1.json",
   // ...omitted...
 }
 ```
@@ -543,8 +543,8 @@ Referencing multiple configuration files is also supported. These should be orde
 ```json
 {
   "extends": [
-    "https://dprint.dev/path/to/config/file.v1.json",
-    "https://dprint.dev/path/to/config/other.v1.json"
+    "https://example.com/path/to/config/file.v1.json",
+    "https://example.com/path/to/config/other.v1.json"
   ]
 }
 ```
@@ -563,20 +563,20 @@ kprint verifies every pin before using the configuration. If a cached remote fil
 
 ### Caching of Remote Configuration
 
-Remote configuration files are downloaded once and stored in dprint's cache directory. A cached file is used for an hour. The next time it is resolved after that, dprint checks its URL for changes, so a change to a configuration file pinned to a branch (ex. `https://cdn.jsdelivr.net/gh/user/repo@master/dprint.json`) can be picked up an hour after the last check, once the CDN serves the new content (see below). When the check fails (ex. no network), the cached copy is used and a warning is logged. A response marked `Cache-Control: immutable` promises not to change for its `max-age`, so dprint trusts it for that long instead of an hour (ex. jsdelivr serves URLs pinned to a tag or commit with a one year `max-age`, so those are not checked again for a year). Pin to a tag or commit when you want that.
+Remote configuration files are downloaded once and stored in kprint's cache directory. A cached file is used for an hour. The next time it is resolved after that, kprint checks its URL for changes, so a change to a configuration file pinned to a branch (ex. `https://cdn.jsdelivr.net/gh/user/repo@master/kprint.json`) can be picked up an hour after the last check, once the CDN serves the new content (see below). When the check fails (ex. no network), the cached copy is used and a warning is logged. A response marked `Cache-Control: immutable` promises not to change for its `max-age`, so kprint trusts it for that long instead of an hour (ex. jsdelivr serves URLs pinned to a tag or commit with a one year `max-age`, so those are not checked again for a year). Pin to a tag or commit when you want that.
 
-To pick up a change immediately, run `dprint clear-cache`. Note that CDNs have their own caches, so a change to a branch may take longer to appear (ex. jsdelivr serves branch content from its edge cache for up to 12 hours, while `raw.githubusercontent.com` uses a much shorter cache lifetime).
+To pick up a change immediately, run `kprint clear-cache`. Note that CDNs have their own caches, so a change to a branch may take longer to appear (ex. jsdelivr serves branch content from its edge cache for up to 12 hours, while `raw.githubusercontent.com` uses a much shorter cache lifetime).
 
 ## Directory Specific Configuration
 
-Useful for monorepos, you may place additional configuration files in descendant directories. When dprint searches for files to format, it stops descending into a directory once it discovers a configuration file there and uses that configuration file for the files in that subtree instead (see [changing config discovery](/cli#changing-config-discovery)).
+Useful for monorepos, you may place additional configuration files in descendant directories. When kprint searches for files to format, it stops descending into a directory once it discovers a configuration file there and uses that configuration file for the files in that subtree instead (see [changing config discovery](/cli#changing-config-discovery)).
 
 By default a nested configuration file is completely independent—it does not pick up the plugins or configuration of the ancestor configuration file:
 
 <!-- dprint-ignore -->
 
 ```json
-// ./sub-project/dprint.json
+// ./sub-project/kprint.json
 {
   // only TOML files in ./sub-project will be formatted
   "plugins": [
@@ -590,7 +590,7 @@ To instead inherit the plugins and configuration of the ancestor configuration f
 <!-- dprint-ignore -->
 
 ```json
-// ./sub-project/dprint.json
+// ./sub-project/kprint.json
 {
   "inherit": true,
   "typescript": {
@@ -611,9 +611,9 @@ Inheriting is opt-in (rather than opt-out) so that adding a configuration file h
 
 ## Incremental
 
-By default, dprint will only format files that have changed since the last time you formatted the code in order to drastically improve performance.
+By default, kprint will only format files that have changed since the last time you formatted the code in order to drastically improve performance.
 
-If you want to disable this functionality, you may specify the following in your dprint configuration file:
+If you want to disable this functionality, you may specify the following in your kprint configuration file:
 
 ```json
 {
@@ -626,7 +626,7 @@ If you want to disable this functionality, you may specify the following in your
 Alternatively, specify `--incremental=false` on the CLI:
 
 ```sh
-dprint fmt --incremental=false
+kprint fmt --incremental=false
 ```
 
 ## Global Configuration
@@ -652,7 +652,7 @@ For example:
 }
 ```
 
-Note: dprint does not provide or enforce any defaults for the global configuration. The defaults are set on a per plugin basis. When a value is not provided, the plugin may choose to use its default.
+Note: kprint does not provide or enforce any defaults for the global configuration. The defaults are set on a per plugin basis. When a value is not provided, the plugin may choose to use its default.
 
 ### `lineWidth`
 
@@ -685,7 +685,7 @@ Note: When doing this, ensure you set all the global configuration values if you
 
 ### Example
 
-Say the following configuration were published at `https://dprint.dev/configs/my-config.json`:
+Say the following configuration were published at `https://example.com/configs/my-config.json`:
 
 ```json
 {
@@ -710,7 +710,7 @@ The following would work fine:
 
 ```json
 {
-  "extends": "https://dprint.dev/configs/my-config.json",
+  "extends": "https://example.com/configs/my-config.json",
   "myOtherPlugin": {
     "propertySeparator": "comma"
   },
@@ -726,7 +726,7 @@ But specifying properties in the `"typescript"` or `"json"` objects would cause 
 
 ```json
 {
-  "extends": "https://dprint.dev/configs/my-config.json",
+  "extends": "https://example.com/configs/my-config.json",
   "typescript": {
     "useBraces": "always" // error, "typescript" config was locked
   },
@@ -746,9 +746,7 @@ But specifying properties in the `"typescript"` or `"json"` objects would cause 
 
 ## Configuration Variables
 
-Requires dprint >= 0.47.0
-
-dprint expands certain variables in the config:
+kprint expands certain variables in the config:
 
 - `${configDir}` - The current configuration's directory.
 - `${originConfigDir}` - The original configuration's directory. Useful when the current config is being extended by another configuration file and you want the original directory.
@@ -759,12 +757,12 @@ They're expanded in the values of a plugin's configuration and its [overrides](#
 
 This is useful to use in some scenarios like with [dprint-plugin-exec](https://github.com/dprint/dprint-plugin-exec) because the CLI will only launch a single plugin for many configs and when resolving configs, the plugins have no concept of where that config was resolved from. Additionally, configs may resolve other configs and perhaps you want to use the directory of a configuration file that was extended.
 
-Note: dprint will error for unknown configuration variables (ex. `"${unknown}"`). You can get around this by escaping the `$` sign (ex. `"\\${unknown}"`).
+Note: kprint will error for unknown configuration variables (ex. `"${unknown}"`). You can get around this by escaping the `$` sign (ex. `"\\${unknown}"`).
 
 ## Plugin/Language Specific Configuration
 
-Running `dprint help` will list the help urls for all the configured plugins in your configuration file. On those pages you can view the help information.
+Running `kprint help` will list the help urls for all the configured plugins in your configuration file. On those pages you can view the help information.
 
-For information on the official plugins' configuration, see the [plugins](https://dprint.dev/plugins/) section.
+For information on the official plugins' configuration, see the [plugins](/plugins) section.
 
 Next step: [CLI](/cli)

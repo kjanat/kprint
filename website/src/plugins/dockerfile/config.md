@@ -1,6 +1,6 @@
 ---
 title: Configuration - Dockerfile
-description: Documentation on the configuration file for the Dockerfile code formatting plugin for dprint.
+description: Documentation on the configuration file for the Dockerfile code formatting plugin for kprint.
 layout: layouts/documentation.njk
 ---
 

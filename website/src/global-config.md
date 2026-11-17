@@ -6,7 +6,7 @@ layout: layouts/documentation.njk
 
 # Global Configuration
 
-Starting in dprint 0.51, you can maintain a global configuration file that applies formatting config when the current folder does not have a local dprint configuration file.
+You can maintain a global configuration file that applies formatting config when the current folder does not have a local kprint configuration file.
 
 ## Initializing a Global Configuration
 
@@ -50,11 +50,11 @@ The editor to use for the global config follows the same rules as [Editing Confi
 
 ## Using the Global Configuration
 
-Once setup, the global configuration will be used by default when there's no dprint configuration file in the current directory tree; however, to prevent accidentally formatting such directories, a prompt is shown when calling `kprint fmt`:
+Once setup, the global configuration will be used by default when there's no kprint configuration file in the current directory tree; however, to prevent accidentally formatting such directories, a prompt is shown when calling `kprint fmt`:
 
 ```
 > kprint fmt
-Warning You're not in a dprint project. Format '/home/david/dev/scratch' anyway? (Y/n) █
+Warning You're not in a kprint project. Format '/home/david/dev/scratch' anyway? (Y/n) █
 
 Hint: Specify the directory to bypass this prompt in the future (ex. `kprint fmt .`)
 ```
