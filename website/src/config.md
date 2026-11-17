@@ -65,7 +65,7 @@ The configuration file may also be TOML: `kprint.toml` or `.kprint.toml`, or `dp
 
 <!-- dprint-ignore -->
 ```toml
-#:schema https://dprint.dev/schemas/v0.json
+#:schema https://dprint.kjanat.dev/schemas/v0.json
 lineWidth = 80
 excludes = ["**/*-lock.json"]
 plugins = [

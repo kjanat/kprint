@@ -298,9 +298,9 @@ fn toml_value_to_config_value(value: &Value, path: &str) -> Result<ConfigKeyValu
 
 // ---- writing ----
 
-/// The schema of dprint's configuration, which TOML language servers (ex.
+/// The schema of kprint's configuration, which TOML language servers (ex.
 /// tombi) pick up from a `#:schema` comment.
-const SCHEMA_DIRECTIVE: &str = "#:schema https://dprint.dev/schemas/v0.json";
+const SCHEMA_DIRECTIVE: &str = "#:schema https://dprint.kjanat.dev/schemas/v0.json";
 
 /// Converts a JSON configuration file to TOML. Plugin configurations become
 /// tables and arrays of objects become arrays of tables.
@@ -880,7 +880,7 @@ mod test {
 
   #[test]
   fn toml_reads_like_the_equivalent_json() {
-    let toml_text = r##"#:schema https://dprint.dev/schemas/v0.json
+    let toml_text = r##"#:schema https://dprint.kjanat.dev/schemas/v0.json
 lineWidth = 100
 useTabs = true
 extends = "https://example.com/base.toml"
@@ -1305,7 +1305,7 @@ exts = ["sh"]
   #[test]
   fn converts_json_config_to_toml() {
     let json_text = r#"{
-  "$schema": "https://dprint.dev/schemas/v0.json",
+  "$schema": "https://dprint.kjanat.dev/schemas/v0.json",
   "typescript": {},
   "markdown": { "codeBlock.useTabs": false },
   "exec": {
@@ -1318,7 +1318,7 @@ exts = ["sh"]
     let toml_text = json_config_text_to_toml(json_text).unwrap();
     assert_eq!(
       toml_text,
-      r#"#:schema https://dprint.dev/schemas/v0.json
+      r#"#:schema https://dprint.kjanat.dev/schemas/v0.json
 
 excludes = []
 plugins = [

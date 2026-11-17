@@ -1217,7 +1217,7 @@ lineWidth = 80
       .write_file(
         "/dprint.json",
         r#"{
-            "$schema": "https://dprint.dev/schemas/v0.json",
+            "$schema": "https://dprint.kjanat.dev/schemas/v0.json",
             "projectType": "openSource",
             "extends": "./base.toml",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"]

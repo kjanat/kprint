@@ -87,7 +87,7 @@ pub async fn output_editor_info<TEnvironment: Environment>(
   environment.log_machine_readable(&serde_json::to_vec(&EditorInfo {
     schema_version: 5,
     cli_version: environment.cli_version(),
-    config_schema_url: "https://dprint.dev/schemas/v0.json".to_string(),
+    config_schema_url: "https://dprint.kjanat.dev/schemas/v0.json".to_string(),
     plugins,
   })?);
 
@@ -420,7 +420,7 @@ mod test {
     run_test_cli(vec!["editor-info"], &environment).unwrap();
     let mut final_output = r#"{"schemaVersion":5,"cliVersion":""#.to_string();
     final_output.push_str(&environment.cli_version());
-    final_output.push_str(r#"","configSchemaUrl":"https://dprint.dev/schemas/v0.json","plugins":["#);
+    final_output.push_str(r#"","configSchemaUrl":"https://dprint.kjanat.dev/schemas/v0.json","plugins":["#);
     final_output
       .push_str(r#"{"name":"test-plugin","version":"0.2.0","configKey":"test-plugin","fileExtensions":["txt"],"fileNames":[],"configSchemaUrl":"https://plugins.dprint.dev/test/schema.json","helpUrl":"https://dprint.dev/plugins/test","updateUrl":"https://plugins.dprint.dev/dprint/test-plugin/latest.json"},"#);
     final_output.push_str(r#"{"name":"test-process-plugin","version":"0.1.0","configKey":"testProcessPlugin","fileExtensions":["txt_ps"],"fileNames":["test-process-plugin-exact-file"],"helpUrl":"https://dprint.dev/plugins/test-process","updateUrl":"https://plugins.dprint.dev/dprint/test-process-plugin/latest.json"}]}"#);
@@ -442,7 +442,7 @@ mod test {
     run_test_cli(vec!["editor-info", "--config-discovery=global"], &environment).unwrap();
     let mut final_output = r#"{"schemaVersion":5,"cliVersion":""#.to_string();
     final_output.push_str(&environment.cli_version());
-    final_output.push_str(r#"","configSchemaUrl":"https://dprint.dev/schemas/v0.json","plugins":["#);
+    final_output.push_str(r#"","configSchemaUrl":"https://dprint.kjanat.dev/schemas/v0.json","plugins":["#);
     final_output
       .push_str(r#"{"name":"test-plugin","version":"0.2.0","configKey":"test-plugin","fileExtensions":["txt"],"fileNames":[],"configSchemaUrl":"https://plugins.dprint.dev/test/schema.json","helpUrl":"https://dprint.dev/plugins/test","updateUrl":"https://plugins.dprint.dev/dprint/test-plugin/latest.json"},"#);
     final_output.push_str(r#"{"name":"test-process-plugin","version":"0.1.0","configKey":"testProcessPlugin","fileExtensions":["txt_ps"],"fileNames":["test-process-plugin-exact-file"],"helpUrl":"https://dprint.dev/plugins/test-process","updateUrl":"https://plugins.dprint.dev/dprint/test-process-plugin/latest.json"}]}"#);

@@ -651,7 +651,7 @@ mod test {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .write_file(
         "/dprint.toml",
-        "#:schema https://dprint.dev/schemas/v0.json\nplugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
+        "#:schema https://dprint.kjanat.dev/schemas/v0.json\nplugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
       )
       .write_file("/file.txt", "text")
       .build();

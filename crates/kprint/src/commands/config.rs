@@ -2492,7 +2492,7 @@ mod test {
     assert_eq!(environment.take_stdout_messages()[0], "\nCreated ./dprint.toml");
     let text = environment.read_file("./dprint.toml").unwrap();
     assert_eq!(text, crate::configuration::json_config_text_to_toml(&expected_json).unwrap());
-    assert!(text.starts_with("#:schema https://dprint.dev/schemas/v0.json\n"), "{}", text);
+    assert!(text.starts_with("#:schema https://dprint.kjanat.dev/schemas/v0.json\n"), "{}", text);
   }
 
   #[test]

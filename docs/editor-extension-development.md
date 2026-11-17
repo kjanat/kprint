@@ -20,7 +20,7 @@ Outputs something like:
 {
     "schemaVersion": 5,
     "cliVersion": "0.17.0",
-    "configSchemaUrl": "https://dprint.dev/schemas/v0.json",
+    "configSchemaUrl": "https://dprint.kjanat.dev/schemas/v0.json",
     "plugins":[{
         "name": "test-plugin",
         "version": "0.1.0",
