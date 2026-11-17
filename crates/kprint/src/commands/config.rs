@@ -68,7 +68,7 @@ pub async fn init_config_file<TEnvironment: crate::environment::InitEnvironment>
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
   options: InitConfigFileOptions<'_>,
 ) -> Result<()> {
-  fn get_config_paths(environment: &impl Environment, options: &InitConfigFileOptions<'_>) -> Result<Vec<PathBuf>> {
+  fn get_config_paths(environment: &impl Environment, options: &InitConfigFileOptions<'_>) -> Result<(Vec<PathBuf>, PathBuf)> {
     if options.global {
       let directory = crate::configuration::resolve_global_config_dir(environment).with_context(|| {
         concat!(
@@ -77,13 +77,8 @@ pub async fn init_config_file<TEnvironment: crate::environment::InitEnvironment>
           "variable to say where to store the global dprint configuration file."
         )
       })?;
-      // the first is the one created. Global configuration is read from the
-      // others too, so any of them means it's already set up
-      Ok(Vec::from([
-        directory.join("dprint.jsonc"),
-        directory.join("dprint.json"),
-        directory.join("dprint.toml"),
-      ]))
+      let existing = crate::configuration::GLOBAL_CONFIG_FILE_NAMES.iter().map(|name| directory.join(name)).collect();
+      Ok((existing, directory.join("kprint.jsonc")))
     } else if let Some(config_arg) = options.config_arg {
       let path = PathBuf::from(config_arg);
       // this sub command never resolves the configuration, so it has to turn a
@@ -91,24 +86,23 @@ pub async fn init_config_file<TEnvironment: crate::environment::InitEnvironment>
       if crate::configuration::is_stream_path(environment, &path) {
         bail!("{}", crate::configuration::config_needs_file_message(&path.to_string_lossy()));
       }
-      Ok(Vec::from([path]))
+      Ok((Vec::from([path.clone()]), path))
     } else {
-      Ok(
-        kprint_discovery::config_file_names(environment.cwd().as_ref(), environment)
-          .filter(|path| {
-            !path.starts_with(".config/")
-              || matches!(
-                environment.path_kind(environment.cwd().as_ref().join(".config")),
-                Some(crate::environment::PathKind::Dir)
-              )
-          })
-          .map(PathBuf::from)
-          .collect::<Vec<_>>(),
-      )
+      let existing = kprint_discovery::config_file_names(environment.cwd().as_ref(), environment)
+        .filter(|path| {
+          !path.starts_with(".config/")
+            || matches!(
+              environment.path_kind(environment.cwd().as_ref().join(".config")),
+              Some(crate::environment::PathKind::Dir)
+            )
+        })
+        .map(PathBuf::from)
+        .collect();
+      Ok((existing, PathBuf::from("kprint.json")))
     }
   }
 
-  let mut config_file_paths = get_config_paths(environment, &options)?;
+  let (config_file_paths, new_config_file_path) = get_config_paths(environment, &options)?;
   // skip the interactive prompt when asked to or when there's no interactive terminal (ex. CI)
   let non_interactive = options.non_interactive || !environment.is_terminal_interactive();
   if let Some(existing_path) = config_file_paths.iter().find(|path| environment.path_exists(path)) {
@@ -125,9 +119,9 @@ pub async fn init_config_file<TEnvironment: crate::environment::InitEnvironment>
     && kprint_discovery::is_project_config_dir(&dot_config_dir, environment)
     && matches!(environment.path_kind(&dot_config_dir), Some(crate::environment::PathKind::Dir))
   {
-    Path::new(".config").join("dprint.json")
+    Path::new(".config").join("kprint.json")
   } else {
-    config_file_paths.remove(0)
+    new_config_file_path
   };
   let text = get_init_config_file_text(
     environment,
@@ -2320,11 +2314,11 @@ mod test {
     assert_eq!(
       environment.take_stdout_messages(),
       vec![
-        "\nCreated dprint.json",
+        "\nCreated kprint.json",
         "\nIf you are working in a commercial environment please consider sponsoring dprint: https://dprint.dev/sponsor"
       ]
     );
-    assert_eq!(environment.read_file("./dprint.json").unwrap(), expected_text);
+    assert_eq!(environment.read_file("./kprint.json").unwrap(), expected_text);
   }
 
   #[test]
@@ -2361,13 +2355,13 @@ mod test {
     assert_eq!(
       environment.take_stdout_messages(),
       vec![
-        "\nCreated dprint.json",
+        "\nCreated kprint.json",
         "\nIf you are working in a commercial environment please consider sponsoring dprint: https://dprint.dev/sponsor"
       ]
     );
     // the typescript plugin is selected based on the .ts file and the json
     // plugin based on the config file being created
-    let created = environment.read_file("./dprint.json").unwrap();
+    let created = environment.read_file("./kprint.json").unwrap();
     assert!(created.contains("typescript-0.17.2.wasm"));
     assert!(created.contains("json-0.2.3.wasm"));
   }
@@ -2400,7 +2394,7 @@ mod test {
 
     run_test_cli(vec!["init", "--yes", "--minimum-dependency-age", "P3D"], &environment).unwrap();
 
-    let created = environment.read_file("./dprint.json").unwrap();
+    let created = environment.read_file("./kprint.json").unwrap();
     assert!(created.contains("\"npm:@dprint/test-plugin@0.2.0\""), "got: {created}");
     let stderr = environment.take_stderr_messages();
     assert!(
@@ -2427,7 +2421,7 @@ mod test {
     run_test_cli(vec!["config", "init"], &environment).unwrap();
     environment.take_stderr_messages();
     environment.take_stdout_messages();
-    assert_eq!(environment.read_file("./dprint.json").unwrap(), expected_text);
+    assert_eq!(environment.read_file("./kprint.json").unwrap(), expected_text);
   }
 
   #[test]
@@ -3105,9 +3099,9 @@ mod test {
   fn should_initialize_in_existing_dot_config_dir() {
     for (dot_config_file_path, expected_path) in [
       // the project already has a `.config` directory
-      ("/.config/dotnet-tools.json", Path::new(".config").join("dprint.json")),
+      ("/.config/dotnet-tools.json", Path::new(".config").join("kprint.json")),
       // a `.config` file isn't a directory to put it in
-      ("/.config", std::path::PathBuf::from("dprint.json")),
+      ("/.config", std::path::PathBuf::from("kprint.json")),
     ] {
       let environment = TestEnvironmentBuilder::new()
         .with_info_file(|info| {
@@ -3162,8 +3156,8 @@ Created {}",
     environment.set_cwd("/home");
     run_test_cli(vec!["init", "--yes"], &environment).unwrap();
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
-    assert_eq!(environment.take_stdout_messages()[0], "\nCreated dprint.json");
-    assert!(environment.path_exists("/home/dprint.json"));
+    assert_eq!(environment.take_stdout_messages()[0], "\nCreated kprint.json");
+    assert!(environment.path_exists("/home/kprint.json"));
   }
 
   #[test]
@@ -3292,7 +3286,7 @@ Created {}",
     } else {
       Path::new("/config/dprint")
     }
-    .join("dprint.jsonc");
+    .join("kprint.jsonc");
     assert_eq!(
       environment.take_stdout_messages(),
       vec![
@@ -3334,12 +3328,12 @@ Created {}",
     assert_eq!(
       environment.take_stdout_messages(),
       vec![
-        format!("\nCreated {}", Path::new("/custom/config").join("dprint.jsonc").display()),
+        format!("\nCreated {}", Path::new("/custom/config").join("kprint.jsonc").display()),
         "\nRun `kprint config edit --global` to modify this file in the future.".to_string(),
         "\nIf you are working in a commercial environment please consider sponsoring dprint: https://dprint.dev/sponsor".to_string()
       ]
     );
-    assert_eq!(environment.read_file("/custom/config/dprint.jsonc").unwrap(), expected_text);
+    assert_eq!(environment.read_file("/custom/config/kprint.jsonc").unwrap(), expected_text);
   }
 
   #[test]
@@ -4918,7 +4912,7 @@ text",
     let error = run_test_cli(vec!["config", "edit", "--global"], &environment).err().unwrap();
     assert_eq!(
       error.to_string(),
-      "Could not find global dprint.json file. Create one with `kprint init --global`"
+      "Could not find a global configuration file. Create one with `kprint init --global`"
     );
   }
 
@@ -7286,7 +7280,7 @@ text",
     let environment = TestEnvironmentBuilder::new().build();
     let err = run_test_cli(vec!["install"], &environment).err().unwrap();
     err.assert_exit_code(11);
-    assert_contains!(err.to_string(), "No config file found at /dprint.json.");
+    assert_contains!(err.to_string(), "No config file found at /kprint.json.");
   }
   #[test]
   fn config_add_should_warn_when_plugin_deprecated() {

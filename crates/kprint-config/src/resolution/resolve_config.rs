@@ -184,7 +184,7 @@ pub async fn resolve_config_from_args(args: &dyn ConfigOptions, environment: &im
         // allow no config file when plugins are specified
         ResolvedConfig::new(
           ConfigOrigin {
-            source: PathSource::new_local(environment.cwd().join_panic_relative("dprint.json")),
+            source: PathSource::new_local(environment.cwd().join_panic_relative("kprint.json")),
             base_path: environment.cwd().clone(),
             config_file_base: environment.cwd().clone(),
             is_global: false,
@@ -193,7 +193,7 @@ pub async fn resolve_config_from_args(args: &dyn ConfigOptions, environment: &im
         )
       } else if args.config_discovery(environment).traverse_ancestors() {
         return Err(ResolveConfigError::NotFound {
-          config_path: environment.cwd().join_panic_relative("dprint.json"),
+          config_path: environment.cwd().join_panic_relative("kprint.json"),
           inner: None,
         });
       } else {

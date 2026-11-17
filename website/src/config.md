@@ -61,7 +61,7 @@ request local files through these references.
 
 ## TOML
 
-The configuration file may also be TOML: `dprint.toml` or `.dprint.toml`. When a directory has both, the JSON one is used. The example above as TOML:
+The configuration file may also be TOML: `kprint.toml` or `.kprint.toml`, or `dprint.toml` or `.dprint.toml`. A directory's kprint files take precedence over its dprint files, and for each prefix the TOML file takes precedence over the JSON one. The example above as TOML:
 
 <!-- dprint-ignore -->
 ```toml

@@ -142,7 +142,7 @@ SUBCOMMANDS:
 More details at `kprint help <SUBCOMMAND>`
 
 OPTIONS:
-  -c, --config [<config>]             Path or url to JSON or TOML configuration file, the configuration text itself (a `{...}` object or TOML), or `-` to read it from stdin. Defaults to dprint.json(c), .dprint.json(c), dprint.toml or .dprint.toml in current or ancestor directory when not provided.
+  -c, --config [<config>]             Path or url to JSON or TOML configuration file, the configuration text itself (a `{...}` object or TOML), or `-` to read it from stdin. Defaults to kprint.toml, .kprint.toml, kprint.json(c) or .kprint.json(c) in current or ancestor directory when not provided, then the same names with dprint.
       --config-discovery[=<BOOLEAN>]  Sets the config discovery mode. Set to `false` to completely disable, `ignore-descendants` to avoid finding config files in child directories, or `global` to only use the global config file.
       --plugins <urls/files>...       List of urls or file paths of plugins to use. This overrides what is specified in the config file.
       --reload[=<config|plugins>]     Checks for newer versions of remote configuration files and plugins instead of using the cached ones. Specify `config` or `plugins` to only check one of them.
@@ -160,7 +160,7 @@ ENVIRONMENT VARIABLES:
   KPRINT_CACHE_DIR     Directory to store the kprint cache. Note that this
                        directory may be periodically deleted by the CLI.
   DPRINT_CACHE_DIR     Compatibility fallback when KPRINT_CACHE_DIR is unset.
-  DPRINT_CONFIG_DIR    Global config directory to store a global dprint.json file.
+  DPRINT_CONFIG_DIR    Global config directory to store a global kprint.json file.
                        Defaults to the dprint sub folder in the system configuration
                        directory.
   DPRINT_CONFIG_DISCOVERY
@@ -184,7 +184,7 @@ ENVIRONMENT VARIABLES:
 
 GETTING STARTED:
   1. Navigate to the root directory of a code repository.
-  2. Run `kprint init` to create a dprint.json file in that directory.
+  2. Run `kprint init` to create a kprint.json file in that directory.
   3. Modify configuration file if necessary.
   4. Run `kprint fmt` or `kprint check`.
 
@@ -199,12 +199,12 @@ EXAMPLES:
 
   Specify path to config file other than the default:
 
-    kprint fmt --config path/to/config/dprint.json
+    kprint fmt --config path/to/config/kprint.json
 
   Provide the configuration instead of a path to it:
 
     kprint fmt --config '{ "excludes": ["dist"], "plugins": ["..."] }'
-    kprint fmt --config <(cat path/to/config/dprint.json)
+    kprint fmt --config <(cat path/to/config/kprint.json)
     kprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
 
   Search for files using the specified paths or file patterns:

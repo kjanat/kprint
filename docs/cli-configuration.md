@@ -53,7 +53,7 @@ An npm registry configuration can use an absolute HTTP(S) `configFile` URL for p
 
 ## Project configuration in `.config`
 
-Discovery also checks `.config/dprint.json`, `.config/dprint.jsonc`, and `.config/dprint.toml`. A configuration in the project root takes precedence. The project scope is the parent of `.config`; anchored patterns remain relative to the configuration directory, while floating patterns such as `**/*.ts` match throughout the project. The home directory's `.config` is excluded from project discovery.
+Discovery also checks `.config/kprint.toml`, `.config/kprint.json`, `.config/kprint.jsonc`, `.config/dprint.toml`, `.config/dprint.json`, and `.config/dprint.jsonc`, in that order. A configuration in the project root takes precedence, and in each directory the kprint names take precedence over the dprint names. The project scope is the parent of `.config`; anchored patterns remain relative to the configuration directory, while floating patterns such as `**/*.ts` match throughout the project. The home directory's `.config` is excluded from project discovery.
 
 `kprint init` creates its configuration inside an existing project `.config` directory and recognizes configurations already stored there. Explicit `--config` and global configuration keep their own locations.
 
