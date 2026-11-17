@@ -65,10 +65,10 @@ pub use generate::schema_for;
 #[cfg(feature = "schema")]
 pub use generate::schema_json_for;
 
-/// The name of the schema file `dprint schema` creates for a configuration
-/// file. When there's one next to a configuration file, the commands that
-/// change its plugins keep it up to date.
-pub const CONFIG_SCHEMA_FILE_NAME: &str = "dprint.schema.json";
+/// The names of the schema file next to a configuration file, in order of
+/// preference. The commands that change its plugins keep the first one that
+/// exists up to date.
+pub const CONFIG_SCHEMA_FILE_NAMES: [&str; 2] = ["kprint.schema.json", "dprint.schema.json"];
 
 #[macro_use]
 extern crate kprint_platform;

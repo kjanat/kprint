@@ -3,6 +3,7 @@
 ## Unreleased
 
 - kprint looks for `kprint.toml`, `.kprint.toml`, `kprint.json`, `kprint.jsonc`, `.kprint.json` and `.kprint.jsonc`, in that order, before the same names with `dprint`. A directory's TOML file takes precedence over its JSON file. It does so in each project directory, in a project's `.config/`, at an npm package's root and in the global configuration directory. `init` creates `kprint.json`, and `init --global` creates `kprint.jsonc`.
+- `add`, `config update` and `init` regenerate a `kprint.schema.json` next to the configuration file, or else a `dprint.schema.json`.
 - The `fmt` command of `@kjanat/fmt` finds a project's kprint files and its `.config/` files before it falls back to kjanat's configuration.
 - A nightly publishes only when its tarballs hold every platform package, `@kprint/kprint` and `@kjanat/fmt`, each once. A retried nightly points the `nightly` dist-tag at the version npm already has.
 - When npm skips optional dependencies, a preview's launcher downloads its platform package from the preview's pkg.pr.new URL. It uses curl, or Node's `http` or `https` module when curl is missing.

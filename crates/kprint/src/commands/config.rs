@@ -2097,10 +2097,13 @@ async fn update_config_schema_file<TEnvironment: Environment>(
   config_path: &CanonicalizedPathBuf,
   package_json_additions: &[PackageJsonAddition],
 ) {
-  let schema_path = AsRef::<Path>::as_ref(config_path).with_file_name(CONFIG_SCHEMA_FILE_NAME);
-  if !environment.path_is_file(&schema_path) {
+  let Some(schema_path) = CONFIG_SCHEMA_FILE_NAMES
+    .iter()
+    .map(|name| AsRef::<Path>::as_ref(config_path).with_file_name(name))
+    .find(|path| environment.path_is_file(path))
+  else {
     return;
-  }
+  };
   let budget = config_schema_refresh_budget();
   let deadline = std::time::Instant::now() + budget;
   // which also makes the downloads it does give up at the deadline
@@ -2687,6 +2690,33 @@ mod test {
     run_test_cli(vec!["add", "test-plugin"], &environment).unwrap();
     assert!(!environment.path_exists("./dprint.schema.json"));
     assert!(!environment.take_stdout_messages().iter().any(|message| message.starts_with("Updated ")));
+  }
+
+  #[test]
+  fn config_add_prefers_the_kprint_schema_file() {
+    let environment = get_setup_env(SetupEnvOptions {
+      config_has_wasm: false,
+      config_has_wasm_checksum: false,
+      config_has_process: false,
+      remote_has_wasm_checksum: false,
+      remote_has_process_checksum: false,
+    });
+    environment.add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA.as_bytes());
+    environment.add_remote_file("https://plugins.dprint.dev/test-plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES);
+    environment.write_file("./kprint.schema.json", "{}").unwrap();
+    environment.write_file("./dprint.schema.json", "{}").unwrap();
+    run_test_cli(vec!["add", "test-plugin"], &environment).unwrap();
+    let messages = environment.take_stdout_messages();
+    assert!(
+      messages
+        .iter()
+        .any(|message| message.starts_with("Updated ") && message.ends_with("kprint.schema.json")),
+      "{:?}",
+      messages
+    );
+    let schema: serde_json::Value = serde_json::from_str(&environment.read_file("./kprint.schema.json").unwrap()).unwrap();
+    assert!(schema["$defs"]["plugin:test-plugin"].is_object());
+    assert_eq!(environment.read_file("./dprint.schema.json").unwrap(), "{}");
   }
 
   /// The plugins whose tables a configuration schema describes.
