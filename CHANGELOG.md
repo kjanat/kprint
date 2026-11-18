@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Generated configuration schemas and editor completions offer `configFile` only when kprint can load an external configuration for the plugin or the plugin defines that option itself.
+
 ## 0.64.0 (2026-11-18)
 
 - When a Wasm plugin runs out of stack, kprint reports an error for that file, discards the trapped instance and moves on without retrying the same input.

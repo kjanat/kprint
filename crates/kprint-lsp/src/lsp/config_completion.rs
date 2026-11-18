@@ -85,6 +85,7 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
           };
           plugins.push(ConfigPlugin {
             config_key: info.config_key.clone(),
+            supports_config_file: info.config_files.is_some(),
             name: info.name.clone(),
             schema,
             url: Url::parse(&info.config_schema_url).ok(),
@@ -129,6 +130,7 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
 /// A plugin of the configuration file, with its configuration schema.
 struct ConfigPlugin {
   config_key: String,
+  supports_config_file: bool,
   name: String,
   /// The plugin's configuration schema. `None` when the plugin doesn't expose
   /// one or it couldn't be downloaded.
@@ -150,6 +152,7 @@ impl ConfigSchema {
       .into_iter()
       .map(|plugin| PluginSchema {
         config_key: plugin.config_key,
+        supports_config_file: plugin.supports_config_file,
         // a plugin without one still has dprint's properties of its table
         schema: plugin.schema.map(|schema| (*schema).clone()).unwrap_or(Value::Bool(true)),
         url: plugin.url,
@@ -790,6 +793,7 @@ mod test {
   fn typescript_plugin(schema: Option<Value>) -> ConfigPlugin {
     ConfigPlugin {
       config_key: "typescript".to_string(),
+      supports_config_file: false,
       name: "TypeScript".to_string(),
       schema: schema.map(Rc::new),
       url: Some(Url::parse("https://plugins.dprint.dev/typescript/schema.json").unwrap()),
@@ -986,6 +990,7 @@ mod test {
     // a plugin with no schema still offers the common override `files` key
     let schema = ConfigSchema::new(vec![ConfigPlugin {
       config_key: "exec".to_string(),
+      supports_config_file: false,
       name: "Exec".to_string(),
       schema: None,
       url: None,

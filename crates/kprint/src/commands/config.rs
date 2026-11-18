@@ -1913,6 +1913,7 @@ impl std::fmt::Display for MissingPluginSchema {
 struct PluginSchemaSource {
   name: String,
   config_key: String,
+  supports_config_file: bool,
   location: PluginSchemaLocation,
 }
 
@@ -1952,13 +1953,13 @@ async fn generate_config_schema<TEnvironment: Environment>(
     let info = plugin.info();
     let location = match plugin.config_schema() {
       Some(schema) => PluginSchemaLocation::BuiltIn(schema),
-      // it doesn't have one
-      None if info.config_schema_url.is_empty() => continue,
+      None if info.config_schema_url.is_empty() => PluginSchemaLocation::BuiltIn("true"),
       None => PluginSchemaLocation::Url(info.config_schema_url.clone()),
     };
     sources.push(PluginSchemaSource {
       name: info.name.clone(),
       config_key: info.config_key.clone(),
+      supports_config_file: info.config_files.is_some(),
       location,
     });
   }
@@ -1966,6 +1967,7 @@ async fn generate_config_schema<TEnvironment: Environment>(
     sources.push(PluginSchemaSource {
       name: "exec".to_string(),
       config_key: "exec".to_string(),
+      supports_config_file: false,
       location: PluginSchemaLocation::BuiltIn(kprint_config::exec::input::exec_config_schema()),
     });
   }
@@ -2015,6 +2017,7 @@ async fn get_plugin_schemas(environment: &impl Environment, sources: Vec<PluginS
       match result {
         Ok((url, schema)) => Ok(PluginSchema {
           config_key: source.config_key,
+          supports_config_file: source.supports_config_file,
           schema,
           url,
         }),
@@ -2569,6 +2572,7 @@ mod test {
     let output = environment.take_stdout_messages();
     let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
     assert_eq!(schema["properties"]["test-plugin"]["type"], "object");
+    assert!(schema["properties"]["test-plugin"]["properties"].get("configFile").is_none());
     // the plugin's schema is a resource of its own, with its references as they are
     assert_eq!(
       schema["properties"]["test-plugin"]["allOf"],
@@ -3005,12 +3009,14 @@ mod test {
         .map(|(index, url)| super::PluginSchemaSource {
           name: format!("plugin-{}", index),
           config_key: format!("plugin{}", index),
+          supports_config_file: false,
           location: super::PluginSchemaLocation::Url(url.clone()),
         })
         // a url two plugins have is downloaded once
         .chain([super::PluginSchemaSource {
           name: "plugin-0-again".to_string(),
           config_key: "plugin0Again".to_string(),
+          supports_config_file: false,
           location: super::PluginSchemaLocation::Url(urls[0].clone()),
         }])
         .collect::<Vec<_>>()
