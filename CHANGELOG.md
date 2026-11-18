@@ -1,13 +1,17 @@
 # Changelog
 
-## 0.64.0 (2026-11-18)
+## [Unreleased]
+
+- Generated configuration schemas and editor completions offer `configFile` only when kprint can load an external configuration for the plugin or the plugin defines that option itself.
+
+## [0.64.0] (2026-11-18)
 
 - When a Wasm plugin runs out of stack, kprint reports an error for that file, discards the trapped instance and moves on without retrying the same input.
 - Errors while loading or applying a Wasm plugin’s configuration name the plugin, its version, the failing operation and the configuration key or file.
 - The [Wasm plugin guide](docs/wasm-plugin-development.md) and [WIT reference](wit/README.md) document the schema-4 core ABI, optional configuration metadata, `$configFile` contents and configuration registration and release.
 - Beepboop subscriptions in the Homebrew tap and Scoop bucket handle kprint updates after publication.
 
-## 0.63.0 (2026-11-17)
+## [0.63.0] (2026-11-17)
 
 - kprint looks for `kprint.toml`, `.kprint.toml`, `kprint.json`, `kprint.jsonc`, `.kprint.json` and `.kprint.jsonc`, in that order, before the same names with `dprint`. A directory's TOML file takes precedence over its JSON file. It does so in each project directory, in a project's `.config/`, at an npm package's root and in the global configuration directory. `init` creates `kprint.json`, and `init --global` creates `kprint.jsonc`.
 - `add`, `config update` and `init` regenerate a `kprint.schema.json` next to the configuration file, or else a `dprint.schema.json`.
@@ -37,7 +41,7 @@
 - A change to a Wasm plugin's contents or to a process plugin's distribution changes the incremental formatting identity, even when the compiled code stays compatible.
 - The docs show three ways to keep Markdown shell examples with placeholders unformatted: an embedded-formatting opt-out, a text fence or an ignore comment.
 
-## 0.62.0 (2026-11-12)
+## [0.62.0] (2026-11-12)
 
 - `extends` accepts npm packages. kprint adds `--reload` controls, an `install` command, `--lines` for range formatting on the command line, and configuration discovery under `.config/`.
 - `init` remembers preferences, edits plugin options, selects file types, orders plugins and inserts into existing JSON and TOML configurations.
@@ -51,7 +55,7 @@
 - Shutdown can interrupt a process plugin's stalled liveness probe or replacement handshake.
 - A release publishes the npm tarballs that CI tested, with the platform packages before `@kprint/kprint`. A successful `npm publish` counts as the upload. Platform packages include the LICENSE file.
 
-## 0.61.0 (2026-11-12)
+## [0.61.0] (2026-11-12)
 
 - A plugin declares which configuration entries name JSON Schema files, and kprint passes those files and their local references to the plugin. kprint reads them only inside the configuration directory, after following symlinks. A schema change invalidates the incremental cache.
 - kprint loads remote plugin configurations and their references, and resolves a remote schema from the URL that declares it.
@@ -62,7 +66,7 @@
 - Beepboop releases the npm packages and the GitHub release.
 - kprint updates wasmtime to 50.0.1, sha2 to 0.11.1, zip to 9.0.5, rustls to 0.23.46, serde_json to 1.0.154 and unicode-width to 0.2.3.
 
-## 0.60.6-kjanat (2026-10-31)
+## [0.60.6-kjanat] (2026-10-31)
 
 - The binary is `kprint`. The installers also install it as `dprint`, and `kprint --version` prints `kprint 0.60.6`.
 - Release archives are `kprint-<target>.zip`. The release also attaches the `dprint-<target>.zip` archives for older installers and `upgrade`.
@@ -75,22 +79,22 @@
 - npm has `@kprint/kprint` and `@kjanat/fmt`. `@kjanat/fmt` runs `kprint fmt` as `fmt` or `kfmt`, with a default remote configuration when the project has none.
 - `ghcr.io/kjanat/kprint` has images for linux/amd64, linux/arm64 and linux/ppc64le. ORAS pulls the other platforms' binaries from the same image.
 
-## 0.60.5-kjanat (2026-10-30)
+## [0.60.5-kjanat] (2026-10-30)
 
 - A plugin can read a configuration file of its own in TOML, JSON with comments or YAML. By default kprint passes the first file the plugin looks for next to the configuration. `configFile` in the plugin's table names another file, with an optional `#` part, or `false` for none. Remote configuration can only set `false`.
 - The language server and the incremental cache pick up changes to a plugin's configuration file.
 - A plugin declares the files it looks for in its plugin info or through a `get_config_files` export.
 - kprint decides when to compile an interpreted Wasm plugin from the CPU time interpreting takes. Time spent waiting for a CPU or for embedded formatting no longer counts.
 
-## 0.60.4-kjanat (2026-10-30)
+## [0.60.4-kjanat] (2026-10-30)
 
 - In a TOML configuration whose `plugins` array has no trailing comma, `add` puts the comma after the last plugin and keeps a comment after it in place.
 
-## 0.60.3-kjanat (2026-10-30)
+## [0.60.3-kjanat] (2026-10-30)
 
 - A run waits for a background compile it started before it exits, so the next run formats with native code.
 
-## 0.60.2-kjanat (2026-10-30)
+## [0.60.2-kjanat] (2026-10-30)
 
 - kprint runs the built-in exec for every reference to the exec plugin, whatever its release or checksum. That covers `npm:@dprint/exec`, `plugins.dprint.dev`, GitHub releases, jsDelivr and unpkg. `"plugins": ["exec"]` names the built-in exec.
 - A measured Wasm format rate counts once it covers a second of formatting. A run that chose the interpreter compiles in the background when interpreting the rest would take longer than compiling.
@@ -98,7 +102,7 @@
 - kprint prints an error that many files share once, then lists the other files after formatting.
 - The slow-file warning names the embedded code a plugin waits for.
 
-## 0.60.1-kjanat (2026-10-30)
+## [0.60.1-kjanat] (2026-10-30)
 
 - On Windows, kprint reads a repository's files from git's index through Git for Windows' fsmonitor named pipe when `core.fsmonitor` and the untracked cache are on.
 - The compile notice and the `DPRINT_MAX_PLUGIN_COMPILES` error list each plugin's bytes, file count and first files.
@@ -106,7 +110,7 @@
 - `--log-level debug` shows the `core.ignoreCase` decisions.
 - A release bump changes only the version line of `crates/kprint/Cargo.toml`.
 
-## 0.60.0-kjanat (2026-10-30)
+## [0.60.0-kjanat] (2026-10-30)
 
 - The crates use `kprint` names. The binary is still `dprint`.
 - Exec starts and waits for its processes off the formatting thread. On Windows it resumes each process with `NtResumeProcess`. A run over actionlint's 1,900 files went from 5m49s to 19s.
@@ -128,7 +132,7 @@
 - Homebrew (`kjanat/homebrew-tap`), Scoop (`kjanat/scoop-bucket`) and the AUR carry the release. npm has it as `kprint`, with platform packages under `@kprint/<target>`.
 - The install docs build with `cargo install --locked`.
 
-## 0.59.0-kjanat (2026-10-08)
+## [0.59.0-kjanat] (2026-10-08)
 
 - kprint resolves Wasm plugin metadata and configuration without native compilation.
 - kprint formats small jobs with a Wasm interpreter and compiles larger ones to native code, which later runs reuse. `DPRINT_WASM_FORMAT_ENGINE=auto|interpreter|native` controls the choice.
@@ -140,7 +144,7 @@
 - `upgrade` and downloads follow this fork's releases and keep working after a repository rename.
 - WIT files describe Wasm plugin ABI versions 1 to 4.
 
-## 0.58.0-kjanat (2026-10-07)
+## [0.58.0-kjanat] (2026-10-07)
 
 - kprint compiles Wasm plugins with wasmtime's parallel compilation.
 - A supervised worker process sets up each Wasm plugin. kprint kills and retries the worker when it crashes, stalls or runs past its CPU or wall-clock budget. `DPRINT_WASM_COMPILE_WORKER=0` compiles in process, and `DPRINT_WASM_COMPILE_TIMEOUT` sets a compile's total time. kprint restarts a process plugin once when it doesn't report its info within 20 seconds.
@@ -158,8 +162,24 @@
 - `dprint schema` prints one JSON Schema (2020-12) of the configuration file, with each plugin's schema composed in. `add`, `config update` and `init` regenerate a `dprint.schema.json` next to the configuration.
 - kprint reads configuration files through the model it generates the schema from. A root property that is neither dprint's nor an object is an error. A number written as a string, such as `lineWidth: "80"`, is a type error.
 
-## 0.57.5-kjanat (2026-09-14)
+## [0.57.5-kjanat] (2026-09-14)
 
 - `--config` takes the configuration itself as inline JSON, as `-` or no value for stdin, or as a pipe such as a process substitution.
 - kprint re-checks a cached remote configuration file after an hour, or after an immutable response's `max-age`. When the check fails, it uses the cached copy.
 - Shell completions complete option values. `--excludes`, `--excludes-override`, `--includes-override` and `--plugins` can repeat, and a bare `--config-discovery` uses the default mode.
+
+[Unreleased]: https://github.com/kjanat/kprint/compare/0.64.0...HEAD
+[0.64.0]: https://github.com/kjanat/kprint/compare/0.63.0...0.64.0
+[0.63.0]: https://github.com/kjanat/kprint/compare/0.62.0...0.63.0
+[0.62.0]: https://github.com/kjanat/kprint/compare/0.61.0...0.62.0
+[0.61.0]: https://github.com/kjanat/kprint/compare/0.60.6-kjanat...0.61.0
+[0.60.6-kjanat]: https://github.com/kjanat/kprint/compare/0.60.5-kjanat...0.60.6-kjanat
+[0.60.5-kjanat]: https://github.com/kjanat/kprint/compare/0.60.4-kjanat...0.60.5-kjanat
+[0.60.4-kjanat]: https://github.com/kjanat/kprint/compare/0.60.3-kjanat...0.60.4-kjanat
+[0.60.3-kjanat]: https://github.com/kjanat/kprint/compare/0.60.2-kjanat...0.60.3-kjanat
+[0.60.2-kjanat]: https://github.com/kjanat/kprint/compare/0.60.1-kjanat...0.60.2-kjanat
+[0.60.1-kjanat]: https://github.com/kjanat/kprint/compare/0.60.0-kjanat...0.60.1-kjanat
+[0.60.0-kjanat]: https://github.com/kjanat/kprint/compare/0.59.0-kjanat...0.60.0-kjanat
+[0.59.0-kjanat]: https://github.com/kjanat/kprint/compare/0.58.0-kjanat...0.59.0-kjanat
+[0.58.0-kjanat]: https://github.com/kjanat/kprint/compare/0.57.5-kjanat...0.58.0-kjanat
+[0.57.5-kjanat]: https://github.com/kjanat/kprint/releases/tag/0.57.5-kjanat

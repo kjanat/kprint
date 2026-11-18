@@ -20,6 +20,8 @@ use crate::translate::to_2020_12;
 /// The schema of a plugin's configuration.
 pub struct PluginSchema {
   pub config_key: String,
+  /// Whether the host resolves external configuration files for this plugin.
+  pub supports_config_file: bool,
   pub schema: Value,
   /// Where the schema is from, which its relative references are relative
   /// to (unless it has an `$id` saying otherwise). `None` for a schema built
@@ -89,7 +91,12 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     .unwrap_or_default();
 
   let mut warnings = Vec::new();
+  let mut config_keys = HashSet::new();
   for plugin in plugins {
+    // Runtime gives the table to the first plugin with this key.
+    if !config_keys.insert(plugin.config_key.clone()) {
+      continue;
+    }
     let definition_name = format!("plugin:{}", plugin.config_key);
     let plugin_display = format!(
       "{} plugin{}",
@@ -100,6 +107,9 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     // dprint's properties of this plugin's table, with its overrides checked
     // against the plugin's properties
     let mut table_properties = plugin_table_properties.clone();
+    if !plugin.supports_config_file {
+      table_properties.shift_remove(crate::plugin_config_file::CONFIG_FILE_PROPERTY);
+    }
     let resource = match Resource::of(plugin.schema, plugin.url.as_ref(), &plugin.config_key) {
       Ok(resource) => resource,
       Err(why) => {
@@ -728,6 +738,7 @@ mod test {
   fn build(schema: Value, url: Option<&str>) -> ConfigSchema {
     build_config_schema(vec![PluginSchema {
       config_key: "test".to_string(),
+      supports_config_file: false,
       schema,
       url: url.map(|url| Url::parse(url).unwrap()),
     }])
@@ -740,6 +751,7 @@ mod test {
   fn table_schema(key: &str, reference: &str, embedded: bool) -> Value {
     let base = crate::root_schema();
     let mut properties = base["$defs"]["pluginTable"]["properties"].clone();
+    properties.as_object_mut().unwrap().shift_remove("configFile");
     if embedded {
       // the model's property, referring to the plugin's own override schema
       let override_reference = format!("{}#/$defs/dprint-override", reference);
@@ -759,9 +771,68 @@ mod test {
   }
 
   #[test]
+  fn keeps_the_first_plugins_schema_for_a_shared_config_key() {
+    let schema = build_config_schema(vec![
+      PluginSchema {
+        config_key: "shared".to_string(),
+        supports_config_file: true,
+        schema: json!({ "properties": { "firstOption": { "type": "string" } } }),
+        url: None,
+      },
+      PluginSchema {
+        config_key: "shared".to_string(),
+        supports_config_file: false,
+        schema: json!(true),
+        url: None,
+      },
+    ])
+    .unwrap()
+    .schema;
+
+    assert!(schema["properties"]["shared"]["properties"]["configFile"].is_object());
+    assert_eq!(schema["$defs"]["plugin:shared"]["properties"]["firstOption"]["type"], "string");
+  }
+
+  #[test]
+  fn advertises_config_file_only_for_plugins_that_support_it() {
+    let schema = build_config_schema(vec![
+      PluginSchema {
+        config_key: "biome".to_string(),
+        supports_config_file: false,
+        schema: json!({ "type": "object" }),
+        url: None,
+      },
+      PluginSchema {
+        config_key: "toml".to_string(),
+        supports_config_file: true,
+        schema: json!({ "type": "object" }),
+        url: None,
+      },
+      PluginSchema {
+        config_key: "custom".to_string(),
+        supports_config_file: false,
+        schema: json!({ "properties": { "configFile": { "enum": ["internal"] } } }),
+        url: None,
+      },
+    ])
+    .unwrap()
+    .schema;
+
+    assert!(schema["properties"]["biome"]["properties"].get("configFile").is_none());
+    assert!(schema["$defs"]["plugin:biome"]["properties"].get("configFile").is_none());
+    let host_property = &schema["$defs"]["pluginTable"]["properties"]["configFile"];
+    assert!(host_property.is_object());
+    assert_eq!(&schema["properties"]["toml"]["properties"]["configFile"], host_property);
+    assert_eq!(&schema["$defs"]["plugin:toml"]["properties"]["configFile"], host_property);
+    assert!(schema["properties"]["custom"]["properties"].get("configFile").is_none());
+    assert_eq!(schema["$defs"]["plugin:custom"]["properties"]["configFile"], json!({ "enum": ["internal"] }));
+  }
+
+  #[test]
   fn embeds_plugin_schemas_as_resources() {
     let schema = build_config_schema(vec![PluginSchema {
       config_key: "typescript".to_string(),
+      supports_config_file: false,
       schema: json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "$id": "https://plugins.dprint.dev/typescript/schema.json",
@@ -843,6 +914,7 @@ mod test {
   fn escapes_plugin_config_keys_in_pointers() {
     let schema = build_config_schema(vec![PluginSchema {
       config_key: "a/b~c d".to_string(),
+      supports_config_file: false,
       schema: json!({ "properties": { "x": { "$ref": "#" } } }),
       url: None,
     }])
@@ -1164,12 +1236,14 @@ mod test {
       let schema = build(plugin_schema.clone(), Some(URL));
       assert_eq!(schema.warnings, vec![warning(keyword, at)], "{}", plugin_schema);
       // the table is dprint's, which the plugin's schema doesn't describe
+      let mut properties = schema.schema["$defs"]["pluginTable"]["properties"].clone();
+      properties.as_object_mut().unwrap().shift_remove("configFile");
       assert_eq!(
         schema.schema["properties"]["test"],
         json!({
           "description": "The configuration of the test plugin.",
           "type": "object",
-          "properties": schema.schema["$defs"]["pluginTable"]["properties"],
+          "properties": properties,
         }),
         "{}",
         plugin_schema

@@ -1913,6 +1913,7 @@ impl std::fmt::Display for MissingPluginSchema {
 struct PluginSchemaSource {
   name: String,
   config_key: String,
+  supports_config_file: bool,
   location: PluginSchemaLocation,
 }
 
@@ -1933,6 +1934,7 @@ async fn generate_config_schema<TEnvironment: Environment>(
 ) -> Result<GeneratedConfigSchema> {
   let mut missing = Vec::new();
   let mut sources = Vec::new();
+  let mut names = HashSet::new();
   let resolved = join_all_bounded(plugins.into_iter().map(|plugin| async move {
     let result = plugin_resolver.resolve_plugin(plugin.clone()).await;
     (plugin, result)
@@ -1949,16 +1951,19 @@ async fn generate_config_schema<TEnvironment: Environment>(
         continue;
       }
     };
+    if !names.insert(plugin.referenced_plugin_name().to_string()) {
+      continue;
+    }
     let info = plugin.info();
     let location = match plugin.config_schema() {
       Some(schema) => PluginSchemaLocation::BuiltIn(schema),
-      // it doesn't have one
-      None if info.config_schema_url.is_empty() => continue,
+      None if info.config_schema_url.is_empty() => PluginSchemaLocation::BuiltIn("true"),
       None => PluginSchemaLocation::Url(info.config_schema_url.clone()),
     };
     sources.push(PluginSchemaSource {
       name: info.name.clone(),
       config_key: info.config_key.clone(),
+      supports_config_file: info.config_files.is_some(),
       location,
     });
   }
@@ -1966,6 +1971,7 @@ async fn generate_config_schema<TEnvironment: Environment>(
     sources.push(PluginSchemaSource {
       name: "exec".to_string(),
       config_key: "exec".to_string(),
+      supports_config_file: false,
       location: PluginSchemaLocation::BuiltIn(kprint_config::exec::input::exec_config_schema()),
     });
   }
@@ -1986,7 +1992,10 @@ async fn generate_config_schema<TEnvironment: Environment>(
 
 /// Gets the plugins' configuration schemas, downloading each url once
 /// however many plugins have it.
-async fn get_plugin_schemas(environment: &impl Environment, sources: Vec<PluginSchemaSource>) -> Vec<Result<PluginSchema, MissingPluginSchema>> {
+async fn get_plugin_schemas(environment: &impl Environment, mut sources: Vec<PluginSchemaSource>) -> Vec<Result<PluginSchema, MissingPluginSchema>> {
+  // A failed download for the owner must not promote a later plugin to owner.
+  let mut config_keys = HashSet::new();
+  sources.retain(|source| config_keys.insert(source.config_key.clone()));
   let mut urls = Vec::new();
   for source in &sources {
     if let PluginSchemaLocation::Url(url) = &source.location
@@ -2015,6 +2024,7 @@ async fn get_plugin_schemas(environment: &impl Environment, sources: Vec<PluginS
       match result {
         Ok((url, schema)) => Ok(PluginSchema {
           config_key: source.config_key,
+          supports_config_file: source.supports_config_file,
           schema,
           url,
         }),
@@ -2569,6 +2579,7 @@ mod test {
     let output = environment.take_stdout_messages();
     let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
     assert_eq!(schema["properties"]["test-plugin"]["type"], "object");
+    assert!(schema["properties"]["test-plugin"]["properties"].get("configFile").is_none());
     // the plugin's schema is a resource of its own, with its references as they are
     assert_eq!(
       schema["properties"]["test-plugin"]["allOf"],
@@ -2993,6 +3004,31 @@ mod test {
   }
 
   #[tokio::test]
+  async fn does_not_use_a_later_schema_when_the_config_owner_schema_is_unavailable() {
+    let environment = TestEnvironment::new();
+    let schemas = super::get_plugin_schemas(
+      &environment,
+      vec![
+        super::PluginSchemaSource {
+          name: "first".to_string(),
+          config_key: "shared".to_string(),
+          supports_config_file: true,
+          location: super::PluginSchemaLocation::Url("https://plugins.dprint.dev/first/schema.json".to_string()),
+        },
+        super::PluginSchemaSource {
+          name: "second".to_string(),
+          config_key: "shared".to_string(),
+          supports_config_file: false,
+          location: super::PluginSchemaLocation::BuiltIn("true"),
+        },
+      ],
+    )
+    .await;
+    assert_eq!(schemas.len(), 1);
+    assert!(schemas[0].is_err());
+  }
+
+  #[tokio::test]
   async fn gets_plugin_schemas_together_under_one_deadline() {
     let environment = TestEnvironment::new();
     let urls = (0..6)
@@ -3005,12 +3041,14 @@ mod test {
         .map(|(index, url)| super::PluginSchemaSource {
           name: format!("plugin-{}", index),
           config_key: format!("plugin{}", index),
+          supports_config_file: false,
           location: super::PluginSchemaLocation::Url(url.clone()),
         })
         // a url two plugins have is downloaded once
         .chain([super::PluginSchemaSource {
           name: "plugin-0-again".to_string(),
           config_key: "plugin0Again".to_string(),
+          supports_config_file: false,
           location: super::PluginSchemaLocation::Url(urls[0].clone()),
         }])
         .collect::<Vec<_>>()
