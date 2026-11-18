@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-- Generated configuration schemas and editor completions offer `configFile` only when kprint can load an external configuration for the plugin or the plugin defines that option itself.
+## [0.64.1] (2026-11-18)
+
+- Generated configuration schemas and editor completions offer `configFile` only when kprint can load an external configuration for the plugin or the plugin defines that option itself. [#102](https://github.com/kjanat/kprint/pull/102)
 
 ## [0.64.0] (2026-11-18)
 
@@ -168,7 +170,8 @@
 - kprint re-checks a cached remote configuration file after an hour, or after an immutable response's `max-age`. When the check fails, it uses the cached copy.
 - Shell completions complete option values. `--excludes`, `--excludes-override`, `--includes-override` and `--plugins` can repeat, and a bare `--config-discovery` uses the default mode.
 
-[Unreleased]: https://github.com/kjanat/kprint/compare/0.64.0...HEAD
+[Unreleased]: https://github.com/kjanat/kprint/compare/0.64.1...HEAD
+[0.64.1]: https://github.com/kjanat/kprint/compare/0.64.0...0.64.1
 [0.64.0]: https://github.com/kjanat/kprint/compare/0.63.0...0.64.0
 [0.63.0]: https://github.com/kjanat/kprint/compare/0.62.0...0.63.0
 [0.62.0]: https://github.com/kjanat/kprint/compare/0.61.0...0.62.0
