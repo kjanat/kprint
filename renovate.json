@@ -6,5 +6,24 @@
   "labels": ["dependencies"],
   "rebaseWhen": "conflicted",
   "gitIgnoredAuthors": ["114827586+autofix-ci[bot]@users.noreply.github.com"],
-  "github-actions": { "enabled": false }
+  "github-actions": { "enabled": false },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [".github/scripts/freebsd-setup.sh"],
+      "matchStrings": [
+        "#[ \\t]*renovate:[ \\t]*(?<packageName>[\\w-]+/[\\w-]+)\\s+unpack[ \\t]+https://[^\\s]+?-(?<currentValue>\\d+(?:\\.\\d+)+)\\.tar\\.(?:lz|xz)\\s+\\\\\\s+(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "custom.freebsd-ports"
+    }
+  ],
+  "customDatasources": {
+    "freebsd-ports": {
+      "defaultRegistryUrlTemplate": "https://cgit.FreeBSD.org/ports/plain/{{packageName}}/distinfo",
+      "format": "plain",
+      "transformTemplates": [
+        "{\"releases\": [releases.version.$match(/^SHA256 \\((make|pkgconf|curl|git)-(\\d+(?:\\.\\d+)+)\\.tar\\.(lz|xz)\\) = ([a-f0-9]{64})$/)[groups[2] = (groups[0] = 'make' ? 'lz' : 'xz')].{\"version\": groups[1], \"digest\": groups[3]}]}"
+      ]
+    }
+  }
 }
