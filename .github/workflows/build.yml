@@ -93,7 +93,14 @@ jobs:
           copyback: ${{ inputs.profile == 'release' }}
           prepare: |
             set -eu
-            pkg install -y curl git pkgconf
+            mkdir -p /usr/local/etc/pkg/repos
+            cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'EOF'
+            FreeBSD: {
+              url: "https://pkg.freebsd.org/${ABI}/latest",
+              mirror_type: "none"
+            }
+            EOF
+            pkg -o FETCH_TIMEOUT=15 -o FETCH_RETRY=1 install -r FreeBSD -y curl git pkgconf
             curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
             sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none
           run: |
