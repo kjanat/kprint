@@ -91,7 +91,12 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     .unwrap_or_default();
 
   let mut warnings = Vec::new();
+  let mut config_keys = HashSet::new();
   for plugin in plugins {
+    // Runtime gives the table to the first plugin with this key.
+    if !config_keys.insert(plugin.config_key.clone()) {
+      continue;
+    }
     let definition_name = format!("plugin:{}", plugin.config_key);
     let plugin_display = format!(
       "{} plugin{}",
@@ -763,6 +768,29 @@ mod test {
     options.properties = json_schema_sort::PropertyOrdering::Preserve;
     json_schema_sort::sort_schema_with_options(&mut table, options);
     table
+  }
+
+  #[test]
+  fn keeps_the_first_plugins_schema_for_a_shared_config_key() {
+    let schema = build_config_schema(vec![
+      PluginSchema {
+        config_key: "shared".to_string(),
+        supports_config_file: true,
+        schema: json!({ "properties": { "firstOption": { "type": "string" } } }),
+        url: None,
+      },
+      PluginSchema {
+        config_key: "shared".to_string(),
+        supports_config_file: false,
+        schema: json!(true),
+        url: None,
+      },
+    ])
+    .unwrap()
+    .schema;
+
+    assert!(schema["properties"]["shared"]["properties"]["configFile"].is_object());
+    assert_eq!(schema["$defs"]["plugin:shared"]["properties"]["firstOption"]["type"], "string");
   }
 
   #[test]
