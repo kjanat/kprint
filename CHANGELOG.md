@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.64.0 (2026-11-18)
+
+- When a Wasm plugin runs out of stack, kprint reports an error for that file, discards the trapped instance and moves on without retrying the same input.
+- Errors while loading or applying a Wasm plugin’s configuration name the plugin, its version, the failing operation and the configuration key or file.
+- The [Wasm plugin guide](docs/wasm-plugin-development.md) and [WIT reference](wit/README.md) document the schema-4 core ABI, optional configuration metadata, `$configFile` contents and configuration registration and release.
+- Beepboop subscriptions in the Homebrew tap and Scoop bucket handle kprint updates after publication.
+
 ## 0.63.0 (2026-11-17)
 
 - kprint looks for `kprint.toml`, `.kprint.toml`, `kprint.json`, `kprint.jsonc`, `.kprint.json` and `.kprint.jsonc`, in that order, before the same names with `dprint`. A directory's TOML file takes precedence over its JSON file. It does so in each project directory, in a project's `.config/`, at an npm package's root and in the global configuration directory. `init` creates `kprint.json`, and `init --global` creates `kprint.jsonc`.
