@@ -52,7 +52,7 @@ unpack https://www.kernel.org/pub/software/scm/git/git-2.56.1.tar.xz \
 	f0b0bf89264b9bd2e1c640363e7529643989da76281600473c50745cd34a607f
 (
 	cd git-2.56.1
-	gmake -j 2 prefix="$tools" CURL_CONFIG="$tools/bin/curl-config" \
+	gmake -j 2 PROFILE= prefix="$tools" CURL_CONFIG="$tools/bin/curl-config" \
 		NO_EXPAT=YesPlease NO_GETTEXT=YesPlease NO_PERL=YesPlease \
 		NO_PYTHON=YesPlease NO_TCLTK=YesPlease install
 )
