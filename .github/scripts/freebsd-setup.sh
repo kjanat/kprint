@@ -54,7 +54,7 @@ unpack https://www.kernel.org/pub/software/scm/git/git-2.56.1.tar.xz \
 	cd git-2.56.1
 	gmake -j 2 PROFILE= prefix="$tools" CURL_CONFIG="$tools/bin/curl-config" \
 		NO_EXPAT=YesPlease NO_GETTEXT=YesPlease NO_PERL=YesPlease \
-		NO_PYTHON=YesPlease NO_TCLTK=YesPlease install
+		NO_PYTHON=YesPlease NO_RUST=YesPlease NO_TCLTK=YesPlease install
 )
 
 curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o rustup-init.sh
