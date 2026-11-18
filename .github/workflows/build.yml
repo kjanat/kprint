@@ -92,21 +92,11 @@ jobs:
           # only packaging (release) uses what the VM builds, and copying all
           # of target back (gigabytes) can drop the connection
           copyback: ${{ inputs.profile == 'release' }}
-          prepare: |
-            set -eu
-            mkdir -p /usr/local/etc/pkg/repos
-            cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'EOF'
-            FreeBSD: {
-              url: "https://pkg.freebsd.org/${ABI}/latest",
-              mirror_type: "none"
-            }
-            EOF
-            pkg -o FETCH_TIMEOUT=15 -o FETCH_RETRY=1 install -r FreeBSD -y curl git pkgconf
-            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
-            sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none
+          prepare: sh .github/scripts/freebsd-setup.sh
+          cache-after-prepare-key-suffix: ${{ hashFiles('.github/scripts/freebsd-setup.sh') }}
           run: |
             set -eu
-            export PATH="${HOME}/.cargo/bin:${PATH}"
+            export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:${PATH}"
             export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 RUST_BACKTRACE=full LZMA_API_STATIC=1
             target=x86_64-unknown-freebsd
             release=''
