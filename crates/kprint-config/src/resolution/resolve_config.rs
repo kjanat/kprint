@@ -3858,7 +3858,7 @@ lineWidth = 80
     fn runs_remote_exec_commands_of_listed_programs() {
       let result = resolve(
         &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": ["tombi", "rustfmt"] }} }}"#, REMOTE_URL),
-        &remote_config(""),
+        &remote_config(r#""playWithFire": true,"#),
       )
       .unwrap();
       assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
@@ -3966,7 +3966,7 @@ lineWidth = 80
         }
       );
       assert_eq!(
-        result.messages[1],
+        result.messages[0],
         "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run programs not listed in \"playWithFire\": evil"
       );
     }
@@ -4020,7 +4020,6 @@ lineWidth = 80
       assert_eq!(
         result.messages,
         vec![
-          "Note: \"playWithFire\" is ignored in remote configuration (https://dprint.dev/exec.json). Specify it in a local configuration file.",
           "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run programs not listed in \"playWithFire\": evil",
           concat!(
             "Note: The exec \"cwd\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, as it decides what commands run. ",

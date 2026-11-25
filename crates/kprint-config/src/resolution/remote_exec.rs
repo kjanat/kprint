@@ -245,12 +245,17 @@ impl RemoteExec {
     environment: &impl Environment,
   ) -> Vec<PluginSourceReference> {
     if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
+      let resolved_exec_config = match resolved.get(EXEC_CONFIG_KEY) {
+        Some(ConfigMapValue::PluginConfig(exec_config)) => Some(exec_config),
+        _ => None,
+      };
+      let has_higher_precedence = |key: &str| resolved_exec_config.is_some_and(|exec_config| exec_config.properties.contains_key(key));
       // a remote configuration can't allow itself to run commands
       let mut has_play_with_fire = exec_config.properties.shift_remove(&names().play_with_fire).is_some();
       for override_config in &mut exec_config.overrides {
         has_play_with_fire |= override_config.properties.shift_remove(&names().play_with_fire).is_some();
       }
-      if has_play_with_fire {
+      if has_play_with_fire && !has_higher_precedence(&names().play_with_fire) {
         log_warn!(
           environment,
           "Note: \"{}\" is ignored in remote configuration ({}). Specify it in a local configuration file.",
@@ -258,11 +263,6 @@ impl RemoteExec {
           source.display()
         );
       }
-      let resolved_exec_config = match resolved.get(EXEC_CONFIG_KEY) {
-        Some(ConfigMapValue::PluginConfig(exec_config)) => Some(exec_config),
-        _ => None,
-      };
-      let has_higher_precedence = |key: &str| resolved_exec_config.is_some_and(|exec_config| exec_config.properties.contains_key(key));
       if let Some(commands) = exec_config.properties.shift_remove(&names().commands)
         && self.commands.is_none()
         && !has_higher_precedence(&names().commands)
