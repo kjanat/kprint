@@ -1,7 +1,10 @@
+#:schema https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/schemas/dprint.schema.json
+#:tombi toml-version = "v1.1.0"
+
 # Default configuration for @kjanat/fmt when the project has no local config
-# and no --config was given. A local file may allow remote exec commands; a
-# URL used as --config cannot.
-extends = "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json"
+# and no --config was given. A local file may allow remote exec commands, but a
+# URL used as --config cannot. See https://github.com/kjanat/kprint/issues/106.
+extends = ["https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json"]
 
 [exec]
 playWithFire = true

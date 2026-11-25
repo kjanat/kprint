@@ -2,13 +2,7 @@ import { deepStrictEqual, match, ok } from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  bundledConfigFileName,
-  bundledConfigPath,
-  defaultConfigArgs,
-  defaultRemoteConfigUrl,
-  specifiesConfig,
-} from "./fmt_config.ts";
+import { bundledConfigFileName, bundledConfigPath, defaultConfigArgs, defaultRemoteConfigUrl, specifiesConfig } from "./fmt_config.ts";
 
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 const sourceConfig = join(sourceDir, "default-config", bundledConfigFileName);

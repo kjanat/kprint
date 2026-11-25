@@ -2,8 +2,7 @@ import { dirname, join } from "node:path";
 import { hasConfigFile } from "./config_files.ts";
 
 /** Remote configuration the bundled default extends. */
-export const defaultRemoteConfigUrl =
-  "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json";
+export const defaultRemoteConfigUrl = "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json";
 
 /** File name of the default configuration shipped next to fmt.cjs. */
 export const bundledConfigFileName = "kprint.toml";
