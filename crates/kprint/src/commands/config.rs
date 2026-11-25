@@ -1450,7 +1450,8 @@ async fn validate_new_plugin_references<TEnvironment: Environment>(
     plugin_resolver
       .resolve_plugin(reference)
       .await
-      .with_context(|| format!("Failed resolving new plugin reference {source}"))?;
+      .with_context(|| format!("Failed resolving new plugin reference {source}"))
+      .map_err(crate::resolution::ResolvePluginsError::from)?;
   }
   Ok(())
 }
@@ -3986,6 +3987,7 @@ Created {}",
   #[test]
   fn config_update_should_always_upgrade_to_latest_plugins() {
     let new_wasm_url = "https://plugins.dprint.dev/test-plugin.wasm".to_string();
+    let old_ps_url = format!("https://plugins.dprint.dev/test-process.json@{}", OLD_PROCESS_PLUGIN_FILE.checksum());
     // test all the process plugin combinations
     let new_ps_url = "https://plugins.dprint.dev/test-plugin-3.json".to_string();
     let new_ps_url_with_checksum = format!("{}@{}", new_ps_url, NEW_PROCESS_PLUGIN_FILE.checksum());
@@ -4013,7 +4015,7 @@ Created {}",
       remote_has_process_checksum: false,
       confirm_results: Vec::new(),
       expected_logs: vec!["Updating test-process-plugin 0.1.0 to 0.3.0...".to_string()],
-      expected_urls: vec![new_ps_url.clone()],
+      expected_urls: vec![old_ps_url.clone()],
       always_update: true,
       on_error: Some(Box::new(|text| {
         assert_contains!(
@@ -4154,7 +4156,7 @@ Created {}",
         "Do you want to update it? Y".to_string(),
         "Updating test-process-plugin 0.1.0 to 0.3.0...".to_string(),
       ],
-      expected_urls: vec![new_ps_url.clone()],
+      expected_urls: vec![old_ps_url.clone()],
       always_update: false,
       on_error: Some(Box::new(|text| {
         assert_contains!(
@@ -6670,7 +6672,9 @@ text",
         assert_contains!(parent_after, "shared-config@1.1.0");
         assert_contains!(child_after, "child-config@1.1.0");
       } else {
-        assert_contains!(format!("{:#}", result.unwrap_err()), "The selected updates are incompatible");
+        let err = result.unwrap_err();
+        err.assert_exit_code(11);
+        assert_contains!(format!("{:#}", err), "The selected updates are incompatible");
         assert_eq!(parent_after, parent);
         assert_eq!(child_after, child);
       }
