@@ -8,6 +8,7 @@ use kprint_git::PatternMatch;
 
 use crate::environment::DirEntry;
 use crate::environment::DiscoveryEnvironment as Environment;
+use crate::git_repo::GitRepo;
 use crate::utils::DirPrefix;
 use crate::utils::escape_glob_text;
 use crate::utils::path_to_slash_bytes;
@@ -66,8 +67,33 @@ impl DirGitIgnores {
     // a directory containing `.git` is a repository root, so gitignores above
     // it don't apply
     let parent = if hint.has_git { None } else { parent.cloned() };
-    let ignore_case = ignores_case(environment, dir_path, hint.has_git, parent.as_ref());
-    let current = resolve_current_gitignore(environment, dir_path, hint.has_git, Some(hint), options, ignore_case);
+    Self::for_dir(environment, dir_path, hint.has_git, Some(hint), parent, options)
+  }
+
+  fn for_dir(
+    environment: &impl Environment,
+    dir_path: &Path,
+    is_repo_root: bool,
+    hint: Option<DirEntriesHint>,
+    parent: Option<Arc<DirGitIgnores>>,
+    options: &GitIgnoreTreeOptions,
+  ) -> Option<Arc<DirGitIgnores>> {
+    let repo = if is_repo_root {
+      match crate::git_repo::find_repo(environment, dir_path) {
+        Ok(repo) => repo,
+        Err(err) => {
+          log_debug!(environment, "Not reading the git config for {}: {:#}", dir_path.display(), err);
+          None
+        }
+      }
+    } else {
+      None
+    };
+    let ignore_case = match &repo {
+      Some(repo) => ignores_case(environment, repo),
+      None => parent.as_ref().is_some_and(|parent| parent.ignore_case),
+    };
+    let current = resolve_current_gitignore(environment, dir_path, is_repo_root, repo.as_ref(), hint, options, ignore_case);
     Self::chain(current, parent, ignore_case)
   }
 
@@ -87,23 +113,20 @@ impl DirGitIgnores {
 /// Whether the patterns of a directory's entries match ignoring case: at a
 /// repository root, what `core.ignoreCase` is for it (see
 /// `git_repo::repo_ignores_case`), otherwise what its parent's say.
-fn ignores_case(environment: &impl Environment, dir_path: &Path, is_repo_root: bool, parent: Option<&Arc<DirGitIgnores>>) -> bool {
-  if !is_repo_root {
-    return parent.is_some_and(|parent| parent.ignore_case);
-  }
-  let ignore_case = crate::git_repo::find_repo(environment, dir_path).and_then(|repo| match repo {
-    Some(repo) => crate::git_repo::repo_ignores_case(environment, &repo),
-    None => Ok(false),
-  });
-  match ignore_case {
+fn ignores_case(environment: &impl Environment, repo: &GitRepo) -> bool {
+  match crate::git_repo::repo_ignores_case(environment, repo) {
     Ok(ignore_case) => {
       if ignore_case {
-        log_debug!(environment, "Matching the gitignores in {} ignoring case (core.ignoreCase)", dir_path.display());
+        log_debug!(
+          environment,
+          "Matching the gitignores in {} ignoring case (core.ignoreCase)",
+          repo.work_tree.display()
+        );
       }
       ignore_case
     }
     Err(err) => {
-      log_debug!(environment, "Not reading the git config for {}: {:#}", dir_path.display(), err);
+      log_debug!(environment, "Not reading the git config for {}: {:#}", repo.work_tree.display(), err);
       false
     }
   }
@@ -233,9 +256,7 @@ impl<TEnvironment: Environment> GitIgnoreTree<TEnvironment> {
       // ancestors aren't part of the caller's listing, so resolve them without a hint
       dir_path.parent().and_then(|parent| self.get_resolved_git_ignore_inner(parent, None))
     };
-    let ignore_case = ignores_case(&self.environment, dir_path, is_repo_root, parent.as_ref());
-    let current = resolve_current_gitignore(&self.environment, dir_path, is_repo_root, hint, &self.options, ignore_case);
-    DirGitIgnores::chain(current, parent, ignore_case)
+    DirGitIgnores::for_dir(&self.environment, dir_path, is_repo_root, hint, parent, &self.options)
   }
 }
 
@@ -243,6 +264,7 @@ fn resolve_current_gitignore(
   environment: &impl Environment,
   dir_path: &Path,
   is_repo_root: bool,
+  repo: Option<&GitRepo>,
   hint: Option<DirEntriesHint>,
   options: &GitIgnoreTreeOptions,
   ignore_case: bool,
@@ -256,8 +278,10 @@ fn resolve_current_gitignore(
   };
   // git reads `.git/info/exclude` and the global excludes file only at the
   // repository root (https://git-scm.com/docs/gitignore)
-  let exclude_bytes = if is_repo_root {
-    environment.read_file_bytes(dir_path.join(".git").join("info").join("exclude")).ok()
+  let exclude_bytes = if let Some(repo) = repo {
+    environment.read_file_bytes(repo.common_dir.join("info").join("exclude")).ok()
+  } else if is_repo_root {
+    environment.read_file_bytes(dir_path.join(".git/info/exclude")).ok()
   } else {
     None
   };
@@ -464,5 +488,43 @@ mod test {
     let path = PathBuf::from("/ignored.txt");
     let gitignore = ignore_tree.get_resolved_git_ignore_for_file(&path).unwrap();
     assert!(gitignore.is_ignored(&path, /* is_dir */ false));
+  }
+
+  #[test]
+  fn git_info_exclude_follows_worktree_and_submodule_git_files() {
+    let env = TestEnvironment::new();
+    env.mk_dir_all("/main/.git/worktrees/linked").unwrap();
+    env.mk_dir_all("/main/.git/info").unwrap();
+    env.mk_dir_all("/main/.git/modules/sub/info").unwrap();
+    env.mk_dir_all("/main/sub").unwrap();
+    env.mk_dir_all("/linked").unwrap();
+    env.write_file("/main/.git/info/exclude", "worktree.txt\n").unwrap();
+    env.write_file("/main/.git/modules/sub/info/exclude", "submodule.txt\n").unwrap();
+    env.write_file("/main/.git/worktrees/linked/commondir", "../..\n").unwrap();
+    env.write_file("/linked/.git", "gitdir: /main/.git/worktrees/linked\n").unwrap();
+    env.write_file("/main/sub/.git", "gitdir: ../.git/modules/sub\n").unwrap();
+
+    let options = GitIgnoreTreeOptions::default();
+    let mut tree = GitIgnoreTree::new(env.clone(), options.clone());
+    for (dir, filename) in [("/linked", "worktree.txt"), ("/main/sub", "submodule.txt")] {
+      let dir = Path::new(dir);
+      let file = dir.join(filename);
+      let from_tree = tree.get_resolved_git_ignore_for_file(&file).unwrap();
+      let from_listing = DirGitIgnores::for_listed_dir(
+        &env,
+        dir,
+        DirEntriesHint {
+          has_git: true,
+          has_gitignore: false,
+        },
+        None,
+        &options,
+      )
+      .unwrap();
+      for ignores in [from_tree, from_listing] {
+        assert!(ignores.is_ignored(&file, false));
+        assert!(!ignores.is_ignored(&dir.join("other.txt"), false));
+      }
+    }
   }
 }

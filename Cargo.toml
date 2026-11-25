@@ -29,10 +29,9 @@ kprint-process-plugin = { path = "crates/kprint-process-plugin", version = "=0.1
 kprint-test-support   = { path = "crates/kprint-test-support", version = "=0.1.0" }
 kprint-wasm-plugin    = { path = "crates/kprint-wasm-plugin", version = "=0.1.0" }
 
-actions-rs                        = "0.1"
-json-schema-sort.version          = "0.1"
-json-schema-sort.default-features = false
-tree-fucker                       = "0.1.0"
+# actions-rs                        = "0.1"
+json-schema-sort = { version = "0.1", default-features = false }
+tree-fucker      = "0.1.0"
 
 anyhow                    = "1"
 async-trait               = "0.1"
@@ -45,7 +44,7 @@ clap_complete             = "4"
 console                   = "0.16"
 console_static_text       = "0.9"
 crossbeam-channel         = "0.5"
-crossterm                 = "0.27"                                       # Manually retest everything when bumping this crate.
+crossterm                 = "0.27"                                           # Manually retest everything when bumping this crate.
 deno_semver               = "0.10"
 deno_terminal             = "0.2"
 dirs                      = "6"
@@ -54,7 +53,7 @@ file_test_runner          = "0.12"
 flate2                    = "1"
 fs3                       = "0.5"
 futures                   = "0.3"
-globset                   = "0.4"
+# globset                   = "0.4"
 hashbrown                 = "0.17"
 indexmap.version          = "2.14"
 indexmap.features         = ["serde"]
@@ -63,7 +62,7 @@ jsonc-parser              = "0.32"
 libc                      = "0.2"
 once_cell                 = "1.21"
 parking_lot               = "0.12"
-path-clean                = "1.0"                                        # Keep this version for consistent output across platforms.
+path-clean                = "1.0"                                            # Keep this version for consistent output across platforms.
 percent-encoding          = "2"
 pretty_assertions         = "1"
 quote                     = "1"
@@ -96,7 +95,7 @@ tokio.version             = "1"
 tokio.features            = ["macros", "rt", "rt-multi-thread", "time"]
 tokio-util                = "0.7"
 toml_edit                 = "0.25"
-tower-lsp                 = "0.20"
+tower-lsp                 = { package = "deno_tower_lsp", version = "0.5" }
 twox-hash                 = "2"
 unicode-width             = "0.2"
 ureq.version              = "2"
@@ -112,12 +111,12 @@ winapi                    = "0.3"
 winreg                    = "0.55"
 zip                       = "9.0"
 
-[patch.crates-io]
-# unreleased fixes on top of 0.6.1
-boon.git = "https://github.com/santhosh-tekuri/boon"
-boon.rev = "b487e6a75097d8719b185486269c8723f0176ed7"
-
 # Build release with debug symbols: cargo build --profile=release-with-debug
 [profile.release-with-debug]
 inherits = "release"
 debug    = true
+
+[patch.crates-io]
+# unreleased fixes on top of 0.6.1
+boon.git = "https://github.com/santhosh-tekuri/boon"
+boon.rev = "b487e6a75097d8719b185486269c8723f0176ed7"

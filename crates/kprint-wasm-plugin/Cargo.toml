@@ -10,12 +10,12 @@ license     = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+formatting = ["dep:kprint-formatting"]
+
 [dependencies]
 kprint-configuration = { workspace = true }
 kprint-formatting    = { workspace = true, optional = true }
 kprint-plugin-types  = { workspace = true }
 serde                = { workspace = true }
 serde_json           = { workspace = true }
-
-[features]
-formatting = ["dep:kprint-formatting"]

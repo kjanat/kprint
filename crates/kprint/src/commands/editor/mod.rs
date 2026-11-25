@@ -259,9 +259,7 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
   }
 
   async fn format(&mut self, message_id: u32, body: FormatEditorMessageBody, token: Arc<CancellationToken>) {
-    if self.plugins_scope.is_none()
-      && let Err(err) = self.ensure_latest_config().await
-    {
+    if let Err(err) = self.ensure_latest_config().await {
       // respond with the error instead of exiting so the editor can
       // show it and the config file can be fixed without a restart
       send_error_response(&self.context, message_id, err);
@@ -407,6 +405,27 @@ mod test {
   use super::messages::EditorMessageBody;
   use super::messages::FormatEditorMessageBody;
 
+  fn allow_process_plugins(environment: &TestEnvironment) {
+    let dir = kprint_config::resolution::resolve_global_config_dir_path(environment).unwrap();
+    environment.mk_dir_all(&dir).unwrap();
+    environment
+      .write_file(dir.join("settings.json"), r#"{"editor":{"allowProcessPlugins":true}}"#)
+      .unwrap();
+  }
+
+  #[test]
+  fn editor_info_blocks_process_plugins_until_approved() {
+    let environment = TestEnvironmentBuilder::with_remote_process_plugin()
+      .with_default_config(|c| {
+        c.add_remote_process_plugin();
+      })
+      .build();
+    let error = run_test_cli(vec!["editor-info"], &environment).unwrap_err();
+    error.assert_exit_code(12);
+    assert!(format!("{error:#}").contains("unsandboxed process plugin"), "{error:#}");
+    assert!(!environment.take_stderr_messages().iter().any(|message| message.contains("Extracting zip")));
+  }
+
   #[test]
   fn should_output_editor_plugin_info() {
     // it should not output anything when downloading plugins
@@ -417,6 +436,7 @@ mod test {
         c.add_remote_wasm_plugin().add_remote_process_plugin();
       })
       .build(); // build only, don't initialize
+    allow_process_plugins(&environment);
     run_test_cli(vec!["editor-info"], &environment).unwrap();
     let mut final_output = r#"{"schemaVersion":5,"cliVersion":""#.to_string();
     final_output.push_str(&environment.cli_version());
@@ -439,6 +459,7 @@ mod test {
         c.add_remote_wasm_plugin().add_remote_process_plugin();
       })
       .build();
+    allow_process_plugins(&environment);
     run_test_cli(vec!["editor-info", "--config-discovery=global"], &environment).unwrap();
     let mut final_output = r#"{"schemaVersion":5,"cliVersion":""#.to_string();
     final_output.push_str(&environment.cli_version());
@@ -663,6 +684,7 @@ mod test {
       .write_file(&ignored_file_path, "text")
       .initialize()
       .build();
+    allow_process_plugins(&environment);
     environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
     let stdin = environment.stdin_writer();
     let stdout = environment.stdout_reader();
@@ -1522,6 +1544,7 @@ mod test {
       .write_file(file_path4, "")
       .write_file(file_path5, "")
       .build();
+    allow_process_plugins(&environment);
     environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
 
     let stdin = environment.stdin_writer();

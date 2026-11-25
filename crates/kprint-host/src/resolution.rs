@@ -80,6 +80,10 @@ use crate::utils::is_negated_glob;
 use kprint_config::options::ConfigOptions;
 use kprint_discovery::ConfigDiscovery;
 use kprint_discovery::FilePatternArgs;
+use kprint_host_api::editor_policy::EditorApprovalRequired;
+use kprint_host_api::editor_policy::EditorPolicy;
+use kprint_host_api::editor_policy::ProcessPluginConfiguration;
+use kprint_platform::utils::get_sha256_checksum;
 
 struct Embedder {
   plugin: Rc<PluginWithConfig>,
@@ -402,6 +406,7 @@ impl InitializedPluginWithConfig {
 
 pub struct PluginsScope<TEnvironment: Environment> {
   environment: TEnvironment,
+  editor_policy: Option<EditorPolicy>,
   pub config: Option<Rc<ResolvedConfig>>,
   pub plugins: IndexMap<String, Rc<PluginWithConfig>>,
   pub plugin_name_maps: PluginNameResolutionMaps,
@@ -424,6 +429,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
 
     Ok(PluginsScope {
       environment,
+      editor_policy: EditorPolicy::current(),
       config: Some(config),
       plugin_name_maps,
       plugins: plugins.into_iter().map(|p| (p.name().to_string(), p)).collect(),
@@ -559,7 +565,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         outer_path: outer_path.clone(),
         file_path_mapping: file_path_mapping.clone(),
       };
-      scope.format_from(host_request, Some(embedder))
+      scope.format_from(host_request, Some(embedder), None)
     })
   }
 
@@ -632,7 +638,11 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 
   pub fn format(self: &Rc<Self>, request: HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> {
-    self.format_from(request, None)
+    self.format_with_language_id(request, None)
+  }
+
+  pub fn format_with_language_id(self: &Rc<Self>, request: HostFormatRequest, language_id: Option<&str>) -> LocalBoxFuture<'static, FormatResult> {
+    self.format_from(request, None, language_id)
   }
 
   /// Whether every selected plugin supports ranges, with legacy plugins left unspecified.
@@ -682,7 +692,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     (path == synthetic).then_some(real.as_path())
   }
 
-  fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
+  fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>, language_id: Option<&str>) -> LocalBoxFuture<'static, FormatResult> {
     // owned because they outlive this scope by moving into the future below
     let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
     let real_file_path = Self::mapped_real_path(&request.file_path, embedder.as_ref())
@@ -696,14 +706,15 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     };
     log_debug!(
       self.environment,
-      "Host formatting {} - File length: {} - Plugins: [{}] - Range: {:?}",
+      "Host formatting {}{} - File length: {} - Plugins: [{}] - Range: {:?}",
       request.file_path.display(),
+      language_id.map(|id| format!(" - Language ID: {id:?}")).unwrap_or_default(),
       request.file_bytes.len(),
       plugin_names.join(", "),
       request.range,
     );
     let scope = self.clone();
-    async move {
+    kprint_host_api::editor_policy::within_editor_policy(self.editor_policy.clone(), async move {
       let mut file_text = request.file_bytes;
       let mut range = request.range;
       let mut had_change = false;
@@ -749,7 +760,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       }
 
       Ok(if had_change { Some(file_text) } else { None })
-    }
+    })
     .boxed_local()
   }
 }
@@ -1580,9 +1591,11 @@ pub async fn get_plugins_scope_from_args<TEnvironment: Environment>(
 ) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
   match resolve_config_from_args(args, environment).await {
     Ok(config) => resolve_plugins_scope(Rc::new(config), environment, plugin_resolver).await,
+    Err(ResolveConfigError::Other(err)) if err.is::<EditorApprovalRequired>() => Err(err.into()),
     // ignore
     Err(_) => Ok(PluginsScope {
       environment: environment.clone(),
+      editor_policy: EditorPolicy::current(),
       config: None,
       plugin_name_maps: Default::default(),
       plugins: Default::default(),
@@ -1603,6 +1616,23 @@ pub struct ResolvePluginsError(#[from] anyhow::Error);
 
 pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   config: Rc<ResolvedConfig>,
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
+  let resolve = resolve_plugins_scope_inner(&config, environment, plugin_resolver);
+  if let Some(policy) = EditorPolicy::current() {
+    let approval = ProcessPluginConfiguration {
+      source: config.origin.source.display(),
+      fingerprint: get_sha256_checksum(format!("{config:?}").as_bytes()),
+    };
+    policy.with_config(approval, resolve).await
+  } else {
+    resolve.await
+  }
+}
+
+async fn resolve_plugins_scope_inner<TEnvironment: Environment>(
+  config: &Rc<ResolvedConfig>,
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
@@ -1731,7 +1761,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     }
   }
 
-  Ok(PluginsScope::new(environment.clone(), plugins, config, global_config_result.diagnostics)?.with_plugin_config_files(plugin_config_files))
+  Ok(PluginsScope::new(environment.clone(), plugins, config.clone(), global_config_result.diagnostics)?.with_plugin_config_files(plugin_config_files))
 }
 
 /// Gets which files the plugin formats and its resolved configuration. A

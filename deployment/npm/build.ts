@@ -39,8 +39,7 @@ const allPackages: Package[] = targets.targets.map((target) => {
   return { zipFileName: target.zipFileName, os, cpu, libc };
 });
 
-const mainReadme = (repositoryUrl: string) =>
-  `# ${mainPackage}
+const mainReadme = (repositoryUrl: string) => `# ${mainPackage}
 
 [kprint](https://dprint.kjanat.dev) is a pluggable and configurable code
 formatter written in Rust, forked from dprint. It has formatters built in (ex.

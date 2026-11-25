@@ -1225,12 +1225,12 @@ EXAMPLES:
         .subcommand(
           Command::new("update")
             .alias("upgrade")
-            .about("Updates the plugins in the configuration file.")
-            .arg(Arg::new("yes").help("Upgrade process plugins without prompting to confirm checksums.").short('y').long("yes").action(clap::ArgAction::SetTrue))
+            .about("Updates plugins and versioned npm configurations in extends.")
+            .arg(Arg::new("yes").help("Apply all updates without prompting.").short('y').long("yes").action(clap::ArgAction::SetTrue))
             .arg(
               Arg::new("dry-run")
                 .long("dry-run")
-                .help("Print the updates that would be made without modifying any files.")
+                .help("Preview updates without writing project configuration or schema files. This may populate the cache.")
                 .action(clap::ArgAction::SetTrue),
             )
             .arg(

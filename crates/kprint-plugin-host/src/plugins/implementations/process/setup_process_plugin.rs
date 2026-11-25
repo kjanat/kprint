@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::bail;
+use kprint_platform::editor_policy::authorize_process_plugin;
 use kprint_plugin_types::PluginInfo;
 use kprint_process_plugin::ProcessPluginCommunicator;
 use serde::Deserialize;
@@ -17,6 +18,7 @@ use crate::utils::PathSource;
 use crate::utils::extract_zip;
 use crate::utils::fetch_file_or_url_bytes;
 use crate::utils::fs::get_atomic_path;
+use crate::utils::get_sha256_checksum;
 use crate::utils::resolve_url_or_file_path_to_path_source;
 use crate::utils::verify_sha256_checksum;
 
@@ -54,6 +56,7 @@ pub async fn setup_process_plugin<TEnvironment: Environment>(
 ) -> Result<SetupPluginResult> {
   if let Some(tarball) = pre_resolved_tarball {
     reject_external_exec(&tarball.name)?;
+    authorize_process_artifact(url_or_file_path, plugin_file_bytes, &tarball.tarball_bytes).await?;
     let result = setup_from_tarball(
       dest_dir_path,
       tarball.name,
@@ -74,6 +77,7 @@ pub async fn setup_process_plugin<TEnvironment: Environment>(
   }
 
   let plugin_zip_bytes = get_plugin_zip_bytes(url_or_file_path, plugin_file_bytes, environment).await?;
+  authorize_process_artifact(url_or_file_path, plugin_file_bytes, &plugin_zip_bytes.zip_bytes).await?;
 
   let result = setup_from_zip(
     dest_dir_path,
@@ -93,6 +97,16 @@ pub async fn setup_process_plugin<TEnvironment: Environment>(
       Err(err)
     }
   }
+}
+
+async fn authorize_process_artifact(source: &PathSource, manifest: &[u8], archive: &[u8]) -> Result<()> {
+  if kprint_platform::editor_policy::EditorPolicy::current().is_some() {
+    let manifest = get_sha256_checksum(manifest);
+    let archive = get_sha256_checksum(archive);
+    let artifact = get_sha256_checksum(format!("{manifest}:{archive}").as_bytes());
+    authorize_process_plugin(&source.display(), &artifact).await?;
+  }
+  Ok(())
 }
 
 async fn setup_from_zip<TEnvironment: Environment>(

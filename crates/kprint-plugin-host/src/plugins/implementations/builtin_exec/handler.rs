@@ -176,8 +176,19 @@ pub async fn format_bytes(
     end.saturating_sub(start)
   }
 
+  let commands = select_commands(&config, &file_path, &real_file_path)?;
+  if commands.is_empty() || token.is_cancelled() {
+    return Ok(None);
+  }
+  kprint_platform::editor_policy::authorize_process_plugin("exec", "builtin")
+    .await
+    .map_err(FormatError::new)?;
+
   let mut file_bytes: Cow<[u8]> = Cow::Borrowed(&original_file_bytes);
-  for command in select_commands(&config, &file_path, &real_file_path)? {
+  for command in commands {
+    if token.is_cancelled() {
+      return Ok(None);
+    }
     // run the command's setup once before formatting with it for the first time
     if let Some(setup_command) = &command.setup_command {
       match setup_state

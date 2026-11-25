@@ -1,6 +1,8 @@
 use anyhow::Context;
 use anyhow::Result;
 use kprint_async_runtime::FutureExt;
+use kprint_platform::editor_policy::EditorApprovalRequired;
+use kprint_platform::editor_policy::authorize_process_plugin;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -86,17 +88,21 @@ pub(crate) async fn read_cached_plugin_info<TEnvironment: Environment>(
       let name = meta.info.name.clone();
       kprint_async_runtime::spawn_blocking(move || wasm::interpreted_plugin_info(&environment, &name, &bytes)).await?
     }
-    PluginKind::Process => Ok(
-      process::start_communicator_and_collect_info(
-        path.to_owned(),
-        meta.executable_sub_path.clone().unwrap_or_default(),
-        meta.info.version.clone(),
-        meta.info.name.clone(),
-        environment,
+    PluginKind::Process => {
+      // Refreshing metadata for a process plugin starts its executable.
+      authorize_process_plugin(&meta.source, &meta.formatting_checksum).await?;
+      Ok(
+        process::start_communicator_and_collect_info(
+          path.to_owned(),
+          meta.executable_sub_path.clone().unwrap_or_default(),
+          meta.info.version.clone(),
+          meta.info.name.clone(),
+          environment,
+        )
+        .await?
+        .plugin_info,
       )
-      .await?
-      .plugin_info,
-    ),
+    }
   }
 }
 
@@ -114,7 +120,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
 ) -> Result<CreatedPlugin> {
   let cache_item = match plugin_cache.get_plugin_cache_item(plugin_reference).await {
     Ok(cache_item) => cache_item,
-    Err(err) if err.downcast_ref::<NoRetrySetupError>().is_some() => return Err(err),
+    Err(err) if err.is::<NoRetrySetupError>() || err.is::<EditorApprovalRequired>() => return Err(err),
     Err(err) => {
       log_debug!(
         environment,

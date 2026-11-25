@@ -31,7 +31,7 @@ Or:
 
 ```sh
 # replace X.X.X with the version of kprint to use
-curl -fsSL https://dprint.kjanat.dev/install.sh | sh -s X.X.X > /dev/null 2>&1
+curl -fsSL https://dprint.kjanat.dev/install.sh | sh -s X.X.X >/dev/null 2>&1
 $HOME/.dprint/bin/kprint check
 ```
 

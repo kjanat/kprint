@@ -49,6 +49,7 @@ use crate::utils::CachedDownloader;
 use crate::utils::DeadlinePassed;
 use crate::utils::DependencyAgeCutoff;
 use crate::utils::MinimumDependencyAgeArg;
+use crate::utils::MultiSelectItem;
 use crate::utils::PathSource;
 use crate::utils::PluginKind;
 use crate::utils::pretty_print_json_text;
@@ -1112,9 +1113,9 @@ pub async fn install_plugins<TEnvironment: Environment>(
 }
 
 pub struct UpdatePluginsOptions {
-  /// Upgrade process plugins without prompting to confirm their new checksums.
+  /// Apply all updates without prompting for selection or checksum approval.
   pub yes_to_prompts: bool,
-  /// Print the updates that would be made without modifying any files.
+  /// Print the updates without modifying project configuration or schema files.
   pub dry_run: bool,
   /// Hold plugins back from npm versions published more recently than this.
   pub minimum_dependency_age: Option<MinimumDependencyAgeArg>,
@@ -1158,12 +1159,12 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     },
   )
   .await?;
+  let npm_extends_resolver = NpmExtendsResolver::default();
   let mut plugin_responses = HashMap::new();
-  let mut updates_per_scope = HashMap::with_capacity(scopes.len());
-  // for `--dry-run`: the would-be config text per scope (plugin urls bumped),
-  // kept in memory so the config-update preview can run against it without
-  // touching disk.
-  let mut dry_run_texts = HashMap::new();
+  let mut extends_responses = HashMap::new();
+  let mut direct_updates = HashMap::with_capacity(scopes.len());
+  let mut originals = Vec::new();
+  let mut staged = HashMap::new();
   for (i, scope) in scopes.iter().enumerate() {
     let is_main_config = i == 0;
     let Some(config) = &scope.scope.config else {
@@ -1177,9 +1178,21 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       }
     };
 
-    let mut file_text = environment.read_file(config_path)?;
+    let original = environment.read_file(config_path)?;
+    let mut file_text = original.clone();
+    let format = ConfigFileFormat::from_file(config_path, &file_text);
     let config_dir = config_path.parent();
     let age_cutoff = resolve_dependency_age_cutoff(minimum_dependency_age.as_ref(), config.execution.minimum_dependency_age.as_ref(), environment);
+    let mut seen = HashSet::new();
+    let extends = format.read(&file_text)?.extends.map(Vec::from).unwrap_or_default();
+    let mut extends_to_update = Vec::new();
+    for specifier in extends.iter().filter(|specifier| specifier.starts_with("npm:") && seen.insert(*specifier)) {
+      match resolve_npm_extends_update(environment, &npm_extends_resolver, &config.origin.source, specifier, age_cutoff.as_ref()).await {
+        Ok(Some(update)) => extends_to_update.push(update),
+        Ok(None) => {}
+        Err(err) => log_warn!(environment, "Failed updating {} in \"extends\": {:#}", specifier, err),
+      }
+    }
     let plugins_to_update = get_plugins_to_update(
       environment,
       plugin_resolver,
@@ -1188,10 +1201,114 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     )
     .await?;
 
+    let selected = if !yes_to_prompts && !dry_run && environment.is_terminal_interactive() {
+      let mut indexes = Vec::new();
+      let mut items = Vec::new();
+      for (index, info) in extends_to_update.iter().enumerate() {
+        indexes.push(index);
+        items.push(MultiSelectItem::new(
+          format!("{} → {} (extends)", info.old_specifier, info.new_specifier_without_checksum()),
+          true,
+        ));
+      }
+      for (index, result) in plugins_to_update.iter().enumerate() {
+        if let Ok(info) = result
+          && format.update_plugin(&file_text, info) != file_text
+        {
+          indexes.push(extends_to_update.len() + index);
+          items.push(MultiSelectItem::new(
+            format!("{} {} → {}", info.name, info.old_version, plugin_update_target(info)),
+            true,
+          ));
+        }
+      }
+      if items.is_empty() {
+        None
+      } else {
+        let prompt = format!("Select updates for {}:", config_path.display());
+        Some(
+          environment
+            .get_multi_selection(&prompt, 2, items)?
+            .into_iter()
+            .filter_map(|i| indexes.get(i).copied())
+            .collect::<HashSet<_>>(),
+        )
+      }
+    } else {
+      None
+    };
+    if selected.as_ref().is_some_and(HashSet::is_empty) {
+      direct_updates.insert(config_path.clone(), Vec::new());
+      continue;
+    }
+
+    let in_config = if is_main_config {
+      String::new()
+    } else {
+      format!(" in {}", config_path.display())
+    };
+    let extends_count = extends_to_update.len();
+    for (index, info) in extends_to_update.into_iter().enumerate() {
+      if selected.as_ref().is_some_and(|selected| !selected.contains(&index)) {
+        continue;
+      }
+      let new_text = format.replace_extends(&file_text, &info.old_specifier, &info.new_specifier)?;
+      if new_text == file_text {
+        continue;
+      }
+      let should_update = if !info.has_checksum || yes_to_prompts || dry_run {
+        true
+      } else if let Some(previous_response) = extends_responses.get(&info.new_specifier) {
+        *previous_response
+      } else {
+        log_all!(
+          environment,
+          "The checksum-pinned configuration {} would change to {}",
+          info.old_specifier,
+          info.new_specifier
+        );
+        let response = environment.confirm("Do you want to update it?", false)?;
+        extends_responses.insert(info.new_specifier, response);
+        response
+      };
+      if should_update {
+        let candidate = ResolvedConfigPathWithText {
+          reload: false,
+          source: config.origin.source.clone(),
+          is_first_download: false,
+          content: new_text,
+          base_path: config.origin.config_file_base.clone(),
+          is_global_config: config.origin.is_global,
+        };
+        let resolved = async {
+          let resolved = resolve_config_from_path_with_bytes(&candidate, environment).await?;
+          validate_new_plugin_references(plugin_resolver, &config.plugins.sources, &resolved.plugins.sources).await
+        }
+        .await;
+        if let Err(err) = resolved {
+          log_warn!(environment, "Failed updating {} in \"extends\": {:#}", info.old_specifier, err);
+          continue;
+        }
+        let action = if dry_run { "Would update" } else { "Updating" };
+        log_stderr_info!(
+          environment,
+          "{} extended config {}{} to {}.",
+          action,
+          info.old_specifier,
+          in_config,
+          info.new_version
+        );
+        file_text = candidate.content;
+      }
+    }
+
     let mut updated_plugins = Vec::with_capacity(plugins_to_update.len());
-    for result in plugins_to_update {
+    for (index, result) in plugins_to_update.into_iter().enumerate() {
       match result {
         Ok(info) => {
+          if selected.as_ref().is_some_and(|selected| !selected.contains(&(extends_count + index))) {
+            continue;
+          }
           let new_file_text = ConfigFileFormat::from_file(config_path, &file_text).update_plugin(&file_text, &info);
           // the plugin may come from an `extends`ed config, in which case there's
           // no entry here to move. A version bump in that situation stops being
@@ -1229,18 +1346,9 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
           };
 
           if should_update {
-            let in_config = if is_main_config {
-              String::new()
-            } else {
-              format!(" in {}", config_path.display())
-            };
             // a move to npm changes where the plugin comes from, not just its
             // version, so show the entry that replaces the url
-            let new_target = if info.is_move_to_npm() {
-              info.new_reference.display()
-            } else {
-              info.new_version.clone()
-            };
+            let new_target = plugin_update_target(&info);
             if dry_run {
               log_stderr_info!(
                 environment,
@@ -1253,10 +1361,8 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
             } else {
               log_stderr_info!(environment, "Updating {} {}{} to {}...", info.name, info.old_version, in_config, new_target);
             }
-            // only record an update that rewrote an entry in this file. a plugin
-            // from an `extends`ed config is reported (its version really did
-            // move) but has nothing here to rewrite, and running its config
-            // updates would be acting on a plugin this file didn't change
+            // Record direct updates here. Changes from extends and inheritance
+            // are collected after resolving the combined update.
             if new_file_text != file_text {
               file_text = new_file_text;
               updated_plugins.push(info);
@@ -1269,52 +1375,276 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       }
     }
 
-    updates_per_scope.insert(config_path.clone(), updated_plugins);
+    if file_text != original {
+      originals.push((config_path.clone(), original));
+      staged.insert(config_path.clone(), file_text);
+    }
+    direct_updates.insert(config_path.clone(), updated_plugins);
+  }
 
-    if dry_run {
-      dry_run_texts.insert(config_path.clone(), file_text);
-    } else {
-      environment.write_file(config_path, &file_text)?;
-      update_config_schema_file(environment, plugin_resolver, config_path, &[]).await;
+  if !dry_run {
+    originals.retain(|(path, original)| {
+      if environment.read_file(path).is_ok_and(|current| current == *original) {
+        true
+      } else {
+        log_warn!(environment, "Skipping {} because it changed during the update.", path.display());
+        staged.remove(path);
+        direct_updates.remove(path);
+        false
+      }
+    });
+  }
+
+  let mut schemas_to_refresh = Vec::new();
+  let mut migrations_per_scope = HashMap::new();
+  let mut inherited_preview_texts = HashMap::new();
+  if !staged.is_empty() {
+    for scope in scopes.iter() {
+      let Some(config) = &scope.scope.config else { continue };
+      let Some(path) = config.origin.source.maybe_local_path() else { continue };
+      let candidate = ResolvedConfigPathWithText {
+        reload: false,
+        source: config.origin.source.clone(),
+        is_first_download: false,
+        content: environment.read_file(path)?,
+        base_path: config.origin.config_file_base.clone(),
+        is_global_config: config.origin.is_global,
+      };
+      let resolved = resolve_staged_config(&candidate, &staged, environment)
+        .await
+        .with_context(|| format!("The selected updates are incompatible in {}", path.display()))?;
+      let proposed = resolved.plugins.sources;
+      validate_new_plugin_references(plugin_resolver, &config.plugins.sources, &proposed).await?;
+      if staged.contains_key(path) || config.plugins.sources != proposed {
+        schemas_to_refresh.push(path);
+      }
+      if config.plugins.sources == proposed {
+        continue;
+      }
+
+      let Some(updates) = direct_updates.get(path) else { continue };
+      let mut seen = HashSet::new();
+      let mut migrations = Vec::new();
+      for (reference, plugin) in get_config_file_plugins(plugin_resolver, proposed).await {
+        let Ok(plugin) = plugin else { continue };
+        let info = plugin.info();
+        if !seen.insert(plugin.referenced_plugin_name().to_string()) {
+          continue;
+        }
+        let old_version = updates
+          .iter()
+          .find(|update| update.name == info.name && update.new_reference.path_source == reference.path_source)
+          .map(|update| &update.old_version)
+          .or_else(|| {
+            let previous = scope.scope.plugins.get(&info.name)?;
+            (previous.info().version != info.version).then_some(&previous.info().version)
+          });
+        if let Some(old_version) = old_version {
+          migrations.push(PluginConfigMigration {
+            name: info.name.clone(),
+            old_version: old_version.clone(),
+            new_reference: reference,
+          });
+        }
+      }
+      if !migrations.is_empty() {
+        if dry_run && !staged.contains_key(path) {
+          inherited_preview_texts.insert(path.clone(), candidate.content);
+        }
+        migrations_per_scope.insert(path.clone(), migrations);
+      }
     }
   }
 
   if dry_run {
-    return preview_plugin_config_updates(environment, plugin_resolver, &updates_per_scope, &dry_run_texts).await;
+    return preview_plugin_config_updates(environment, plugin_resolver, &migrations_per_scope, &staged, &inherited_preview_texts).await;
   }
+
+  for (path, original) in &originals {
+    if environment.read_file(path)? != *original {
+      bail!("{} changed while validating updates. Run the update again.", path.display());
+    }
+  }
+  write_config_updates(environment, &originals, &staged, |path, text| environment.write_file(path, text))?;
 
   // now resolve the plugins again in every scope and run their config updates
 
-  run_plugin_config_updates(environment, args, &file_pattern_args, plugin_resolver, &updates_per_scope)
+  run_plugin_config_updates(environment, args, &file_pattern_args, plugin_resolver, &migrations_per_scope)
     .await
     .with_context(|| "Failed running plugin config updates.".to_string())?;
 
+  for path in schemas_to_refresh {
+    update_config_schema_file(environment, plugin_resolver, path, &[]).await;
+  }
+
   Ok(())
+}
+
+fn write_config_updates(
+  environment: &impl Environment,
+  originals: &[(CanonicalizedPathBuf, String)],
+  staged: &HashMap<CanonicalizedPathBuf, String>,
+  write_file: impl Fn(&CanonicalizedPathBuf, &str) -> std::io::Result<()>,
+) -> Result<()> {
+  for (index, (path, original)) in originals.iter().enumerate() {
+    let mut attempted_write = false;
+    let mut write = || -> Result<()> {
+      if environment.read_file(path)? != *original {
+        bail!("{} changed while applying updates. Run the update again.", path.display());
+      }
+      attempted_write = true;
+      write_file(path, &staged[path])?;
+      Ok(())
+    };
+    if let Err(error) = write() {
+      // A failed in-place write may already have truncated the file.
+      let attempted = index + usize::from(attempted_write);
+      for (written_path, original) in originals[..attempted].iter().rev() {
+        let restore = || -> Result<()> {
+          let current = environment.read_file_bytes(written_path)?;
+          if current == original.as_bytes() {
+            return Ok(());
+          }
+          let proposed = staged[written_path].as_bytes();
+          if current != proposed && !(written_path == path && proposed.starts_with(&current)) {
+            bail!("the file changed after the update was written");
+          }
+          write_file(written_path, original)?;
+          Ok(())
+        };
+        if let Err(restore_error) = restore() {
+          log_warn!(environment, "Failed restoring {}: {restore_error:#}", written_path.display());
+        }
+      }
+      return Err(error).with_context(|| format!("Failed applying configuration update to {}", path.display()));
+    }
+  }
+  Ok(())
+}
+
+async fn validate_new_plugin_references<TEnvironment: Environment>(
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+  previous: &[PluginSourceReference],
+  proposed: &[PluginSourceReference],
+) -> Result<()> {
+  for reference in proposed.iter().filter(|reference| !previous.contains(reference)) {
+    let source = reference.display();
+    plugin_resolver
+      .resolve_plugin(reference.clone())
+      .await
+      .with_context(|| format!("Failed resolving new plugin reference {source}"))
+      .map_err(crate::resolution::ResolvePluginsError::from)?;
+  }
+  Ok(())
+}
+
+fn plugin_update_target(info: &PluginUpdateInfo) -> String {
+  if info.is_move_to_npm() {
+    info.new_reference.display()
+  } else {
+    info.new_version.clone()
+  }
+}
+
+struct NpmExtendsUpdate {
+  old_specifier: String,
+  new_specifier: String,
+  new_version: String,
+  has_checksum: bool,
+}
+
+impl NpmExtendsUpdate {
+  fn new_specifier_without_checksum(&self) -> &str {
+    if self.has_checksum {
+      self
+        .new_specifier
+        .rsplit_once('@')
+        .map(|(specifier, _)| specifier)
+        .unwrap_or(&self.new_specifier)
+    } else {
+      &self.new_specifier
+    }
+  }
+}
+
+async fn resolve_npm_extends_update(
+  environment: &impl Environment,
+  resolver: &NpmExtendsResolver,
+  source: &PathSource,
+  specifier: &str,
+  age_cutoff: Option<&DependencyAgeCutoff>,
+) -> Result<Option<NpmExtendsUpdate>> {
+  let parsed = crate::utils::parse_npm_specifier(specifier)?;
+  let Some(old_version) = parsed.specifier.version else {
+    log_warn!(
+      environment,
+      "Skipping {} in \"extends\" (unversioned npm specifier — update via your package manager).",
+      specifier
+    );
+    return Ok(None);
+  };
+  let name = parsed.specifier.name;
+  let new_version = match resolve_npm_latest_version(&name, age_cutoff, environment).await {
+    Ok(version) => version,
+    Err(err) if err.is::<MinimumDependencyAgeError>() => {
+      log_warn!(environment, "Skipping {}. {}", specifier, err);
+      return Ok(None);
+    }
+    Err(err) => return Err(err),
+  };
+  if new_version == old_version {
+    return Ok(None);
+  }
+  if is_version_downgrade(&old_version, &new_version) {
+    log_warn!(
+      environment,
+      "Skipping {}. The version resolved ({}) is older than the version in use.",
+      specifier,
+      new_version
+    );
+    return Ok(None);
+  }
+
+  let mut new_specifier = format!("npm:{}@{}", name, new_version);
+  if parsed.path_was_explicit {
+    new_specifier.push('/');
+    new_specifier.push_str(&parsed.specifier.path);
+  }
+  let resolved = resolver.resolve(&new_specifier, source, environment).await?;
+  let has_checksum = parsed.checksum.is_some();
+  if has_checksum {
+    let checksum = match &resolved.source {
+      PathSource::Npm(source) => resolver.tarball_checksum(source),
+      PathSource::Local(_) | PathSource::Remote(_) => None,
+    };
+    let checksum = checksum.with_context(|| format!("Failed getting the tarball checksum for {}.", new_specifier))?;
+    new_specifier.push('@');
+    new_specifier.push_str(&checksum);
+  }
+  Ok(Some(NpmExtendsUpdate {
+    old_specifier: specifier.to_string(),
+    new_specifier,
+    new_version,
+    has_checksum,
+  }))
 }
 
 /// Dry-run counterpart of [`run_plugin_config_updates`]: resolves each updated
 /// plugin's new reference, asks it what config changes it would make, applies
 /// them to the in-memory (already plugin-url-bumped) config text, then prints
-/// the resulting file instead of writing it. No files are modified.
+/// the resulting file instead of writing it.
 async fn preview_plugin_config_updates<TEnvironment: Environment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
-  updates_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginUpdateInfo>>,
+  migrations_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginConfigMigration>>,
   dry_run_texts: &HashMap<CanonicalizedPathBuf, String>,
+  inherited_texts: &HashMap<CanonicalizedPathBuf, String>,
 ) -> Result<()> {
-  let mut any_updates = false;
-  // sort for deterministic output — `updates_per_scope` is a HashMap
-  let mut config_paths = updates_per_scope.keys().collect::<Vec<_>>();
-  config_paths.sort_by_key(|p| p.display().to_string());
-  for config_path in config_paths {
-    let updated_plugins = &updates_per_scope[config_path];
-    if updated_plugins.is_empty() {
-      continue;
-    }
-    any_updates = true;
-    let Some(mut file_text) = dry_run_texts.get(config_path).cloned() else {
-      continue;
-    };
+  let mut configs = dry_run_texts.iter().chain(inherited_texts).collect::<Vec<_>>();
+  configs.sort_by_key(|(path, _)| path.display().to_string());
+  for (config_path, input_text) in configs {
+    let migrations = migrations_per_scope.get(config_path).map(Vec::as_slice).unwrap_or_default();
+    let mut file_text = input_text.clone();
     let format = ConfigFileFormat::from_file(config_path, &file_text);
     let config_map = match format.parse(&file_text) {
       Ok(map) => map,
@@ -1324,7 +1654,7 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
       }
     };
     let mut all_diagnostics = Vec::new();
-    for update_info in updated_plugins {
+    for update_info in migrations {
       let plugin = match plugin_resolver.resolve_plugin(update_info.new_reference.clone()).await {
         Ok(plugin) => plugin,
         Err(err) => {
@@ -1374,6 +1704,9 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
       }
     }
 
+    if !dry_run_texts.contains_key(config_path) && file_text == *input_text {
+      continue;
+    }
     log_stdout_info!(
       environment,
       "\n{}\n{}",
@@ -1382,13 +1715,19 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
     );
   }
 
-  if any_updates {
-    log_stderr_info!(environment, "\n{}", colors::gray("This was a dry run. No files were changed."));
+  if !dry_run_texts.is_empty() {
+    log_stderr_info!(environment, "\n{}", colors::gray("This was a dry run. No project files were changed."));
   } else {
-    log_stderr_info!(environment, "{}", colors::gray("No plugin updates available."));
+    log_stderr_info!(environment, "{}", colors::gray("No updates available."));
   }
 
   Ok(())
+}
+
+struct PluginConfigMigration {
+  name: String,
+  old_version: String,
+  new_reference: PluginSourceReference,
 }
 
 async fn run_plugin_config_updates<TEnvironment: Environment>(
@@ -1396,8 +1735,11 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
   args: &CliArgs,
   file_pattern_args: &FilePatternArgs,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
-  updates_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginUpdateInfo>>,
+  migrations_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginConfigMigration>>,
 ) -> Result<()> {
+  if migrations_per_scope.is_empty() {
+    return Ok(());
+  }
   let config_discovery = args.config_discovery(environment);
   let scopes = resolve_plugins_scope_and_paths(
     args,
@@ -1421,16 +1763,14 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
         continue;
       }
     };
-    let updated_plugins = match updates_per_scope.get(config_path) {
-      Some(updates) => updates,
+    let migrations = match migrations_per_scope.get(config_path) {
+      Some(migrations) => migrations,
       None => {
         continue;
       }
     };
-    if updated_plugins.is_empty() {
-      continue;
-    }
-    let mut file_text = environment.read_file(config_path)?;
+    let original = environment.read_file(config_path)?;
+    let mut file_text = original.clone();
     let format = ConfigFileFormat::from_file(config_path, &file_text);
     let config_map = match format.parse(&file_text) {
       Ok(map) => map,
@@ -1441,11 +1781,7 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
     };
     let mut all_diagnostics = Vec::new();
     for plugin in scope.scope.plugins.values() {
-      // matching on name alone is exact: these updates all rewrote an entry in
-      // this config file, and a scope holds one plugin per name. the version
-      // isn't usable here — an npm entry's version is its package's, which is a
-      // different line from the version a plugin reports about itself
-      let Some(update_info) = updated_plugins.iter().find(|info| info.name == plugin.info().name) else {
+      let Some(update_info) = migrations.iter().find(|info| info.name == plugin.info().name) else {
         continue;
       };
       log_debug!(environment, "Updating for {}", plugin.name());
@@ -1492,7 +1828,9 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
         log_warn!(environment, "* {}", diagnostic);
       }
     }
-    environment.write_file(config_path, &file_text)?;
+    if file_text != original {
+      environment.write_file(config_path, &file_text)?;
+    }
   }
   Ok(())
 }
@@ -2005,8 +2343,15 @@ async fn get_plugin_schemas(environment: &impl Environment, mut sources: Vec<Plu
     }
   }
   let downloads = join_all_bounded(urls.into_iter().map(|url| async move {
-    let result = download_json(environment, &url).await.and_then(|(downloaded_url, schema)| {
+    let result = download_json(environment, &url).await.and_then(|(downloaded_url, mut schema)| {
       validate_json_schema(&schema)?;
+      if url == "https://plugins.dprint.dev/dprint/dprint-plugin-typescript/0.101.0/schema.json"
+        && let Some(extension) = schema
+          .pointer_mut("/properties/taggedTemplate.embeddedLanguages/additionalProperties")
+          .and_then(serde_json::Value::as_object_mut)
+      {
+        extension.entry("pattern").or_insert_with(|| serde_json::json!(r"^\.*[^./\\][^/\\]*$"));
+      }
       Ok((downloaded_url, schema))
     });
     (url, result.map_err(|err| format!("{:#}", err)))
@@ -2267,6 +2612,7 @@ fn select_editor_args(env: &impl Environment) -> Vec<String> {
 #[cfg(test)]
 mod test {
   use kprint_platform::environment::*;
+  use std::collections::HashMap;
   use std::path::Path;
 
   use anyhow::Result;
@@ -3714,7 +4060,10 @@ Created {}",
     // Test updating the plugin in the global config
     run_test_cli(vec!["config", "update", "--global"], &environment).unwrap();
 
-    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0...".to_string(),]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      ["Select updates for /config/dprint/dprint.json:", "Updating test-plugin 0.1.0 to 0.2.0..."]
+    );
 
     let expected_text = format!(
       r#"{{
@@ -3730,6 +4079,7 @@ Created {}",
   #[test]
   fn config_update_should_always_upgrade_to_latest_plugins() {
     let new_wasm_url = "https://plugins.dprint.dev/test-plugin.wasm".to_string();
+    let old_ps_url = format!("https://plugins.dprint.dev/test-process.json@{}", OLD_PROCESS_PLUGIN_FILE.checksum());
     // test all the process plugin combinations
     let new_ps_url = "https://plugins.dprint.dev/test-plugin-3.json".to_string();
     let new_ps_url_with_checksum = format!("{}@{}", new_ps_url, NEW_PROCESS_PLUGIN_FILE.checksum());
@@ -3757,7 +4107,7 @@ Created {}",
       remote_has_process_checksum: false,
       confirm_results: Vec::new(),
       expected_logs: vec!["Updating test-process-plugin 0.1.0 to 0.3.0...".to_string()],
-      expected_urls: vec![new_ps_url.clone()],
+      expected_urls: vec![old_ps_url.clone()],
       always_update: true,
       on_error: Some(Box::new(|text| {
         assert_contains!(
@@ -3898,7 +4248,7 @@ Created {}",
         "Do you want to update it? Y".to_string(),
         "Updating test-process-plugin 0.1.0 to 0.3.0...".to_string(),
       ],
-      expected_urls: vec![new_ps_url.clone()],
+      expected_urls: vec![old_ps_url.clone()],
       always_update: false,
       on_error: Some(Box::new(|text| {
         assert_contains!(
@@ -4234,7 +4584,7 @@ Created {}",
         ),
         format!("Would update {} 0.1.0 in /sub_folder/dprint.json to 0.2.0.", colors::bold("test-plugin")),
         "Extracting zip for test-process-plugin".to_string(),
-        format!("\n{}", colors::gray("This was a dry run. No files were changed.")),
+        format!("\n{}", colors::gray("This was a dry run. No project files were changed.")),
       ]
     );
 
@@ -4281,6 +4631,7 @@ Created {}",
       remote_has_wasm_checksum: options.remote_has_wasm_checksum,
       remote_has_process_checksum: options.remote_has_process_checksum,
     });
+    environment.set_terminal_interactive(false);
     environment.set_confirm_results(options.confirm_results);
 
     let result = run_test_cli(
@@ -4534,6 +4885,7 @@ Created {}",
     assert_eq!(
       environment.take_stderr_messages(),
       vec![
+        "Select updates for /dprint.json:",
         "The process plugin test-plugin 0.1.0 has a new url: https://plugins.dprint.dev/test-plugin.json@checksum",
         "Do you want to update it? N"
       ]
@@ -6212,7 +6564,10 @@ text",
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.3.0\""), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec!["Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",]
+      [
+        "Select updates for /dprint.json:",
+        "Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0..."
+      ]
     );
   }
 
@@ -6260,7 +6615,10 @@ text",
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.2.0\""), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec!["Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.2.0...",]
+      [
+        "Select updates for /dprint.json:",
+        "Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.2.0..."
+      ]
     );
   }
 
@@ -6285,6 +6643,262 @@ text",
         .any(|m| m.contains("Would update") && m.contains("0.1.0 to npm:@dprint/test-plugin@0.3.0.")),
       "got: {stderr:?}"
     );
+  }
+
+  fn add_npm_config_tarballs(environment: &TestEnvironment, new_config: &str) -> (String, String) {
+    environment.add_npm_latest_version("shared-config", "1.1.0");
+    let mut checksums = Vec::new();
+    for (version, content) in [("1.0.0", r#"{"lineWidth":80}"#), ("1.1.0", new_config)] {
+      let tarball = crate::test_helpers::create_test_npm_tarball(&[("package/base.json", content.as_bytes())]);
+      checksums.push(crate::utils::get_sha256_checksum(&tarball));
+      environment.add_remote_file_bytes(&format!("https://registry.npmjs.org/shared-config/-/shared-config-{version}.tgz"), tarball);
+    }
+    (checksums.remove(0), checksums.remove(0))
+  }
+
+  #[test]
+  fn config_update_npm_extends_preserves_comments_and_other_fields() {
+    for (path, config) in [
+      (
+        "/kprint.jsonc",
+        "{\n  // shared defaults\n  \"extends\": \"npm:shared-config@1.0.0/base.json\",\n  \"includes\": [\"npm:shared-config@1.0.0/base.json\"],\n}\n",
+      ),
+      (
+        "/kprint.toml",
+        "extends = [\n  \"npm:shared-config@1.0.0/base.json\", # shared defaults\n]\nincludes = [\"npm:shared-config@1.0.0/base.json\"]\n",
+      ),
+    ] {
+      let environment = TestEnvironment::new();
+      add_npm_config_tarballs(&environment, r#"{"lineWidth":100}"#);
+      environment.write_file(path, config).unwrap();
+
+      run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+
+      assert_eq!(environment.read_file(path).unwrap(), config.replacen("@1.0.0", "@1.1.0", 1));
+      assert!(environment.take_multi_selection_items().is_empty());
+      let _ = environment.take_stderr_messages();
+    }
+  }
+
+  #[test]
+  fn config_update_npm_extends_dry_run_previews_new_checksum_and_decline_keeps_old_one() {
+    let environment = TestEnvironment::new();
+    let (old_checksum, new_checksum) = add_npm_config_tarballs(&environment, r#"{"lineWidth":100}"#);
+    let config = format!(r#"{{"extends":"npm:shared-config@1.0.0/base.json@{old_checksum}"}}"#);
+    environment.write_file("/kprint.json", &config).unwrap();
+    run_test_cli(vec!["config", "update", "--dry-run"], &environment).unwrap();
+    assert_eq!(environment.read_file("/kprint.json").unwrap(), config);
+    assert_contains!(
+      environment.take_stdout_messages().join("\n"),
+      &format!("npm:shared-config@1.1.0/base.json@{new_checksum}")
+    );
+    assert!(environment.take_multi_selection_items().is_empty());
+    let _ = environment.take_stderr_messages();
+
+    environment.set_confirm_results(vec![Ok(Some(false))]);
+    run_test_cli(vec!["config", "update"], &environment).unwrap();
+    assert_eq!(environment.read_file("/kprint.json").unwrap(), config);
+    assert_contains!(environment.take_stderr_messages().join("\n"), &new_checksum);
+
+    run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+    assert_contains!(
+      environment.read_file("/kprint.json").unwrap(),
+      &format!("npm:shared-config@1.1.0/base.json@{new_checksum}")
+    );
+    let _ = environment.take_stderr_messages();
+  }
+
+  #[test]
+  fn config_update_npm_extends_keeps_the_version_when_the_new_config_is_invalid() {
+    let environment = TestEnvironment::new();
+    add_npm_config_tarballs(&environment, r#"{"lineWidth":"invalid"}"#);
+    let config = r#"{"extends":"npm:shared-config@1.0.0/base.json"}"#;
+    environment.write_file("/kprint.json", config).unwrap();
+    run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+    assert_eq!(environment.read_file("/kprint.json").unwrap(), config);
+    assert_contains!(
+      environment.take_stderr_messages().join("\n"),
+      "Failed updating npm:shared-config@1.0.0/base.json"
+    );
+  }
+
+  #[test]
+  fn config_update_migrates_options_when_extends_upgrades_a_plugin() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin().add_remote_wasm_0_1_0_plugin().build();
+    let old = br#"{"plugins":["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"]}"#;
+    let new = r#"{"plugins":["https://plugins.dprint.dev/test-plugin.wasm"]}"#;
+    add_npm_config_tarballs(&environment, new);
+    let tarball = crate::test_helpers::create_test_npm_tarball(&[("package/base.json", old)]);
+    environment.add_remote_file_bytes("https://registry.npmjs.org/shared-config/-/shared-config-1.0.0.tgz", tarball);
+    let config = r#"{"extends":"npm:shared-config@1.0.0/base.json","test-plugin":{"should_set_past_version":"unset"}}"#;
+    environment.write_file("/kprint.json", config).unwrap();
+
+    run_test_cli(vec!["config", "update", "--dry-run"], &environment).unwrap();
+    assert_eq!(environment.read_file("/kprint.json").unwrap(), config);
+    let preview = environment.take_stdout_messages().join("\n");
+    assert_contains!(preview, "shared-config@1.1.0");
+    assert_contains!(preview, r#""should_set_past_version":"0.1.0""#);
+    let _ = environment.take_stderr_messages();
+
+    run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+    let updated: serde_json::Value = serde_json::from_str(&environment.read_file("/kprint.json").unwrap()).unwrap();
+    assert_eq!(updated["extends"], "npm:shared-config@1.1.0/base.json");
+    assert_eq!(updated["test-plugin"]["should_set_past_version"], "0.1.0");
+    let _ = environment.take_stderr_messages();
+  }
+
+  #[test]
+  fn config_update_refreshes_the_schema_for_an_unchanged_inheriting_child() {
+    let child = r#"{"inherit":true}"#;
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file(TEST_PLUGIN_SCHEMA_URL, TEST_PLUGIN_SCHEMA)
+      .write_file("/kprint.json", r#"{"extends":"npm:shared-config@1.0.0/base.json"}"#)
+      .write_file("/nested/kprint.json", child)
+      .write_file("/nested/kprint.schema.json", "{}")
+      .build();
+    add_npm_config_tarballs(&environment, r#"{"plugins":["https://plugins.dprint.dev/test-plugin.wasm"]}"#);
+
+    run_test_cli(vec!["config", "update", "--recursive", "--yes"], &environment).unwrap();
+
+    assert_eq!(environment.read_file("/nested/kprint.json").unwrap(), child);
+    let schema = serde_json::from_str(&environment.read_file("/nested/kprint.schema.json").unwrap()).unwrap();
+    assert_eq!(config_schema_plugins(&schema), ["test-plugin"]);
+    let _ = environment.take_stderr_messages();
+    let _ = environment.take_stdout_messages();
+  }
+
+  #[test]
+  fn config_update_rejects_an_extended_config_with_a_missing_plugin() {
+    let environment = TestEnvironment::new();
+    let missing = "https://plugins.dprint.dev/missing.wasm";
+    add_npm_config_tarballs(&environment, &format!(r#"{{"plugins":["{missing}"]}}"#));
+    let original = r#"{"extends":"npm:shared-config@1.0.0/base.json"}"#;
+    environment.write_file("/kprint.json", original).unwrap();
+
+    run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+
+    assert_eq!(environment.read_file("/kprint.json").unwrap(), original);
+    assert_contains!(
+      environment.take_stderr_messages().join("\n"),
+      &format!("Failed resolving new plugin reference {missing}")
+    );
+  }
+
+  #[test]
+  fn config_update_validates_the_combination_of_staged_ancestor_and_child_configs() {
+    for (child_update, compatible) in [(r#"{"test":{"ending":"new"}}"#, false), (r#"{"lineWidth":100}"#, true)] {
+      let environment = TestEnvironment::new();
+      let (old_checksum, _) = add_npm_config_tarballs(&environment, r#"{"test":{"locked":true,"ending":"parent"}}"#);
+      environment.add_npm_latest_version("child-config", "1.1.0");
+      for (version, content) in [("1.0.0", "{}"), ("1.1.0", child_update)] {
+        let archive = crate::test_helpers::create_test_npm_tarball(&[("package/base.json", content.as_bytes())]);
+        environment.add_remote_file_bytes(&format!("https://registry.npmjs.org/child-config/-/child-config-{version}.tgz"), archive);
+      }
+      let parent = format!(r#"{{"extends":"npm:shared-config@1.0.0/base.json@{old_checksum}"}}"#);
+      let child = r#"{"inherit":true,"extends":"npm:child-config@1.0.0/base.json"}"#;
+      environment.write_file("/kprint.json", &parent).unwrap();
+      environment.mk_dir_all("/nested").unwrap();
+      environment.write_file("/nested/kprint.json", child).unwrap();
+
+      let result = run_test_cli(vec!["config", "update", "--recursive", "--yes"], &environment);
+
+      let parent_after = environment.read_file("/kprint.json").unwrap();
+      let child_after = environment.read_file("/nested/kprint.json").unwrap();
+      if compatible {
+        result.unwrap();
+        assert_contains!(parent_after, "shared-config@1.1.0");
+        assert_contains!(child_after, "child-config@1.1.0");
+      } else {
+        let err = result.unwrap_err();
+        err.assert_exit_code(11);
+        assert_contains!(format!("{:#}", err), "The selected updates are incompatible");
+        assert_eq!(parent_after, parent);
+        assert_eq!(child_after, child);
+      }
+      let _ = environment.take_stderr_messages();
+    }
+  }
+
+  #[test]
+  fn config_update_restores_originals_after_a_partial_write() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/kprint.json", "{}")
+      .write_file("/nested/kprint.json", r#"{"inherit":true}"#)
+      .build();
+    let parent = environment.canonicalize("/kprint.json").unwrap();
+    let child = environment.canonicalize("/nested/kprint.json").unwrap();
+    let originals = vec![
+      (parent.clone(), environment.read_file(&parent).unwrap()),
+      (child.clone(), environment.read_file(&child).unwrap()),
+    ];
+    let staged = HashMap::from([
+      (parent.clone(), r#"{"lineWidth":80}"#.to_string()),
+      (child.clone(), r#"{"inherit":true,"lineWidth":100}"#.to_string()),
+    ]);
+    let error = super::write_config_updates(&environment, &originals, &staged, |path, text| {
+      if path == &child && text == staged[&child] {
+        assert_eq!(environment.read_file(&parent).unwrap(), staged[&parent]);
+        environment.write_file(path, &text[..5])?;
+        return Err(std::io::Error::other("simulated write failure"));
+      }
+      environment.write_file(path, text)
+    })
+    .unwrap_err();
+
+    assert_contains!(format!("{error:#}"), "simulated write failure");
+    for (path, original) in originals {
+      assert_eq!(environment.read_file(&path).unwrap(), original);
+    }
+  }
+
+  #[test]
+  fn config_update_npm_extends_respects_minimum_dependency_age() {
+    let environment = TestEnvironment::new();
+    environment.set_fs_time(AGE_TEST_NOW);
+    add_npm_config_tarballs(&environment, r#"{"lineWidth":100}"#);
+    environment.add_remote_file(
+      "https://registry.npmjs.org/shared-config",
+      br#"{
+        "dist-tags": {"latest": "1.1.0"},
+        "time": {"1.0.0": "2099-12-01T00:00:00Z", "1.1.0": "2099-12-31T00:00:00Z"},
+        "versions": {"1.0.0": {}, "1.1.0": {}}
+      }"#,
+    );
+    let config = r#"{"extends":"npm:shared-config@1.0.0/base.json"}"#;
+    environment.write_file("/kprint.json", config).unwrap();
+    run_test_cli(vec!["config", "update", "--yes", "--minimum-dependency-age=P2D"], &environment).unwrap();
+    assert_eq!(environment.read_file("/kprint.json").unwrap(), config);
+    assert_contains!(environment.take_stderr_messages().join("\n"), "Using shared-config 1.0.0 instead of 1.1.0");
+
+    run_test_cli(vec!["config", "update", "--yes", "--minimum-dependency-age=0"], &environment).unwrap();
+    assert_contains!(environment.read_file("/kprint.json").unwrap(), "npm:shared-config@1.1.0/base.json");
+    let _ = environment.take_stderr_messages();
+  }
+
+  #[test]
+  fn config_update_selects_only_the_checked_updates() {
+    let environment = npm_info_file_builder(&["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"])
+      .add_remote_file("https://plugins.dprint.dev/dprint/test-plugin/latest.json", &test_plugin_latest_json(true))
+      .initialize()
+      .build();
+    add_npm_config_tarballs(&environment, r#"{"lineWidth":100}"#);
+    let config = r#"{"extends":"npm:shared-config@1.0.0/base.json","plugins":["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"]}"#;
+    environment.write_file("/dprint.json", config).unwrap();
+    environment.set_multi_selection_result(vec![1]);
+
+    run_test_cli(vec!["config", "update"], &environment).unwrap();
+
+    let updated = environment.read_file("/dprint.json").unwrap();
+    assert_contains!(&updated, "npm:shared-config@1.0.0/base.json");
+    assert_contains!(&updated, "npm:@dprint/test-plugin@0.3.0");
+    assert_eq!(
+      environment.take_multi_selection_items(),
+      [
+        "[x] npm:shared-config@1.0.0/base.json → npm:shared-config@1.1.0/base.json (extends)",
+        "[x] test-plugin 0.1.0 → npm:@dprint/test-plugin@0.3.0",
+      ]
+    );
+    let _ = environment.take_stderr_messages();
   }
 
   #[test]
@@ -6372,7 +6986,10 @@ text",
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.1.0\""), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec!["Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.1.0...",]
+      [
+        "Select updates for /dprint.json:",
+        "Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.1.0..."
+      ]
     );
   }
 
@@ -6858,7 +7475,10 @@ text",
     assert!(!dprint_json.contains("npm:"), "got: {dprint_json}");
     assert!(dprint_json.contains("\"https://plugins.dprint.dev/test-plugin.wasm\""), "got: {dprint_json}");
     // it follows its update url instead, which is what happened before npm packages
-    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0...",]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      ["Select updates for /dprint.json:", "Updating test-plugin 0.1.0 to 0.2.0..."]
+    );
   }
 
   #[test]
@@ -6914,7 +7534,10 @@ text",
     assert!(!dprint_json.contains("npm:"), "got: {dprint_json}");
     // it still follows its update url, which is what happened before npm packages
     assert!(dprint_json.contains("\"https://plugins.dprint.dev/test-plugin.wasm\""), "got: {dprint_json}");
-    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0...",]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      ["Select updates for /dprint.json:", "Updating test-plugin 0.1.0 to 0.2.0..."]
+    );
   }
 
   #[test]
@@ -7084,7 +7707,10 @@ text",
     // write would have failed on otherwise
     assert_eq!(
       environment.take_stderr_messages(),
-      vec!["Updating test-plugin 0.1.0 to npm:@dprint/example@1.0.0/test-plugin/plugin.wasm...",]
+      [
+        "Select updates for /dprint.json:",
+        "Updating test-plugin 0.1.0 to npm:@dprint/example@1.0.0/test-plugin/plugin.wasm..."
+      ]
     );
   }
 

@@ -5,6 +5,9 @@ edition    = { workspace = true }
 repository = { workspace = true }
 license    = { workspace = true }
 
+[features]
+test-util = []
+
 [dependencies]
 anyhow = { workspace = true }
 sha1   = { workspace = true }
@@ -12,6 +15,3 @@ sha2   = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
-[features]
-test-util = []

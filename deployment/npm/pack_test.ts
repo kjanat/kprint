@@ -10,10 +10,19 @@ Deno.test("npm pack's array and package-keyed JSON both name the one tarball", (
 
 Deno.test("an npm pack result without exactly one local tarball stops the build", () => {
   for (
-    const invalid of [null, "kprint.tgz", [], {}, [packed, packed], [{ ...packed, filename: "../kprint.tgz" }], [{
-      ...packed,
-      filename: "kprint.zip",
-    }], [{ name: packed.name }]]
+    const invalid of [
+      null,
+      "kprint.tgz",
+      [],
+      {},
+      [packed, packed],
+      [{ ...packed, filename: "../kprint.tgz" }],
+      [{
+        ...packed,
+        filename: "kprint.zip",
+      }],
+      [{ name: packed.name }],
+    ]
   ) {
     throws(() => packedFilename(invalid, "dist/kprint"), /Unexpected npm pack result for dist\/kprint/);
   }

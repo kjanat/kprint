@@ -4,7 +4,11 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
-[workspace]
+[features]
+default    = ["direct"]
+direct     = ["dep:sdk"]
+facade     = ["dep:legacy"]
+formatting = ["legacy?/formatting", "sdk?/formatting"]
 
 [lib]
 crate-type = ["cdylib"]
@@ -14,8 +18,4 @@ configuration = { package = "kprint-configuration", path = "../../../../kprint-c
 legacy        = { package = "kprint-core", path = "../../..", default-features = false, features = ["wasm"], optional = true }
 sdk           = { package = "kprint-wasm-plugin", path = "../../../../kprint-wasm-plugin", optional = true }
 
-[features]
-default    = ["direct"]
-direct     = ["dep:sdk"]
-facade     = ["dep:legacy"]
-formatting = ["legacy?/formatting", "sdk?/formatting"]
+[workspace]

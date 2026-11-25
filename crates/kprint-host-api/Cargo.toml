@@ -12,5 +12,6 @@ kprint-async-runtime.workspace = true
 kprint-plugin-types.workspace  = true
 serde                          = { workspace = true }
 sys_traits.workspace           = true
+tokio.workspace                = true
 tree-fucker.workspace          = true
 url.workspace                  = true

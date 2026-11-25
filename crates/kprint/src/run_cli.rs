@@ -25,85 +25,58 @@ pub struct AppError {
 
 impl From<anyhow::Error> for AppError {
   fn from(inner: anyhow::Error) -> Self {
-    let inner = match inner.downcast::<ParseArgsError>() {
-      Ok(err) => return err.into(),
-      Err(err) => err,
+    let exit_code = if inner.is::<ParseArgsError>() {
+      10
+    } else if inner.is::<ResolveConfigError>() {
+      11
+    } else if inner.is::<ResolvePluginsError>() {
+      12
+    } else if inner.is::<NoPluginsFoundError>() {
+      13
+    } else if inner.is::<NoFilesFoundError>() {
+      14
+    } else if inner.is::<CheckError>() {
+      20
+    } else {
+      1
     };
-    let inner = match inner.downcast::<ResolveConfigError>() {
-      Ok(err) => return err.into(),
-      Err(err) => err,
-    };
-    let inner = match inner.downcast::<ResolvePluginsError>() {
-      Ok(err) => return err.into(),
-      Err(err) => err,
-    };
-    let inner = match inner.downcast::<NoPluginsFoundError>() {
-      Ok(err) => return err.into(),
-      Err(err) => err,
-    };
-    let inner = match inner.downcast::<NoFilesFoundError>() {
-      Ok(err) => return err.into(),
-      Err(err) => err,
-    };
-    let inner = match inner.downcast::<CheckError>() {
-      Ok(err) => return err.into(),
-      Err(err) => err,
-    };
-    AppError { inner, exit_code: 1 }
+    AppError { inner, exit_code }
   }
 }
 
 impl From<ParseArgsError> for AppError {
   fn from(inner: ParseArgsError) -> Self {
-    AppError {
-      inner: inner.into(),
-      exit_code: 10,
-    }
+    anyhow::Error::from(inner).into()
   }
 }
 
 impl From<ResolveConfigError> for AppError {
   fn from(inner: ResolveConfigError) -> Self {
-    AppError {
-      inner: inner.into(),
-      exit_code: 11,
-    }
+    anyhow::Error::from(inner).into()
   }
 }
 
 impl From<ResolvePluginsError> for AppError {
   fn from(inner: ResolvePluginsError) -> Self {
-    AppError {
-      inner: inner.into(),
-      exit_code: 12,
-    }
+    anyhow::Error::from(inner).into()
   }
 }
 
 impl From<NoPluginsFoundError> for AppError {
   fn from(inner: NoPluginsFoundError) -> Self {
-    AppError {
-      inner: inner.into(),
-      exit_code: 13,
-    }
+    anyhow::Error::from(inner).into()
   }
 }
 
 impl From<NoFilesFoundError> for AppError {
   fn from(inner: NoFilesFoundError) -> Self {
-    AppError {
-      inner: inner.into(),
-      exit_code: 14,
-    }
+    anyhow::Error::from(inner).into()
   }
 }
 
 impl From<CheckError> for AppError {
   fn from(inner: CheckError) -> Self {
-    AppError {
-      inner: inner.into(),
-      exit_code: 20,
-    }
+    anyhow::Error::from(inner).into()
   }
 }
 
@@ -117,8 +90,16 @@ pub async fn run_cli<TEnvironment: crate::environment::InitEnvironment>(
     SubCommand::Help(help_text) => commands::output_help(args, environment, plugin_resolver, help_text).await,
     SubCommand::SubcommandHelp(help_text) => commands::output_subcommand_help(environment, help_text),
     SubCommand::License => commands::output_license(args, environment, plugin_resolver).await,
-    SubCommand::EditorInfo => commands::output_editor_info(args, environment, plugin_resolver).await,
-    SubCommand::EditorService(cmd) => commands::run_editor_service(args, environment, plugin_resolver, cmd).await,
+    SubCommand::EditorInfo => {
+      commands::legacy_editor_policy(environment)
+        .scope(commands::output_editor_info(args, environment, plugin_resolver))
+        .await
+    }
+    SubCommand::EditorService(cmd) => {
+      commands::legacy_editor_policy(environment)
+        .scope(commands::run_editor_service(args, environment, plugin_resolver, cmd))
+        .await
+    }
     SubCommand::Lsp => commands::run_language_server(args, environment, plugin_resolver).await,
     SubCommand::ClearCache => commands::clear_cache(environment),
     SubCommand::Config(cmd) => match cmd {

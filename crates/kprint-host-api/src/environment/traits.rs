@@ -111,6 +111,12 @@ pub trait UrlDownloader {
   /// at most that many bytes and one are.
   async fn download_file_no_redirects(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>>;
 
+  /// Checks the editor policy before handing one request to the transport.
+  async fn download_file_once(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
+    crate::editor_policy::authorize_download(url).await?;
+    self.download_file_no_redirects(url, max_len).await
+  }
+
   /// Downloads a file, following redirects, and returns `None` on 404.
   async fn download_file<'a>(&self, url: &'a Url) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
     self.download_file_with_limit(url, None).await
@@ -122,7 +128,7 @@ pub trait UrlDownloader {
   async fn download_file_with_limit<'a>(&self, url: &'a Url, max_len: Option<usize>) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
     let mut current_url = Cow::Borrowed(url);
     for _ in 0..=10 {
-      let result = match self.download_file_no_redirects(&current_url, max_len).await? {
+      let result = match self.download_file_once(&current_url, max_len).await? {
         Some(r) => r,
         None => return Ok((current_url, None)),
       };

@@ -40,8 +40,9 @@ pub struct ConfigCompletions<TEnvironment: Environment> {
 /// Gets whether the given uri points at a JSON file dprint recognizes as a
 /// configuration file (ex. `dprint.json`). The completions are for JSON, so a
 /// TOML configuration file is left to a TOML language server.
-pub fn is_config_uri(uri: &Url) -> bool {
-  let Some(file_name) = uri.path_segments().and_then(|mut s| s.next_back()) else {
+pub fn is_config_uri(uri: &lsp::Uri) -> bool {
+  let uri = Url::parse(uri.as_str()).ok();
+  let Some(file_name) = uri.as_ref().and_then(Url::path_segments).and_then(|mut s| s.next_back()) else {
     return false;
   };
   POSSIBLE_CONFIG_FILE_NAMES.contains(&file_name) && ConfigFileFormat::from_path(file_name) == ConfigFileFormat::Json

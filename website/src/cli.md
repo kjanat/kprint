@@ -7,7 +7,7 @@ layout: layouts/documentation.njk
 # Command Line Interface (CLI)
 
 ```sh
-kprint <SUBCOMMAND> [OPTIONS] [--] [files]...
+kprint <SUBCOMMAND >[OPTIONS] [--] [files]...
 ```
 
 ## Installing and Setup/Initialization
@@ -257,7 +257,7 @@ Supported shells:
 Example (bash):
 
 ```sh
-kprint completions bash > /usr/local/etc/bash_completion.d/kprint.bash
+kprint completions bash >/usr/local/etc/bash_completion.d/kprint.bash
 source /usr/local/etc/bash_completion.d/kprint.bash
 ```
 
@@ -265,7 +265,7 @@ Example (zsh) — the file must be named `_kprint` and live in a directory that'
 
 ```sh
 mkdir -p ~/.zfunc
-kprint completions zsh > ~/.zfunc/_kprint
+kprint completions zsh >~/.zfunc/_kprint
 ```
 
 Then in `~/.zshrc`:
@@ -280,7 +280,7 @@ Start a new shell afterwards. If nothing is completed, delete the completion cac
 Example (fish):
 
 ```sh
-kprint completions fish > ~/.config/fish/completions/kprint.fish
+kprint completions fish >~/.config/fish/completions/kprint.fish
 ```
 
 ## Diagnostic Commands and Flags
@@ -407,11 +407,11 @@ git checkout "$BRANCH"
 new_state=$(kprint incremental-state)
 
 if [ "$previous_state" != "$new_state" ]; then
-  # plugins or configuration changed—the cache is invalid, so format everything
-  kprint fmt
+	# plugins or configuration changed—the cache is invalid, so format everything
+	kprint fmt
 else
-  # the cache is still valid, so only format the changed files
-  kprint fmt $(git diff --name-only master...)
+	# the cache is still valid, so only format the changed files
+	kprint fmt $(git diff --name-only master...)
 fi
 ```
 

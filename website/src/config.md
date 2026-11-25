@@ -208,14 +208,14 @@ With no flag, kprint uses the configuration file's `minimumDependencyAge`, which
 
 The flag takes precedence, so `--minimum-dependency-age=0` turns a configured age off for one run. There is no minimum otherwise — a version is only ever held back when you ask for one. Some other notes:
 
-- It applies to npm-distributed plugins. Plugins served from a URL carry no publish date for kprint to check, so they resolve as they always have.
+- It applies to npm-distributed plugins and npm configurations updated through `extends`. References served from a URL carry no publish date for kprint to check.
 - It never downgrades an entry you already have. Existing plugin versions are left alone, and a version you write out yourself (`kprint config add npm:@dprint/json@1.2.3`) is taken as your decision and added as-is — so an explicit version is a way to opt a single plugin out.
 - Only stable releases at or below the package's `latest` tag are considered when walking back, so a prerelease can't be selected by a walk back you didn't ask for. A package whose `latest` tag is itself a prerelease walks back through prereleases, since that's all it has.
 - `kprint config update` leaves a plugin where it is when no version of its package is old enough, reporting it rather than failing. `kprint init` and `kprint config add` error in the same situation, since there's nothing to write.
 
-### Updating Plugins via CLI
+### Updating Plugins and Shared Configurations via CLI
 
-Plugins can be updated to the latest version in the configuration file by running:
+Use this command to update plugins and versioned `npm:` entries in `extends`.
 
 ```sh
 kprint config update
@@ -223,7 +223,9 @@ kprint config update
 
 To update configuration files in descendant directories, run `kprint config update --recursive`.
 
-To preview the updates that would be made without modifying any files, run `kprint config update --dry-run`.
+In a terminal, choose which updates to apply. Process plugin updates and checksum-pinned `extends` still ask for confirmation. Run `kprint config update --yes` to apply all available updates without prompting, or `kprint config update --dry-run` to preview the changes without writing project configuration or schema files. On a cold cache, the preview may download and extract replacement packages into the cache.
+
+When an `extends` entry updates, its subpath is kept and its checksum is refreshed if it has one. Your package manager still manages unversioned `npm:` entries.
 
 ### Using Plugins from npm
 

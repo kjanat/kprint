@@ -62,24 +62,6 @@ impl PluginUpdateInfo {
 }
 
 pub fn update_plugin_in_config(file_text: &str, info: &PluginUpdateInfo) -> String {
-  let new_url = info.get_full_new_config_url();
-  // npm references normalize their display form (the default `/plugin.wasm`
-  // path is stripped), so `info.old_reference.to_string()` is often a strict
-  // prefix of the original config text. A naive `replace` would leave the
-  // `/plugin.wasm[@checksum]` suffix glued to the new version. For npm we
-  // always go through the CST path so we never fall back to the buggy
-  // prefix-replace; if the entry isn't in this file (e.g. it lives in an
-  // `extends`ed config) we return the file unchanged.
-  if let PathSource::Npm(_) = &info.old_reference.path_source {
-    return replace_npm_plugin_in_config(file_text, &info.old_reference, &new_url);
-  }
-  file_text.replace(&info.old_reference.to_string(), &new_url)
-}
-
-fn replace_npm_plugin_in_config(file_text: &str, old_reference: &PluginSourceReference, new_url: &str) -> String {
-  let PathSource::Npm(npm_source) = &old_reference.path_source else {
-    return file_text.to_string();
-  };
   let Ok(root) = CstRootNode::parse(file_text, &Default::default()) else {
     // unparseable config — don't risk corrupting it via prefix-replace
     return file_text.to_string();
@@ -104,20 +86,48 @@ fn replace_npm_plugin_in_config(file_text: &str, old_reference: &PluginSourceRef
     let Ok(entry_text) = string_lit.decoded_value() else {
       continue;
     };
-    let Ok(parsed) = parse_npm_specifier(&entry_text) else {
-      continue;
-    };
-    if parsed.specifier == npm_source.specifier && parsed.checksum == old_reference.checksum {
+    if super::config_file_format::is_same_reference(&entry_text, &info.old_reference) {
       matches.push(string_lit);
     }
   }
   if matches.is_empty() {
     return file_text.to_string();
   }
+  let new_url = info.get_full_new_config_url();
   for string_lit in matches {
-    string_lit.replace_with(json!(new_url));
+    string_lit.replace_with(json!(new_url.as_str()));
   }
   root.to_string()
+}
+
+pub(super) fn replace_extends_in_json(text: &str, old: &str, new: &str) -> Result<String> {
+  let root = CstRootNode::parse(text, &Default::default())?;
+  let Some(value) = root
+    .object_value()
+    .and_then(|obj| {
+      obj
+        .properties()
+        .into_iter()
+        .rev()
+        .find(|prop| prop.name().is_some_and(|name| name.decoded_value().is_ok_and(|value| value == "extends")))
+    })
+    .and_then(|prop| prop.value())
+  else {
+    return Ok(text.to_string());
+  };
+  let entries = match value.as_array() {
+    Some(array) => array.elements(),
+    None => vec![value],
+  };
+  let matches = entries
+    .into_iter()
+    .filter_map(|entry| entry.as_string_lit())
+    .filter(|entry| entry.decoded_value().ok().as_deref() == Some(old))
+    .collect::<Vec<_>>();
+  for entry in matches {
+    entry.replace_with(json!(new));
+  }
+  Ok(root.to_string())
 }
 
 /// Adds `urls_to_add` to the config's `plugins` array, first dropping every
