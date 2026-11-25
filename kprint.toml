@@ -70,5 +70,5 @@ associations = ["package.json"]
 cwd = "${configDir}"
 
 [[exec.commands]]
-command = "rustfmt --edition 2024 --config imports_granularity=item"
+command = "rustfmt"
 exts    = ["rs"]

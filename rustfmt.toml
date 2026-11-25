@@ -1,0 +1,4 @@
+max_width           = 160
+tab_spaces          = 2
+edition             = "2024"
+imports_granularity = "Item"
