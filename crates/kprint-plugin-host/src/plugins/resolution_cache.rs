@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -36,6 +37,7 @@ pub struct PluginResolutionCache {
   file_path: PathBuf,
   /// Identifies the compiled module the resolutions are of.
   artifact_id: u64,
+  entries: RefCell<Option<Vec<ResolutionEntry>>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,13 +57,21 @@ struct ResolutionEntry {
 
 impl PluginResolutionCache {
   pub fn new(file_path: PathBuf, artifact_id: u64) -> Self {
-    Self { file_path, artifact_id }
+    Self {
+      file_path,
+      artifact_id,
+      entries: RefCell::new(None),
+    }
   }
 
   pub fn get(&self, environment: &impl Environment, config: &FormatConfig) -> Option<PluginResolution> {
     let key = self.key(config);
-    let file = self.read(environment)?;
-    file.entries.into_iter().find(|entry| entry.key == key).map(|entry| entry.resolution)
+    let mut entries = self.entries.borrow_mut();
+    entries
+      .get_or_insert_with(|| self.read(environment).map(|file| file.entries).unwrap_or_default())
+      .iter()
+      .find(|entry| entry.key == key)
+      .map(|entry| entry.resolution.clone())
   }
 
   /// Keeps the resolution. This is best effort: it's only a cache, and
@@ -88,6 +98,7 @@ impl PluginResolutionCache {
     if let Err(err) = result {
       log_debug!(environment, "Failed writing {}: {:#}", self.file_path.display(), err);
     }
+    *self.entries.borrow_mut() = Some(file.entries);
   }
 
   fn read(&self, environment: &impl Environment) -> Option<ResolutionsFile> {

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -12,6 +14,9 @@ use kprint_config::plugin_config_file::parse_config_file;
 use kprint_config::plugin_config_file::select;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::ConfigKeyValue;
+use kprint_host_api::editor_policy::EditorPolicy;
+use kprint_platform::utils::PathSource;
+use kprint_platform::utils::resolve_path_source_to_file_with_cache;
 use kprint_plugin_types::PluginInfo;
 use serde_json::Value as JsonValue;
 
@@ -527,6 +532,9 @@ struct SchemaResources {
   count: usize,
 }
 
+const MAX_SCHEMA_FILES: usize = 256;
+const SCHEMA_DOWNLOAD_BATCH_SIZE: usize = 8;
+
 async fn read_config_schemas(
   plugin_info: &PluginInfo,
   content: &JsonValue,
@@ -553,24 +561,47 @@ async fn read_config_schemas(
       }
     })
     .collect::<Result<Vec<_>>>()?;
+  // Keep editor approval prompts sequential and in traversal order.
+  let parallel_downloads = EditorPolicy::current().is_none();
+  let mut fetched = HashMap::new();
   while let Some(mut uri) = pending.pop() {
     uri.set_fragment(None);
-    if schemas.identifiers.contains(uri.as_str()) {
+    if schemas.identifiers.contains(uri.as_str()) || schemas.files.contains_key(uri.as_str()) {
+      fetched.remove(&uri);
       continue;
     }
     if matches!(uri.scheme(), "http" | "https") {
-      if schemas.files.contains_key(uri.as_str()) {
-        continue;
+      if schemas.count >= MAX_SCHEMA_FILES {
+        bail!("Schema references exceed {MAX_SCHEMA_FILES} files at {uri}.");
       }
-      if schemas.count >= 256 {
-        bail!("Schema references exceed 256 files at {uri}.");
+      if parallel_downloads && fetched.len() + 1 < SCHEMA_DOWNLOAD_BATCH_SIZE && !fetched.contains_key(&uri) {
+        // Fetch the next HTTP resources together while preserving the
+        // traversal order for schema IDs, references, and errors.
+        let mut seen = HashSet::new();
+        let batch = std::iter::once(&uri)
+          .chain(pending.iter().rev().take_while(|url| matches!(url.scheme(), "http" | "https")))
+          .map(|url| {
+            let mut url = url.clone();
+            url.set_fragment(None);
+            url
+          })
+          .filter(|url| {
+            !schemas.identifiers.contains(url.as_str()) && !schemas.files.contains_key(url.as_str()) && !fetched.contains_key(url) && seen.insert(url.clone())
+          })
+          .take((SCHEMA_DOWNLOAD_BATCH_SIZE - fetched.len()).min(MAX_SCHEMA_FILES - schemas.count))
+          .map(|url| async move {
+            let result = resolve_path_source_to_file_with_cache(PathSource::new_remote(url.clone()), environment).await;
+            (url, result)
+          });
+        let batch = kprint_async_runtime::future::join_all(batch).await;
+        fetched.extend(batch);
       }
-      let resolved = kprint_platform::utils::resolve_path_source_to_file_with_cache(kprint_platform::utils::PathSource::new_remote(uri.clone()), environment)
-        .await?
-        .into_text()?;
-      let kprint_platform::utils::PathSource::Remote(remote) = resolved.source else {
-        unreachable!()
-      };
+      let resolved = match fetched.remove(&uri) {
+        Some(result) => result,
+        None => resolve_path_source_to_file_with_cache(PathSource::new_remote(uri.clone()), environment).await,
+      }?
+      .into_text()?;
+      let PathSource::Remote(remote) = resolved.source else { unreachable!() };
       let schema: JsonValue = serde_json::from_str(&resolved.content).with_context(|| format!("Invalid JSON Schema in {uri}."))?;
       let mut references = Vec::new();
       schema_references(&schema, &remote.url, &mut references, &mut schemas.identifiers)?;
@@ -598,8 +629,8 @@ async fn read_config_schemas(
     if schemas.files.contains_key(&key) {
       continue;
     }
-    if schemas.count >= 256 {
-      bail!("Schema references exceed 256 files at {uri}.");
+    if schemas.count >= MAX_SCHEMA_FILES {
+      bail!("Schema references exceed {MAX_SCHEMA_FILES} files at {uri}.");
     }
     if !path.starts_with(root) || escapes_dir(root, &path, environment) {
       bail!("Schema {} resolves outside {}.", path.display(), root.display());
@@ -1424,6 +1455,41 @@ line-width = 100
     environment.remove_file(root.join("project/link")).unwrap();
     std::os::unix::fs::symlink(root.join("elsewhere/child"), root.join("project/link")).unwrap();
     assert!(!through_link.iter().all(|state| state.is_current(&environment)));
+  }
+
+  #[test]
+  fn downloads_independent_schema_roots_while_one_is_waiting() {
+    use kprint_async_runtime::FutureExt;
+
+    let environment = crate::environment::TestEnvironment::new();
+    let slow = "https://example.com/slow.json";
+    let fast = "https://example.com/fast.json";
+    environment.add_remote_file(slow, br#"{"$ref":"fast.json"}"#);
+    environment.add_remote_file(fast, br#"{"type":"object"}"#);
+    environment.add_unresponsive_remote_file(slow);
+    let mut info = tombi_info(None);
+    info.config_schema_paths = vec![vec!["schemas".into(), "*".into()]];
+    let content = serde_json::json!({ "schemas": [fast, slow] });
+    let config_uri = url::Url::parse("https://example.com/config.json").unwrap();
+    let mut states = Vec::new();
+    let mut schemas = SchemaResources::default();
+    environment.run_in_runtime(async {
+      let mut read = std::pin::pin!(read_config_schemas(
+        &info,
+        &content,
+        &config_uri,
+        Path::new("/project"),
+        &environment,
+        &mut states,
+        &mut schemas
+      ));
+      assert!(read.as_mut().now_or_never().is_none());
+      assert_eq!(environment.remote_file_download_count(fast), 1);
+      environment.remove_unresponsive_remote_file(slow);
+      read.await.unwrap();
+    });
+    assert_eq!(environment.remote_file_download_count(fast), 1);
+    assert_eq!(schemas.files.len(), 2);
   }
 
   #[test]
