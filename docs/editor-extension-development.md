@@ -1,6 +1,8 @@
 # Developing an Editor Extension (Schema Version 5)
 
-**DO NOT USE THIS**: dprint 0.45 introduced a `dprint lsp` command that supports formatting files over the language server protocol. Please use that instead. This editor-service will remain active for the foreseeable future as it's currently used by the vscode and intellij plugins (though vscode is switching over to `dprint lsp` in the future).
+Use `kprint lsp` for standard LSP formatting. One server finds each document's configuration, including in a multi-root workspace. It supports notebook cells and untitled documents when the client supports the relevant LSP capabilities. The upstream `dprint/*` extensions to LSP still use the schema 5 fallback with kprint.
+
+The schema 5 commands and `kprint lsp` use the user's editor trust settings. See the [editor settings](/install#editor-extensions) for the approval behavior.
 
 Note: Schema version 5 was introduced in dprint 0.25
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::Result;
 use kprint_async_runtime::JoinHandle;
+use kprint_host_api::editor_policy::EditorPolicy;
 use kprint_plugin_types::FormatRange;
 use kprint_plugin_types::HostFormatRequest;
 use kprint_process_plugin::start_parent_process_checker_task;
@@ -24,8 +25,12 @@ use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionOptions;
 use tower_lsp::lsp_types::CompletionParams;
 use tower_lsp::lsp_types::CompletionResponse;
+use tower_lsp::lsp_types::DidChangeNotebookDocumentParams;
 use tower_lsp::lsp_types::DidChangeTextDocumentParams;
+use tower_lsp::lsp_types::DidChangeWorkspaceFoldersParams;
+use tower_lsp::lsp_types::DidCloseNotebookDocumentParams;
 use tower_lsp::lsp_types::DidCloseTextDocumentParams;
+use tower_lsp::lsp_types::DidOpenNotebookDocumentParams;
 use tower_lsp::lsp_types::DidOpenTextDocumentParams;
 use tower_lsp::lsp_types::DocumentFormattingParams;
 use tower_lsp::lsp_types::DocumentRangeFormattingParams;
@@ -37,16 +42,21 @@ use tower_lsp::lsp_types::InitializeResult;
 use tower_lsp::lsp_types::InitializedParams;
 use tower_lsp::lsp_types::OneOf;
 use tower_lsp::lsp_types::Position;
+use tower_lsp::lsp_types::Registration;
 use tower_lsp::lsp_types::ServerCapabilities;
 use tower_lsp::lsp_types::ServerInfo;
 use tower_lsp::lsp_types::TextDocumentSyncCapability;
 use tower_lsp::lsp_types::TextDocumentSyncKind;
 use tower_lsp::lsp_types::TextDocumentSyncOptions;
 use tower_lsp::lsp_types::TextEdit;
+use tower_lsp::lsp_types::Uri;
+use tower_lsp::lsp_types::WorkspaceFoldersServerCapabilities;
+use tower_lsp::lsp_types::WorkspaceServerCapabilities;
 use url::Url;
 
 use crate::configuration::config_needs_file_message;
 use crate::configuration::is_stream_path;
+use crate::configuration::resolve_uncanonicalized_local_path;
 use crate::environment::HostEnvironment as Environment;
 use crate::plugins::PluginResolver;
 use kprint_config::options::ConfigOptions;
@@ -64,10 +74,13 @@ use self::text::normalize_to_source_line_endings;
 use self::text::to_lsp_edits;
 use kprint_host::HostSession;
 
-mod client;
+pub(crate) mod client;
 mod config_completion;
 mod documents;
+mod language;
+mod notebook;
 mod text;
+mod untitled;
 
 // tower-lsp will drop the future on cancellation,
 // so use this to cancel the containing token on drop.
@@ -142,6 +155,7 @@ impl PendingTokens {
 
 struct EditorFormatRequest {
   pub file_path: PathBuf,
+  pub notebook_path: Option<PathBuf>,
   pub file_text: String,
   pub maybe_line_index: Option<LineIndex>,
   pub range: FormatRange,
@@ -189,7 +203,15 @@ async fn handle_format_request<TEnvironment: Environment>(
     .map(|p| p.into_path_buf())
     .unwrap_or(request.file_path);
 
-  if !scope.can_format_for_editor(&request.file_path, Some(request.file_text.as_bytes())) {
+  let can_format = match &request.notebook_path {
+    Some(path) => {
+      let canonical_path = environment.canonicalize_maybe_not_exists(path).ok();
+      let path = canonical_path.as_ref().map(AsRef::as_ref).unwrap_or(path);
+      !scope.plugin_name_maps.get_plugin_names_from_file_path(path).into_names().is_empty() && scope.can_format_for_editor(path, None)
+    }
+    None => scope.can_format_for_editor(&request.file_path, Some(request.file_text.as_bytes())),
+  };
+  if !can_format {
     log_debug!(environment, "Excluded file: {}", request.file_path.display());
     return Ok(None);
   }
@@ -199,6 +221,7 @@ async fn handle_format_request<TEnvironment: Environment>(
     log_debug!(environment, "A plugin does not support formatting a range: {}", request.file_path.display());
     return Ok(None);
   }
+  let notebook_range = request.notebook_path.as_ref().map(|_| request.range.clone());
   let range = RangeFormat::new(&request.file_text, request.range, supports_range == Some(true));
   let Some(result) = scope
     .format(HostFormatRequest {
@@ -216,7 +239,10 @@ async fn handle_format_request<TEnvironment: Environment>(
     let new_text = String::from_utf8(result).context("Failed converting formatted text to utf-8.")?;
     // the editor owns the document's line endings, so match them rather than
     // imposing the plugin's configured newline kind (see #965)
-    let new_text = normalize_to_source_line_endings(&request.file_text, new_text);
+    let mut new_text = normalize_to_source_line_endings(&request.file_text, new_text);
+    if let Some(notebook_range) = notebook_range {
+      new_text = notebook::trim_formatted_cell_text(&request.file_text, new_text, &notebook_range);
+    }
     let line_index = request.maybe_line_index.unwrap_or_else(|| LineIndex::new(&request.file_text));
     Ok(Some(to_lsp_edits(
       get_range_utf16_edits(&request.file_text, &new_text, &range.edits_range),
@@ -232,7 +258,9 @@ fn resolve_config_override(args: &dyn ConfigOptions, environment: &impl Environm
   let Some(config) = args.config().as_ref().and_then(|config| config.maybe_path_or_url()) else {
     return Ok(None);
   };
-  let path = environment.cwd().join(config);
+  let Some(path) = resolve_uncanonicalized_local_path(config, &environment.cwd(), environment) else {
+    anyhow::bail!("kprint lsp --config requires a local configuration file. Extend a remote configuration from that file.");
+  };
   // a pipe hands over its text once and has no file behind it to read again,
   // so turn it away at startup rather than failing every formatting request
   if is_stream_path(environment, &path) {
@@ -251,16 +279,14 @@ pub async fn run_language_server<TEnvironment: Environment>(
   let (tx, rx) = mpsc::unbounded_channel();
 
   let config_path = resolve_config_override(args, environment)?;
-  let recv_task = start_message_handler(environment, plugin_resolver, config_path, rx);
-
-  let environment = environment.clone();
-  let lsp_task = kprint_async_runtime::spawn(async move {
-    let (service, socket) = LspService::new(|client| {
-      let client = ClientWrapper::new(Arc::new(client));
-      Backend::new(client.clone(), environment.clone(), tx)
-    });
-    Server::new(stdin, stdout, socket).serve(service).await;
+  let mut policy = None;
+  let (service, socket, pending) = LspService::new(|client| {
+    let client = ClientWrapper::new(Arc::new(client));
+    policy = Some(crate::editor_trust::lsp_editor_policy(environment, client.clone()));
+    Backend::new(client, environment.clone(), tx)
   });
+  let recv_task = start_message_handler(environment, plugin_resolver, config_path, policy.unwrap(), rx);
+  let lsp_task = kprint_async_runtime::spawn(Server::new(stdin, stdout, socket, pending).serve(service));
 
   try_join!(recv_task, lsp_task)?;
 
@@ -271,6 +297,7 @@ fn start_message_handler<TEnvironment: Environment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
   config_override: Option<PathBuf>,
+  policy: EditorPolicy,
   mut rx: mpsc::UnboundedReceiver<ChannelMessage>,
 ) -> JoinHandle<()> {
   // tower_lsp requires Backend to implement Send and Sync, but
@@ -290,26 +317,26 @@ fn start_message_handler<TEnvironment: Environment>(
           let concurrency_limiter = concurrency_limiter.clone();
           let scope_container = scope_container.clone();
           let environment = environment.clone();
-          kprint_async_runtime::spawn(async move {
+          kprint_async_runtime::spawn(policy.clone().scope(async move {
             let _permit = concurrency_limiter.acquire().await;
             let result = handle_format_request(request, scope_container, &environment).await;
             let _ = sender.send(result);
             drop(token_guard); // remove the token from the pending tokens
-          });
+          }));
         }
         ChannelMessage::Completion(request, sender) => {
           let config_completions = config_completions.clone();
-          kprint_async_runtime::spawn(async move {
+          kprint_async_runtime::spawn(policy.clone().scope(async move {
             let result = config_completions.completions(&request.file_path, &request.file_text, request.position).await;
             let _ = sender.send(result);
-          });
+          }));
         }
         ChannelMessage::Hover(request, sender) => {
           let config_completions = config_completions.clone();
-          kprint_async_runtime::spawn(async move {
+          kprint_async_runtime::spawn(policy.clone().scope(async move {
             let result = config_completions.hover(&request.file_path, &request.file_text, request.position).await;
             let _ = sender.send(result);
-          });
+          }));
         }
         ChannelMessage::Shutdown(sender) => {
           pending_tokens.cancel_all();
@@ -329,6 +356,8 @@ fn start_message_handler<TEnvironment: Environment>(
 
 struct State<TEnvironment: Environment> {
   documents: Documents<TEnvironment>,
+  workspace_folders: Vec<PathBuf>,
+  registrations: Vec<Registration>,
 }
 
 struct Backend<TEnvironment: Environment> {
@@ -346,27 +375,45 @@ impl<TEnvironment: Environment> Backend<TEnvironment> {
       sender,
       state: Mutex::new(State {
         documents: Documents::new(environment),
+        workspace_folders: Vec::new(),
+        registrations: Vec::new(),
       }),
     }
   }
 
-  async fn send_format_request(&self, uri: &Url, request: EditorFormatRequest) -> LspResult<Option<Vec<TextEdit>>> {
+  fn format_paths(&self, uri: &Uri) -> Option<(PathBuf, Option<PathBuf>)> {
+    let state = self.state.lock();
+    if untitled::is_untitled_uri(uri) {
+      let home = self.environment.get_home_dir();
+      let folder = state.workspace_folders.first().map(PathBuf::as_path).or(home.as_ref().map(AsRef::as_ref))?;
+      let path = untitled::get_untitled_file_path(folder, state.documents.language_id(uri)?)?;
+      return Some((path, None));
+    }
+    if let Some((notebook_uri, language_id)) = state.documents.notebook_cell(uri) {
+      let notebook_path = uri_to_file_path(notebook_uri)?;
+      let cell_path = notebook::get_notebook_cell_file_path(&notebook_path, language_id)?;
+      return Some((cell_path, Some(notebook_path)));
+    }
+    Some((uri_to_file_path(uri)?, None))
+  }
+
+  async fn send_format_request(&self, uri: &Uri, request: EditorFormatRequest) -> LspResult<Option<Vec<TextEdit>>> {
     let start_time = std::time::Instant::now();
-    log_debug!(self.environment, "Received format request for {}", uri);
+    log_debug!(self.environment, "Received format request for {}", uri.as_str());
     let mut drop_token = DropToken::new(request.token.clone());
     let result = self.send_format_request_inner(request).await;
     drop_token.completed();
     let result = match result {
       Ok(value) => Ok(value),
       Err(err) => {
-        log_error!(self.environment, "Failed formatting '{}': {:#}", uri, err);
+        log_error!(self.environment, "Failed formatting '{}': {:#}", uri.as_str(), err);
         Ok(None)
       }
     };
     log_debug!(
       self.environment,
       "Finished format request for {} in {}ms",
-      uri,
+      uri.as_str(),
       start_time.elapsed().as_millis()
     );
     result
@@ -390,13 +437,23 @@ impl<TEnvironment: Environment> Backend<TEnvironment> {
   }
 }
 
-#[tower_lsp::async_trait]
+#[tower_lsp::async_trait(?Send)]
 impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
   async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
     if let Some(parent_id) = params.process_id {
       start_parent_process_checker_task(parent_id);
     }
 
+    {
+      let mut state = self.state.lock();
+      state.registrations = notebook::get_notebook_cell_format_registrations(&params.capabilities);
+      state.registrations.extend(untitled::get_untitled_registrations(&params.capabilities));
+      state.workspace_folders = match &params.workspace_folders {
+        Some(folders) => folders.iter().filter_map(|folder| uri_to_file_path(&folder.uri)).collect(),
+        #[allow(deprecated)]
+        None => params.root_uri.as_ref().and_then(uri_to_file_path).into_iter().collect(),
+      };
+    }
     Ok(InitializeResult {
       server_info: Some(ServerInfo {
         name: "kprint".to_string(),
@@ -419,6 +476,17 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
           ..Default::default()
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        notebook_document_sync: params
+          .capabilities
+          .notebook_document
+          .map(|_| OneOf::Left(notebook::get_notebook_document_sync_options())),
+        workspace: Some(WorkspaceServerCapabilities {
+          workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+            supported: Some(true),
+            change_notifications: Some(OneOf::Left(true)),
+          }),
+          file_operations: None,
+        }),
         ..ServerCapabilities::default()
       },
     })
@@ -432,6 +500,26 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
       self.environment.cpu_arch()
     ));
     self.client.log_info("Server ready.".to_string());
+    let registrations = std::mem::take(&mut self.state.lock().registrations);
+    if !registrations.is_empty() {
+      self.client.register(registrations);
+    }
+  }
+
+  async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+    let removed = params
+      .event
+      .removed
+      .iter()
+      .filter_map(|folder| uri_to_file_path(&folder.uri))
+      .collect::<Vec<_>>();
+    let mut state = self.state.lock();
+    state.workspace_folders.retain(|folder| !removed.contains(folder));
+    for path in params.event.added.iter().filter_map(|folder| uri_to_file_path(&folder.uri)) {
+      if !state.workspace_folders.contains(&path) {
+        state.workspace_folders.push(path);
+      }
+    }
   }
 
   async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -443,11 +531,45 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
   }
 
   async fn did_close(&self, params: DidCloseTextDocumentParams) {
-    self.state.lock().documents.closed(params);
+    self.state.lock().documents.closed(&params.text_document.uri);
   }
 
-  async fn formatting(&self, params: DocumentFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-    let Some(file_path) = url_to_file_path(&params.text_document.uri) else {
+  async fn notebook_did_open(&self, params: DidOpenNotebookDocumentParams) {
+    let mut state = self.state.lock();
+    let uri = &params.notebook_document.uri;
+    state.documents.closed_notebook(uri);
+    for document in params.cell_text_documents {
+      state.documents.open_notebook_cell(uri, document);
+    }
+  }
+
+  async fn notebook_did_change(&self, params: DidChangeNotebookDocumentParams) {
+    let Some(cells) = params.change.cells else {
+      return;
+    };
+    let mut state = self.state.lock();
+    if let Some(structure) = cells.structure {
+      for document in structure.did_close.unwrap_or_default() {
+        state.documents.closed(&document.uri);
+      }
+      for document in structure.did_open.unwrap_or_default() {
+        state.documents.open_notebook_cell(&params.notebook_document.uri, document);
+      }
+    }
+    for change in cells.text_content.unwrap_or_default() {
+      state.documents.changed(DidChangeTextDocumentParams {
+        text_document: change.document,
+        content_changes: change.changes,
+      });
+    }
+  }
+
+  async fn notebook_did_close(&self, params: DidCloseNotebookDocumentParams) {
+    self.state.lock().documents.closed_notebook(&params.notebook_document.uri);
+  }
+
+  async fn formatting(&self, params: DocumentFormattingParams, token: CancellationToken) -> LspResult<Option<Vec<TextEdit>>> {
+    let Some((file_path, notebook_path)) = self.format_paths(&params.text_document.uri) else {
       return Ok(None);
     };
     let Some((file_text, maybe_line_index)) = self.state.lock().documents.get_content(&params.text_document.uri) else {
@@ -458,17 +580,18 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
         &params.text_document.uri,
         EditorFormatRequest {
           file_path,
+          notebook_path,
           file_text,
           range: None,
           maybe_line_index,
-          token: Arc::new(CancellationToken::new()),
+          token: Arc::new(token),
         },
       )
       .await
   }
 
-  async fn range_formatting(&self, params: DocumentRangeFormattingParams) -> LspResult<Option<Vec<TextEdit>>> {
-    let Some(file_path) = url_to_file_path(&params.text_document.uri) else {
+  async fn range_formatting(&self, params: DocumentRangeFormattingParams, token: CancellationToken) -> LspResult<Option<Vec<TextEdit>>> {
+    let Some((file_path, notebook_path)) = self.format_paths(&params.text_document.uri) else {
       return Ok(None);
     };
     let Some((file_text, range, line_index)) = self.state.lock().documents.get_content_with_range(&params.text_document.uri, params.range) else {
@@ -479,21 +602,22 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
         &params.text_document.uri,
         EditorFormatRequest {
           file_path,
+          notebook_path,
           file_text,
           range,
           maybe_line_index: Some(line_index),
-          token: Arc::new(CancellationToken::new()),
+          token: Arc::new(token),
         },
       )
       .await
   }
 
-  async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+  async fn completion(&self, params: CompletionParams, _token: CancellationToken) -> LspResult<Option<CompletionResponse>> {
     let uri = params.text_document_position.text_document.uri;
     if !is_config_uri(&uri) {
       return Ok(None);
     }
-    let Some(file_path) = url_to_file_path(&uri) else {
+    let Some(file_path) = uri_to_file_path(&uri) else {
       return Ok(None);
     };
     let Some((file_text, _)) = self.state.lock().documents.get_content(&uri) else {
@@ -511,12 +635,12 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
     Ok(receiver.await.ok().flatten().map(CompletionResponse::Array))
   }
 
-  async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
+  async fn hover(&self, params: HoverParams, _token: CancellationToken) -> LspResult<Option<Hover>> {
     let uri = params.text_document_position_params.text_document.uri;
     if !is_config_uri(&uri) {
       return Ok(None);
     }
-    let Some(file_path) = url_to_file_path(&uri) else {
+    let Some(file_path) = uri_to_file_path(&uri) else {
       return Ok(None);
     };
     let Some((file_text, _)) = self.state.lock().documents.get_content(&uri) else {
@@ -577,9 +701,15 @@ pub fn url_to_file_path(specifier: &Url) -> Option<PathBuf> {
   }
 }
 
+fn uri_to_file_path(uri: &Uri) -> Option<PathBuf> {
+  url_to_file_path(&Url::parse(uri.as_str()).ok()?)
+}
+
 #[cfg(test)]
 mod test {
   use kprint_platform::environment::*;
+  use std::sync::atomic::AtomicBool;
+  use std::sync::atomic::Ordering;
   use std::time::Duration;
 
   use kprint_async_runtime::future;
@@ -627,11 +757,14 @@ mod test {
   macro_rules! assert_format {
     ($backend:expr, $uri:expr, $expected:expr) => {
       let result = $backend
-        .formatting(DocumentFormattingParams {
-          text_document: TextDocumentIdentifier { uri: $uri.clone() },
-          options: Default::default(),
-          work_done_progress_params: Default::default(),
-        })
+        .formatting(
+          DocumentFormattingParams {
+            text_document: TextDocumentIdentifier { uri: $uri.clone() },
+            options: Default::default(),
+            work_done_progress_params: Default::default(),
+          },
+          CancellationToken::new(),
+        )
         .await;
       assert_eq!(result.unwrap(), $expected);
     };
@@ -708,7 +841,7 @@ mod test {
             .unwrap();
           backend.initialized(InitializedParams {}).await;
 
-          let file_uri = Url::parse("file:///file.txt").unwrap();
+          let file_uri: Uri = "file:///file.txt".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(
             backend,
@@ -759,7 +892,7 @@ mod test {
 
           let mut handles = Vec::new();
           for i in 0..50 {
-            let file_uri = Url::parse(&format!("file:///file_{}.txt", i)).unwrap();
+            let file_uri: Uri = format!("file:///file_{}.txt", i).parse().unwrap();
             let backend = backend.clone();
             handles.push(kprint_async_runtime::spawn(async move {
               let file_text = format!("testing_{}", i);
@@ -774,11 +907,14 @@ mod test {
                 })
                 .await;
               let result = backend
-                .formatting(DocumentFormattingParams {
-                  text_document: TextDocumentIdentifier { uri: file_uri.clone() },
-                  options: Default::default(),
-                  work_done_progress_params: Default::default(),
-                })
+                .formatting(
+                  DocumentFormattingParams {
+                    text_document: TextDocumentIdentifier { uri: file_uri.clone() },
+                    options: Default::default(),
+                    work_done_progress_params: Default::default(),
+                  },
+                  CancellationToken::new(),
+                )
                 .await;
               assert_eq!(
                 result.unwrap().unwrap(),
@@ -804,27 +940,27 @@ mod test {
           }
 
           // ignores excluded files
-          let file_uri = Url::parse("file:///ignored_file.txt").unwrap();
+          let file_uri: Uri = "file:///ignored_file.txt".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(backend, file_uri, None);
 
           // ignores gitignored files
-          let file_uri = Url::parse("file:///gitignored_file.txt").unwrap();
+          let file_uri: Uri = "file:///gitignored_file.txt".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(backend, file_uri, None);
 
           // ignores file in gitignored dir
-          let file_uri = Url::parse("file:///gitignored_dir/file.txt").unwrap();
+          let file_uri: Uri = "file:///gitignored_dir/file.txt".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(backend, file_uri, None);
 
           // ignores excluded directory files
-          let file_uri = Url::parse("file:///ignored-dir/file.txt").unwrap();
+          let file_uri: Uri = "file:///ignored-dir/file.txt".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(backend, file_uri, None);
 
           // ignores non-included files
-          let file_uri = Url::parse("file:///file.txt_ps").unwrap();
+          let file_uri: Uri = "file:///file.txt_ps".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(backend, file_uri, None);
 
@@ -838,15 +974,18 @@ mod test {
 
           // range formatting
           let result = backend
-            .range_formatting(DocumentRangeFormattingParams {
-              text_document: TextDocumentIdentifier { uri: file_uri.clone() },
-              range: Range {
-                start: Position { line: 0, character: 1 },
-                end: Position { line: 0, character: 2 },
+            .range_formatting(
+              DocumentRangeFormattingParams {
+                text_document: TextDocumentIdentifier { uri: file_uri.clone() },
+                range: Range {
+                  start: Position { line: 0, character: 1 },
+                  end: Position { line: 0, character: 2 },
+                },
+                options: Default::default(),
+                work_done_progress_params: Default::default(),
               },
-              options: Default::default(),
-              work_done_progress_params: Default::default(),
-            })
+              CancellationToken::new(),
+            )
             .await;
           assert_eq!(
             result.unwrap().unwrap(),
@@ -857,7 +996,7 @@ mod test {
           );
 
           // cancellation via a drop
-          let file_uri = Url::parse("file:///file_cancellation.txt_ps").unwrap();
+          let file_uri: Uri = "file:///file_cancellation.txt_ps".parse().unwrap();
           did_open!(backend, file_uri, "wait_cancellation");
 
           let token = Arc::new(CancellationToken::new());
@@ -865,11 +1004,14 @@ mod test {
             let backend = backend.clone();
             let token = token.clone();
             async move {
-              let future = backend.formatting(DocumentFormattingParams {
-                text_document: TextDocumentIdentifier { uri: file_uri.clone() },
-                options: Default::default(),
-                work_done_progress_params: Default::default(),
-              });
+              let future = backend.formatting(
+                DocumentFormattingParams {
+                  text_document: TextDocumentIdentifier { uri: file_uri.clone() },
+                  options: Default::default(),
+                  work_done_progress_params: Default::default(),
+                },
+                CancellationToken::new(),
+              );
               // this token's cancellation will drop the future which
               // will cancel the formatting request internally
               tokio::select! {
@@ -918,7 +1060,7 @@ mod test {
           }
 
           // format using it
-          let file_uri = Url::parse("file:///associations1.txt").unwrap();
+          let file_uri: Uri = "file:///associations1.txt".parse().unwrap();
           did_open!(backend, file_uri, "text");
           assert_format!(
             backend,
@@ -952,7 +1094,7 @@ mod test {
 
           // try .txt_ps file, which should act the same as above because
           // of the associations
-          let file_uri = Url::parse("file:///associations1.txt_ps").unwrap();
+          let file_uri: Uri = "file:///associations1.txt_ps".parse().unwrap();
           did_open!(backend, file_uri, "text");
           assert_format!(
             backend,
@@ -964,7 +1106,7 @@ mod test {
           );
 
           // try the .other extension
-          let file_uri = Url::parse("file:///dir/file.other").unwrap();
+          let file_uri: Uri = "file:///dir/file.other".parse().unwrap();
           did_open!(backend, file_uri, "text");
           assert_format!(
             backend,
@@ -976,7 +1118,7 @@ mod test {
           );
 
           // try the exact file with no extension
-          let file_uri = Url::parse("file:///dir/some_file_name").unwrap();
+          let file_uri: Uri = "file:///dir/some_file_name".parse().unwrap();
           did_open!(backend, file_uri, "text");
           assert_format!(
             backend,
@@ -988,7 +1130,7 @@ mod test {
           );
 
           // now try this special file name
-          let file_uri = Url::parse("file:///dir/test-process-plugin-exact-file").unwrap();
+          let file_uri: Uri = "file:///dir/test-process-plugin-exact-file".parse().unwrap();
           did_open!(backend, file_uri, "text");
           assert_format!(
             backend,
@@ -1015,7 +1157,7 @@ mod test {
             environment.write_file("/dprint.json", &config_file.to_string()).unwrap();
           }
 
-          let file_uri = Url::parse("file:///package.txt").unwrap();
+          let file_uri: Uri = "file:///package.txt".parse().unwrap();
           did_open!(backend, file_uri, "text");
           assert_format!(
             backend,
@@ -1043,7 +1185,7 @@ mod test {
           }
 
           for _ in 0..2 {
-            let file_uri = Url::parse("file:///other_config/file.txt").unwrap();
+            let file_uri: Uri = "file:///other_config/file.txt".parse().unwrap();
             did_open!(backend, file_uri, "text");
             assert_format!(
               backend,
@@ -1055,7 +1197,7 @@ mod test {
             );
             did_close!(backend, file_uri);
             // switching to a different config should still work fine
-            let file_uri = Url::parse("file:///other_config/sub/file.txt").unwrap();
+            let file_uri: Uri = "file:///other_config/sub/file.txt".parse().unwrap();
             did_open!(backend, file_uri, "text");
             assert_format!(
               backend,
@@ -1068,7 +1210,7 @@ mod test {
             did_close!(backend, file_uri);
 
             // now try with a process plugin
-            let file_uri = Url::parse("file:///other_config/file.txt_ps").unwrap();
+            let file_uri: Uri = "file:///other_config/file.txt_ps".parse().unwrap();
             did_open!(backend, file_uri, "text");
             assert_format!(
               backend,
@@ -1080,7 +1222,7 @@ mod test {
             );
             did_close!(backend, file_uri);
             // switching to a different config should work fine as well
-            let file_uri = Url::parse("file:///other_config/sub/file.txt_ps").unwrap();
+            let file_uri: Uri = "file:///other_config/sub/file.txt_ps".parse().unwrap();
             did_open!(backend, file_uri, "text");
             assert_format!(
               backend,
@@ -1143,7 +1285,7 @@ mod test {
           backend.initialized(InitializedParams {}).await;
 
           // extensionless file with a matching shebang
-          let file_uri = Url::parse("file:///scripts/build").unwrap();
+          let file_uri: Uri = "file:///scripts/build".parse().unwrap();
           did_open!(backend, file_uri, "#!/bin/sh\ntext");
           assert_format!(
             backend,
@@ -1155,7 +1297,7 @@ mod test {
           );
 
           // extensionless file without a shebang
-          let file_uri = Url::parse("file:///scripts/notes").unwrap();
+          let file_uri: Uri = "file:///scripts/notes".parse().unwrap();
           did_open!(backend, file_uri, "text");
           assert_format!(backend, file_uri, None);
 
@@ -1204,7 +1346,7 @@ mod test {
           backend.initialized(InitializedParams {}).await;
 
           // Test that global config is being used
-          let file_uri = Url::parse("file:///file.txt").unwrap();
+          let file_uri: Uri = "file:///file.txt".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(
             backend,
@@ -1216,12 +1358,12 @@ mod test {
           );
 
           // Test that excluded file is not formatted
-          let ignored_uri = Url::parse("file:///ignored_file.txt").unwrap();
+          let ignored_uri: Uri = "file:///ignored_file.txt".parse().unwrap();
           did_open!(backend, ignored_uri, "testing");
           assert_format!(backend, ignored_uri, None);
 
           // Test that non-matching file is not formatted
-          let other_uri = Url::parse("file:///file.js").unwrap();
+          let other_uri: Uri = "file:///file.js".parse().unwrap();
           did_open!(backend, other_uri, "testing");
           assert_format!(backend, other_uri, None);
 
@@ -1280,7 +1422,7 @@ mod test {
           backend.initialized(InitializedParams {}).await;
 
           // should format using the overridden config (ending "custom"), not the default (ending "default")
-          let file_uri = Url::parse("file:///custom/file.txt").unwrap();
+          let file_uri: Uri = "file:///custom/file.txt".parse().unwrap();
           did_open!(backend, file_uri, "testing");
           assert_format!(
             backend,
@@ -1318,14 +1460,196 @@ mod test {
     let plugin_cache = PluginCache::new(environment.clone());
     let plugin_resolver = Rc::new(PluginResolver::new(environment.clone(), plugin_cache));
     let (tx, rx) = mpsc::unbounded_channel();
-    let recv_task = start_message_handler(&environment, &plugin_resolver, config_override, rx);
     let test_client = Arc::new(TestClient::default());
-    (Backend::new(ClientWrapper::new(test_client.clone()), environment, tx), recv_task, test_client)
+    let client = ClientWrapper::new(test_client.clone());
+    let policy = crate::editor_trust::lsp_editor_policy(&environment, client.clone());
+    let recv_task = start_message_handler(&environment, &plugin_resolver, config_override, policy, rx);
+    (Backend::new(client, environment, tx), recv_task, test_client)
   }
 
-  #[derive(Debug, Default)]
+  #[test]
+  fn editor_checks_untrusted_redirects_before_contacting_the_target() {
+    let source = "https://plugins.dprint.dev/workspace-config.json";
+    let target = "https://downloads.example.com/workspace-config.json";
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .write_file("/workspace/dprint.json", format!(r#"{{"extends":"{source}"}}"#))
+      .build();
+    environment.add_remote_file_redirect(source, target);
+    environment.add_remote_file(target, br#"{"plugins":["https://plugins.dprint.dev/test-plugin.wasm"]}"#);
+    environment.run_in_runtime(async {
+      let (backend, recv_task, client) = setup_backend(environment.clone());
+      client.allow.store(false, Ordering::Relaxed);
+      let uri: Uri = "file:///workspace/file.txt".parse().unwrap();
+      did_open!(backend, uri, "input");
+      assert_format!(backend, uri, None);
+      assert_eq!(environment.remote_file_download_count(source), 1);
+      assert_eq!(environment.remote_file_download_count(target), 0);
+      assert_eq!(client.approvals.lock().len(), 1);
+      assert!(client.approvals.lock()[0].contains(target));
+      environment.take_stderr_messages();
+      backend.shutdown().await.unwrap();
+      recv_task.await.unwrap();
+    });
+  }
+
+  #[test]
+  fn changing_process_plugin_configuration_requires_a_new_approval() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin().build();
+    environment.run_in_runtime(async {
+      let (backend, recv_task, client) = setup_backend(environment.clone());
+      let uri: Uri = "file:///file.txt_ps".parse().unwrap();
+      did_open!(backend, uri, "input");
+      assert!(
+        backend
+          .formatting(
+            DocumentFormattingParams {
+              text_document: TextDocumentIdentifier { uri: uri.clone() },
+              options: Default::default(),
+              work_done_progress_params: Default::default(),
+            },
+            CancellationToken::new()
+          )
+          .await
+          .unwrap()
+          .is_some()
+      );
+      assert_eq!(client.approvals.lock().len(), 1);
+      let config_path = environment.cwd().join("dprint.json");
+      let config = environment.read_file(&config_path).unwrap();
+      let mut value: serde_json::Value = serde_json::from_str(&config).unwrap();
+      value["testProcessPlugin"] = serde_json::json!({"ending":"changed"});
+      environment.write_file(&config_path, &value.to_string()).unwrap();
+      client.allow.store(false, Ordering::Relaxed);
+      assert_format!(backend, uri, None);
+      assert_eq!(client.approvals.lock().len(), 2);
+      environment.take_stderr_messages();
+      backend.shutdown().await.unwrap();
+      recv_task.await.unwrap();
+    });
+  }
+
+  #[test]
+  fn formats_only_cells_of_included_notebooks() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_local_config("/workspace/dprint.json", |config| {
+        config
+          .add_remote_wasm_plugin()
+          .add_includes("**/*.ipynb")
+          .add_excludes("ignored.ipynb")
+          .add_config_section("test-plugin", r#"{"associations":["**/*.{ipynb,txt}"]}"#);
+      })
+      .initialize()
+      .build();
+    environment.run_in_runtime(async {
+      let (backend, recv_task, _) = setup_backend(environment.clone());
+      let initialized = backend
+        .initialize(
+          serde_json::from_value(serde_json::json!({
+            "capabilities": {"notebookDocument": {"synchronization": {}}}
+          }))
+          .unwrap(),
+        )
+        .await
+        .unwrap();
+      assert!(initialized.capabilities.notebook_document_sync.is_some());
+
+      let cell: Uri = "vscode-notebook-cell:/workspace/notebook.ipynb#1".parse().unwrap();
+      let open_notebook = |file: &str| {
+        serde_json::from_value(serde_json::json!({
+          "notebookDocument": {
+            "uri": file, "notebookType": "jupyter-notebook", "version": 1, "cells": [{"kind": 2, "document": cell}]
+          },
+          "cellTextDocuments": [{"uri": cell, "languageId": "txt", "version": 1, "text": "cell"}]
+        }))
+        .unwrap()
+      };
+      backend.notebook_did_open(open_notebook("file:///workspace/notebook.ipynb")).await;
+      assert_format!(
+        backend,
+        cell,
+        Some(vec![TextEdit::new(Range::new(Position::new(0, 4), Position::new(0, 4)), "_formatted".into())])
+      );
+      backend
+        .notebook_did_close(
+          serde_json::from_value(serde_json::json!({
+            "notebookDocument": {"uri": "file:///workspace/notebook.ipynb"}, "cellTextDocuments": [{"uri": cell}]
+          }))
+          .unwrap(),
+        )
+        .await;
+      assert_format!(backend, cell, None);
+
+      backend.notebook_did_open(open_notebook("file:///workspace/ignored.ipynb")).await;
+      assert_format!(backend, cell, None);
+      environment.take_stderr_messages();
+      backend.shutdown().await.unwrap();
+      recv_task.await.unwrap();
+    });
+  }
+
+  #[test]
+  fn formats_untitled_documents_using_the_current_first_workspace_folder() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_local_config("/first/dprint.json", |config| {
+        config.add_remote_wasm_plugin().add_config_section("test-plugin", r#"{"ending":"first"}"#);
+      })
+      .with_local_config("/second/dprint.json", |config| {
+        config.add_remote_wasm_plugin().add_config_section("test-plugin", r#"{"ending":"second"}"#);
+      })
+      .initialize()
+      .build();
+    environment.run_in_runtime(async {
+      let (backend, recv_task, _) = setup_backend(environment.clone());
+      backend
+        .initialize(
+          serde_json::from_value(serde_json::json!({
+            "capabilities": {},
+            "workspaceFolders": [{"uri":"file:///first","name":"first"}, {"uri":"file:///second","name":"second"}]
+          }))
+          .unwrap(),
+        )
+        .await
+        .unwrap();
+      let uri: Uri = "untitled:Untitled-1".parse().unwrap();
+      did_open!(backend, uri, "input");
+      let edit = |ending: &str| Some(vec![TextEdit::new(Range::new(Position::new(0, 5), Position::new(0, 5)), ending.into())]);
+      let first_file: Uri = "file:///first/file.txt".parse().unwrap();
+      let second_file: Uri = "file:///second/file.txt".parse().unwrap();
+      did_open!(backend, first_file, "input");
+      did_open!(backend, second_file, "input");
+      assert_format!(backend, first_file, edit("_first"));
+      assert_format!(backend, second_file, edit("_second"));
+      assert_format!(backend, uri, edit("_first"));
+      backend
+        .did_change_workspace_folders(
+          serde_json::from_value(serde_json::json!({
+            "event": {"removed":[{"uri":"file:///first","name":"first"}],"added":[]}
+          }))
+          .unwrap(),
+        )
+        .await;
+      assert_format!(backend, uri, edit("_second"));
+      environment.take_stderr_messages();
+      backend.shutdown().await.unwrap();
+      recv_task.await.unwrap();
+    });
+  }
+
+  #[derive(Debug)]
   struct TestClient {
     logged_messages: Mutex<Vec<(MessageType, String)>>,
+    approvals: Mutex<Vec<String>>,
+    allow: AtomicBool,
+  }
+
+  impl Default for TestClient {
+    fn default() -> Self {
+      Self {
+        logged_messages: Default::default(),
+        approvals: Default::default(),
+        allow: AtomicBool::new(true),
+      }
+    }
   }
 
   impl Drop for TestClient {
@@ -1348,9 +1672,15 @@ mod test {
     }
   }
 
+  #[kprint_async_runtime::async_trait(?Send)]
   impl ClientTrait for TestClient {
     fn log(&self, message_type: MessageType, message: String) {
       self.logged_messages.lock().push((message_type, message));
+    }
+
+    async fn approve(&self, message: String) -> bool {
+      self.approvals.lock().push(message);
+      self.allow.load(Ordering::Relaxed)
     }
   }
 }

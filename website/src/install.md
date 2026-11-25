@@ -109,4 +109,10 @@ These are dprint's, and call `dprint`, which every method above installs besides
 - Neovim with [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#dprint)
 - The `kprint lsp` subcommand provides code formatting over the language server protocol. This can be used to format in other editors. <!-- rumdl-disable-line line-length -->
 
+One language server can format files across workspace folders. It finds the nearest configuration for each file. In clients with notebook support, it formats a cell using the formatter for the cell's language when the notebook is included and has a formatter. New unsaved documents use the first workspace folder or your home directory.
+
+The language server asks before contacting an untrusted download host, including redirects. It also asks before running process plugins or the built-in `exec` formatter. An allowed download applies to the exact URL in that session. A process-plugin approval applies to the configuration and the plugin build. Changes to either require another approval.
+
+To configure an editor that uses schema 5 or can't show LSP approval prompts, edit `settings.json` next to your [global configuration](/global-config). `editor.trustedDomains` adds HTTPS domains and their subdomains to the defaults of `registry.npmjs.org`, `plugins.dprint.dev`, `github.com`, and `githubusercontent.com`. Setting `editor.allowProcessPlugins` to `true` allows editor configurations to run process plugins and `exec` without a prompt. Restart the editor service after editing the settings.
+
 Next step: [Setup](/setup)

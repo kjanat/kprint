@@ -9,6 +9,7 @@ pub use kprint_test_support::test_helpers;
 #[cfg(test)]
 extern crate kprint_test_support;
 
+pub use kprint_host_api::editor_policy;
 pub use kprint_host_api::log_all;
 pub use kprint_host_api::log_debug;
 pub use kprint_host_api::log_error;

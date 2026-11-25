@@ -80,6 +80,10 @@ use crate::utils::is_negated_glob;
 use kprint_config::options::ConfigOptions;
 use kprint_discovery::ConfigDiscovery;
 use kprint_discovery::FilePatternArgs;
+use kprint_host_api::editor_policy::EditorApprovalRequired;
+use kprint_host_api::editor_policy::EditorPolicy;
+use kprint_host_api::editor_policy::ProcessPluginConfiguration;
+use kprint_platform::utils::get_sha256_checksum;
 
 struct Embedder {
   plugin: Rc<PluginWithConfig>,
@@ -1580,6 +1584,7 @@ pub async fn get_plugins_scope_from_args<TEnvironment: Environment>(
 ) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
   match resolve_config_from_args(args, environment).await {
     Ok(config) => resolve_plugins_scope(Rc::new(config), environment, plugin_resolver).await,
+    Err(ResolveConfigError::Other(err)) if err.is::<EditorApprovalRequired>() => Err(err.into()),
     // ignore
     Err(_) => Ok(PluginsScope {
       environment: environment.clone(),
@@ -1606,11 +1611,29 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
+  let resolve = resolve_plugins_scope_inner(&config, environment, plugin_resolver);
+  if let Some(policy) = EditorPolicy::current() {
+    let approval = ProcessPluginConfiguration {
+      source: config.origin.source.display(),
+      fingerprint: get_sha256_checksum(format!("{config:?}").as_bytes()),
+    };
+    policy.with_config(approval, resolve).await
+  } else {
+    resolve.await
+  }
+}
+
+async fn resolve_plugins_scope_inner<TEnvironment: Environment>(
+  config: &Rc<ResolvedConfig>,
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
   // resolve the plugins
   let mut plugins = filter_duplicate_plugin_names(plugin_resolver.resolve_plugins(config.plugins.sources.clone()).await?);
   // Configuration resolution has already filtered remote commands and applied
   // inheritance. An explicit exec alias determines its formatter-chain order.
   if config.plugins.config.contains_key("exec") && !plugins.iter().any(|plugin| plugin.info().config_key == "exec") {
+    kprint_host_api::editor_policy::authorize_process_plugin("exec", "builtin").await?;
     plugins.push(plugin_resolver.resolve_builtin_exec().await);
   }
   let mut config_map = config.plugins.config.clone();
@@ -1731,7 +1754,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     }
   }
 
-  Ok(PluginsScope::new(environment.clone(), plugins, config, global_config_result.diagnostics)?.with_plugin_config_files(plugin_config_files))
+  Ok(PluginsScope::new(environment.clone(), plugins, config.clone(), global_config_result.diagnostics)?.with_plugin_config_files(plugin_config_files))
 }
 
 /// Gets which files the plugin formats and its resolved configuration. A

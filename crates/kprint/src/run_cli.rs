@@ -117,8 +117,16 @@ pub async fn run_cli<TEnvironment: crate::environment::InitEnvironment>(
     SubCommand::Help(help_text) => commands::output_help(args, environment, plugin_resolver, help_text).await,
     SubCommand::SubcommandHelp(help_text) => commands::output_subcommand_help(environment, help_text),
     SubCommand::License => commands::output_license(args, environment, plugin_resolver).await,
-    SubCommand::EditorInfo => commands::output_editor_info(args, environment, plugin_resolver).await,
-    SubCommand::EditorService(cmd) => commands::run_editor_service(args, environment, plugin_resolver, cmd).await,
+    SubCommand::EditorInfo => {
+      commands::legacy_editor_policy(environment)
+        .scope(commands::output_editor_info(args, environment, plugin_resolver))
+        .await
+    }
+    SubCommand::EditorService(cmd) => {
+      commands::legacy_editor_policy(environment)
+        .scope(commands::run_editor_service(args, environment, plugin_resolver, cmd))
+        .await
+    }
     SubCommand::Lsp => commands::run_language_server(args, environment, plugin_resolver).await,
     SubCommand::ClearCache => commands::clear_cache(environment),
     SubCommand::Config(cmd) => match cmd {

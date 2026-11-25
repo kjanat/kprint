@@ -175,9 +175,10 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(
     }
 
     // download
-    let result = match environment.download_file_no_redirects(&current_url, None).await {
+    let result = match environment.download_file_once(&current_url, None).await {
       Ok(Some(result)) => result,
       Ok(None) => bail!("Error downloading {} - 404 Not Found", url),
+      Err(err) if err.is::<kprint_host_api::editor_policy::EditorApprovalRequired>() => return Err(err),
       Err(err) => {
         // keep using the previously downloaded file when checking for changes
         // fails (ex. offline). Nothing is written, so it's checked again next time.

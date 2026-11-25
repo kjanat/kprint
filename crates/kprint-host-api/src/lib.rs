@@ -3,6 +3,7 @@
 #[macro_use]
 pub mod environment;
 pub mod compiler;
+pub mod editor_policy;
 pub mod options;
 pub mod selection;
 pub mod ui;

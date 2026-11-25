@@ -284,7 +284,7 @@ const VIRTUAL_CONFIG_FILE_NAME: &str = "<config>";
 
 /// Makes a local `--config` value absolute without canonicalizing it, or
 /// `None` when it doesn't name a local path at all.
-fn resolve_uncanonicalized_local_path(config: &str, cwd: &CanonicalizedPathBuf, environment: &impl Environment) -> Option<PathBuf> {
+pub fn resolve_uncanonicalized_local_path(config: &str, cwd: &CanonicalizedPathBuf, environment: &impl Environment) -> Option<PathBuf> {
   if let Some(rest) = config.strip_prefix("~/") {
     return Some(environment.get_home_dir()?.join(rest));
   }

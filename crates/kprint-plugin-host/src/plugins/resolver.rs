@@ -3,6 +3,10 @@ use anyhow::Result;
 use anyhow::bail;
 use kprint_async_runtime::future;
 use kprint_communication::IdGenerator;
+use kprint_platform::editor_policy::EditorApprovalRequired;
+use kprint_platform::editor_policy::EditorPolicy;
+use kprint_platform::editor_policy::authorize_process_plugin;
+use kprint_platform::editor_policy::within_editor_policy;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::PluginInfo;
 use std::cell::RefCell;
@@ -277,7 +281,8 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
       .into_iter()
       .map(|plugin_ref| {
         let resolver = self.clone();
-        kprint_async_runtime::spawn(async move { resolver.resolve_plugin(plugin_ref).await })
+        let policy = EditorPolicy::current();
+        kprint_async_runtime::spawn(async move { within_editor_policy(policy, resolver.resolve_plugin(plugin_ref)).await })
       })
       .collect::<Vec<_>>();
 
@@ -317,7 +322,7 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
         .or_insert_with(|| Rc::new(tokio::sync::OnceCell::new()))
         .clone()
     };
-    cell
+    let plugin = cell
       .get_or_try_init(|| async {
         if let Some(plugin) = create_builtin_exec_plugin(&self.environment, &plugin_reference) {
           return Ok(Rc::new(PluginWrapper::new(plugin)));
@@ -339,6 +344,7 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
             formatting_identity: created.formatting_identity,
             ..PluginWrapper::new(created.plugin)
           })),
+          Err(err) if err.is::<EditorApprovalRequired>() => Err(err),
           Err(err) => {
             match self.plugin_cache.forget(&plugin_reference).await {
               Ok(()) => {}
@@ -356,7 +362,15 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
         }
       })
       .await
-      .cloned()
+      .cloned()?;
+    if plugin.built_in().is_some_and(|built_in| built_in.name == "exec") {
+      authorize_process_plugin("exec", "builtin").await?;
+    } else if plugin.is_process_plugin()
+      && let super::FormattingIdentity::Artifact { checksum } = plugin.formatting_identity()
+    {
+      authorize_process_plugin(&plugin_reference.display(), checksum).await?;
+    }
+    Ok(plugin)
   }
 }
 
