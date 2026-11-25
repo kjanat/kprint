@@ -363,9 +363,7 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
       })
       .await
       .cloned()?;
-    if plugin.built_in().is_some_and(|built_in| built_in.name == "exec") {
-      authorize_process_plugin("exec", "builtin").await?;
-    } else if plugin.is_process_plugin()
+    if plugin.is_process_plugin()
       && let super::FormattingIdentity::Artifact { checksum } = plugin.formatting_identity()
     {
       authorize_process_plugin(&plugin_reference.display(), checksum).await?;

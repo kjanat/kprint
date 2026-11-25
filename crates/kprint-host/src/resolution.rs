@@ -406,6 +406,7 @@ impl InitializedPluginWithConfig {
 
 pub struct PluginsScope<TEnvironment: Environment> {
   environment: TEnvironment,
+  editor_policy: Option<EditorPolicy>,
   pub config: Option<Rc<ResolvedConfig>>,
   pub plugins: IndexMap<String, Rc<PluginWithConfig>>,
   pub plugin_name_maps: PluginNameResolutionMaps,
@@ -428,6 +429,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
 
     Ok(PluginsScope {
       environment,
+      editor_policy: EditorPolicy::current(),
       config: Some(config),
       plugin_name_maps,
       plugins: plugins.into_iter().map(|p| (p.name().to_string(), p)).collect(),
@@ -707,7 +709,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       request.range,
     );
     let scope = self.clone();
-    async move {
+    kprint_host_api::editor_policy::within_editor_policy(self.editor_policy.clone(), async move {
       let mut file_text = request.file_bytes;
       let mut range = request.range;
       let mut had_change = false;
@@ -753,7 +755,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       }
 
       Ok(if had_change { Some(file_text) } else { None })
-    }
+    })
     .boxed_local()
   }
 }
@@ -1588,6 +1590,7 @@ pub async fn get_plugins_scope_from_args<TEnvironment: Environment>(
     // ignore
     Err(_) => Ok(PluginsScope {
       environment: environment.clone(),
+      editor_policy: EditorPolicy::current(),
       config: None,
       plugin_name_maps: Default::default(),
       plugins: Default::default(),
@@ -1633,7 +1636,6 @@ async fn resolve_plugins_scope_inner<TEnvironment: Environment>(
   // Configuration resolution has already filtered remote commands and applied
   // inheritance. An explicit exec alias determines its formatter-chain order.
   if config.plugins.config.contains_key("exec") && !plugins.iter().any(|plugin| plugin.info().config_key == "exec") {
-    kprint_host_api::editor_policy::authorize_process_plugin("exec", "builtin").await?;
     plugins.push(plugin_resolver.resolve_builtin_exec().await);
   }
   let mut config_map = config.plugins.config.clone();

@@ -1493,6 +1493,46 @@ mod test {
   }
 
   #[test]
+  fn editor_only_requests_exec_approval_for_files_that_run_a_command() {
+    for explicit_exec in [false, true] {
+      let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+        .with_local_config("/workspace/kprint.json", |config| {
+          config
+            .add_remote_wasm_plugin()
+            .add_config_section("exec", r#"{"commands":[{"command":"unused-exec","exts":["rs"]}]}"#);
+          if explicit_exec {
+            config.add_plugin("exec");
+          }
+        })
+        .build();
+      environment.run_in_runtime(async {
+        let (backend, recv_task, client) = setup_backend(environment.clone());
+        client.allow.store(false, Ordering::Relaxed);
+        let text: Uri = "file:///workspace/file.txt".parse().unwrap();
+        did_open!(backend, text, "input");
+        assert_format!(
+          backend,
+          text,
+          Some(vec![TextEdit {
+            range: Range::new(Position::new(0, 5), Position::new(0, 5)),
+            new_text: "_formatted".to_string(),
+          }])
+        );
+        assert!(client.approvals.lock().is_empty());
+
+        let rust: Uri = "file:///workspace/file.rs".parse().unwrap();
+        did_open!(backend, rust, "fn main() {}\n");
+        assert_format!(backend, rust, None);
+        assert_eq!(client.approvals.lock().len(), 1);
+        assert!(client.approvals.lock()[0].contains("\"exec\""));
+        environment.take_stderr_messages();
+        backend.shutdown().await.unwrap();
+        recv_task.await.unwrap();
+      });
+    }
+  }
+
+  #[test]
   fn changing_process_plugin_configuration_requires_a_new_approval() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin().build();
     environment.run_in_runtime(async {
