@@ -1,9 +1,23 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+#:tombi toml-version = "v1.1.0"
+
+[settings]
+experimental                        = true
+idiomatic_version_file_enable_tools = ["rust"]
+
 [tools]
-deno                                    = "latest"
-rust                                    = "latest"
-tombi                                   = "latest"
-"github:kjanat/runner"                  = "latest"
-"aqua:nextest-rs/nextest/cargo-nextest" = "latest"
+deno          = "latest"
+rust          = "latest"
+tombi         = "latest"
+runner-run    = "latest"
+cargo-nextest = "latest"
+
+[tool_alias]
+cargo-nextest = "aqua:nextest-rs/nextest/cargo-nextest"
+runner-run    = "github:kjanat/runner"
+
+[env]
+_.path = "./bin/"
 
 [wrappers.kprint]
 command = "run"
@@ -13,3 +27,6 @@ args    = ["run-kprint"]
 [wrappers.dprint]
 command = "run"
 args    = ["run-kprint"]
+
+[tasks]
+fmt = { run = "kfmt", alias = ["fmt", "f", "format"] }

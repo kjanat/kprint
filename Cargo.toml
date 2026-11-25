@@ -29,10 +29,9 @@ kprint-process-plugin = { path = "crates/kprint-process-plugin", version = "=0.1
 kprint-test-support   = { path = "crates/kprint-test-support", version = "=0.1.0" }
 kprint-wasm-plugin    = { path = "crates/kprint-wasm-plugin", version = "=0.1.0" }
 
-actions-rs                        = "0.1"
-json-schema-sort.version          = "0.1"
-json-schema-sort.default-features = false
-tree-fucker                       = "0.1.0"
+# actions-rs                        = "0.1"
+json-schema-sort = { version = "0.1", default-features = false }
+tree-fucker      = "0.1.0"
 
 anyhow                    = "1"
 async-trait               = "0.1"
@@ -54,7 +53,7 @@ file_test_runner          = "0.12"
 flate2                    = "1"
 fs3                       = "0.5"
 futures                   = "0.3"
-globset                   = "0.4"
+# globset                   = "0.4"
 hashbrown                 = "0.17"
 indexmap.version          = "2.14"
 indexmap.features         = ["serde"]
