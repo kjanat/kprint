@@ -7,7 +7,7 @@
     "decompress": "npm:decompress@4.2.1"
   },
   "tasks": {
-    "check": "deno check build.ts bin.ts install.ts pack.ts release.ts nightly.ts preview.ts",
-    "test": "deno test --allow-read --allow-write --allow-env=PATH --allow-run=bash --allow-net=127.0.0.1 release_test.ts pack_test.ts workflow_test.ts nightly_test.ts preview_test.ts config_files_test.ts"
+    "check": "deno check build.ts bin.ts install.ts pack.ts release.ts nightly.ts preview.ts fmt.ts fmt_config.ts config_files.ts",
+    "test": "deno test --allow-read --allow-write --allow-env=PATH --allow-run=bash --allow-net=127.0.0.1 release_test.ts pack_test.ts workflow_test.ts nightly_test.ts preview_test.ts config_files_test.ts fmt_config_test.ts"
   }
 }

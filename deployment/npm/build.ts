@@ -3,6 +3,7 @@ import $ from "@david/dax";
 import { parseArgs } from "@std/cli/parse-args";
 // @ts-types="@types/decompress"
 import decompress from "decompress";
+import { defaultRemoteConfigUrl as fmtDefaultConfig } from "./fmt_config.ts";
 import { fmtPackage, mainPackage, platformDir, platformPackage, scope } from "./names.ts";
 import { orderedName, packedFilename } from "./pack.ts";
 import targets from "./targets.json" with { type: "json" };
@@ -37,9 +38,6 @@ const allPackages: Package[] = targets.targets.map((target) => {
   if (target.pkg !== pkg) throw new Error(`Npm target ${target.pkg} must be named ${pkg}`);
   return { zipFileName: target.zipFileName, os, cpu, libc };
 });
-
-// fmt.ts's configuration without one
-const fmtDefaultConfig = "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json";
 
 const mainReadme = (repositoryUrl: string) =>
   `# ${mainPackage}
@@ -217,11 +215,18 @@ await $`mkdir -p ${dprintDir} ${scopeDir}`;
   $.logStep(`Setting up ${fmtPackage} ${npmVersion}...`);
   await $`mkdir -p ${fmtDir}`;
   await $`deno bundle --platform=deno --format=cjs --output=${fmtDir.join("fmt.cjs")} ${currentDir.join("fmt.ts")}`;
+  currentDir.join("default-config/kprint.toml").copyFileSync(fmtDir.join("kprint.toml"));
   fmtDir.join("package.json").writeJsonPrettySync({
     name: fmtPackage,
     version: npmVersion,
     description: `Runs \`kprint fmt\` (${mainPackage}) as \`fmt\` or \`kfmt\`, with kjanat's configuration by default.`,
     bin: { fmt: "fmt.cjs", kfmt: "fmt.cjs" },
+    files: ["fmt.cjs", "kprint.toml"],
+    /**
+     * The native executable needs a filesystem path to the bundled configuration under Yarn PnP.
+     * @see {@link https://yarnpkg.com/configuration/manifest#preferUnplugged}
+     */
+    preferUnplugged: true,
     repository: { type: "git", url: `git+${repositoryUrl}.git` },
     keywords: ["dprint", "formatter", "format", "fmt"],
     author: "Kaj Kowalski",
@@ -241,9 +246,12 @@ npx ${fmtPackage}            # format the files of the configuration
 npx ${fmtPackage} src/a.ts   # or only these
 \`\`\`
 
-Without a configuration, which is no \`--config\` and no \`dprint.json\`,
-\`dprint.jsonc\`, \`dprint.toml\` (or a dotted one) in the directory or its
-ancestors, it formats with [kjanat's](${fmtDefaultConfig}).
+Without a configuration — no \`--config\` and no \`kprint.toml\`, \`kprint.json\`,
+\`dprint.toml\`, \`dprint.json\` (or a dotted or \`.config/\` one) in the
+directory or its ancestors — it formats with the package's bundled
+\`kprint.toml\`. That file extends [kjanat's shared configuration](${fmtDefaultConfig})
+and sets \`exec.playWithFire = true\` so the remote configuration's exec
+commands (for example \`rustfmt\`) can run.
 
 Install ${mainPackage} for the other commands (\`kprint check\`, \`kprint init\`, ...).
 `);
