@@ -8245,513 +8245,6 @@
         }
       ]
     },
-    "plugin:exec": {
-      "$id": "dprint-built-in:/exec/schema.json",
-      "$defs": {
-        "dprint-override": {
-          "type": "object",
-          "minProperties": 2,
-          "required": [
-            "files"
-          ],
-          "properties": {
-            "files": {
-              "description": "File patterns this override applies to.",
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "array",
-                  "minItems": 1,
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              ]
-            },
-            "embedded": {
-              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
-              "type": [
-                "null",
-                "object"
-              ],
-              "additionalProperties": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "lineWidth": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/lineWidth"
-            },
-            "indentWidth": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/indentWidth"
-            },
-            "useTabs": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/useTabs"
-            },
-            "cacheKey": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/cacheKey"
-            },
-            "cwd": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/cwd"
-            },
-            "timeout": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/timeout"
-            },
-            "setupTimeout": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/setupTimeout"
-            },
-            "playWithFire": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/playWithFire"
-            },
-            "commands": {
-              "$ref": "dprint-built-in:/exec/schema.json#/properties/commands"
-            }
-          },
-          "allOf": [
-            {
-              "properties": {
-                "files": true,
-                "embedded": true,
-                "lineWidth": true,
-                "indentWidth": true,
-                "useTabs": true,
-                "cacheKey": true,
-                "cwd": true,
-                "timeout": true,
-                "setupTimeout": true,
-                "playWithFire": true,
-                "commands": true
-              },
-              "additionalProperties": false
-            }
-          ]
-        }
-      },
-      "title": "ExecConfigInput",
-      "description": "The exec plugin built into dprint, which formats files with external commands.",
-      "type": "object",
-      "properties": {
-        "lineWidth": {
-          "description": "The width of a line the formatter will try to stay under. Available to commands as {{line_width}}.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "indentWidth": {
-          "description": "The number of spaces for an indent. Available to commands as {{indent_width}}.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 255
-        },
-        "useTabs": {
-          "description": "Whether to use tabs (true) or spaces (false). Available to commands as {{use_tabs}}.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "cacheKey": {
-          "description": "Change this to invalidate the incremental cache, ex. when a command's version changes.",
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "cwd": {
-          "description": "The working directory to run the commands in. Defaults to the current working directory.",
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "timeout": {
-          "description": "Seconds a command may take to format a file before it's killed and the format fails.",
-          "default": 30,
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "setupTimeout": {
-          "description": "Seconds a setup command may run before it's killed. A setup command that times out isn't run again for the other files.",
-          "default": 300,
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "playWithFire": {
-          "description": "Allows the exec commands of remote configuration (ex. an `extends` url) to run. `true` allows any program, or list the programs their commands and setup commands may run. Only a local configuration file can allow it.\n\ndprint reads this when it combines the configuration files (see\n`remote_exec.rs`), before the configuration gets to the plugin.",
-          "default": false,
-          "anyOf": [
-            {
-              "description": "Whether the exec commands of remote configuration may run: any program, or the listed ones.",
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "commands": {
-          "description": "Commands to format with.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$comment": "A command needs a non-empty exts, fileNames or associations. Each alternative allows other properties, as tombi's strict mode otherwise treats it as allowing none.",
-            "description": "A command to format files with.",
-            "type": "object",
-            "required": [
-              "command"
-            ],
-            "properties": {
-              "command": {
-                "description": "The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments and environment values may use {{file_path}}, {{file_path_with_ext}}, {{ext}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.",
-                "anyOf": [
-                  {
-                    "description": "The program and its arguments, separated by spaces. A part in double quotes may contain spaces.",
-                    "type": "string"
-                  },
-                  {
-                    "description": "The program and its arguments, each passed as is.",
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  {
-                    "description": "The program, its arguments and its environment variables.",
-                    "type": "object",
-                    "required": [
-                      "executable"
-                    ],
-                    "properties": {
-                      "executable": {
-                        "description": "The program to run.",
-                        "type": "string"
-                      },
-                      "args": {
-                        "description": "The program's arguments, each passed as is.",
-                        "type": [
-                          "array",
-                          "null"
-                        ],
-                        "items": {
-                          "type": "string"
-                        }
-                      },
-                      "env": {
-                        "description": "Environment variables to set for the program, over the ones dprint runs with.",
-                        "type": [
-                          "null",
-                          "object"
-                        ],
-                        "additionalProperties": {
-                          "type": "string"
-                        }
-                      }
-                    },
-                    "additionalProperties": false
-                  }
-                ]
-              },
-              "exts": {
-                "description": "File extensions to format with this command, matched case-insensitively.",
-                "anyOf": [
-                  {
-                    "description": "One or more.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "fileNames": {
-                "description": "File names to format with this command, matched case-insensitively, ex. for files without an extension.",
-                "anyOf": [
-                  {
-                    "description": "One or more.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "associations": {
-                "description": "A glob of the file paths to format with this command. Prefer \"exts\" when possible.",
-                "anyOf": [
-                  {
-                    "description": "A glob, or one in an array (more than one isn't implemented, which\nresolving the configuration says).",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "array",
-                        "maxItems": 1,
-                        "items": {
-                          "type": "string"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "stdin": {
-                "description": "Whether to pass the file text to the command on stdin.",
-                "default": true,
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              },
-              "cwd": {
-                "description": "The working directory to run this command in.",
-                "type": [
-                  "null",
-                  "string"
-                ]
-              },
-              "cacheKeyFiles": {
-                "description": "Files whose contents invalidate the incremental cache when they change, ex. the command's own configuration file.",
-                "type": [
-                  "array",
-                  "null"
-                ],
-                "items": {
-                  "type": "string"
-                }
-              },
-              "setupCommand": {
-                "description": "A command to run once before this command formats its first file, ex. to install it. It's killed after \"setupTimeout\" seconds.",
-                "anyOf": [
-                  {
-                    "anyOf": [
-                      {
-                        "description": "The program and its arguments, separated by spaces. A part in double quotes may contain spaces.",
-                        "type": "string"
-                      },
-                      {
-                        "description": "The program and its arguments, each passed as is.",
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                          "type": "string"
-                        }
-                      },
-                      {
-                        "description": "The program, its arguments and its environment variables.",
-                        "type": "object",
-                        "required": [
-                          "executable"
-                        ],
-                        "properties": {
-                          "executable": {
-                            "description": "The program to run.",
-                            "type": "string"
-                          },
-                          "args": {
-                            "description": "The program's arguments, each passed as is.",
-                            "type": [
-                              "array",
-                              "null"
-                            ],
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "env": {
-                            "description": "Environment variables to set for the program, over the ones dprint runs with.",
-                            "type": [
-                              "null",
-                              "object"
-                            ],
-                            "additionalProperties": {
-                              "type": "string"
-                            }
-                          }
-                        },
-                        "additionalProperties": false
-                      }
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "serve": {
-                "description": "Keeps the command running and sends it every file on stdin, one JSON line each: {\"path\", \"text\", \"lineWidth\", \"indentWidth\", \"useTabs\"}. It answers each with one line on stdout: {\"text\"} with the formatted text, or {\"error\"} with why the file can't be formatted. Its arguments and environment values can't use {{file_path}}, {{file_path_with_ext}}, or {{ext}}.",
-                "default": false,
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              },
-              "workers": {
-                "description": "How many processes of a served command format files at once.",
-                "default": 1,
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "minimum": 1
-              }
-            },
-            "additionalProperties": false,
-            "anyOf": [
-              {
-                "required": [
-                  "exts"
-                ],
-                "properties": {
-                  "exts": {
-                    "minItems": 1
-                  }
-                },
-                "additionalProperties": true
-              },
-              {
-                "required": [
-                  "fileNames"
-                ],
-                "properties": {
-                  "fileNames": {
-                    "minItems": 1
-                  }
-                },
-                "additionalProperties": true
-              },
-              {
-                "required": [
-                  "associations"
-                ],
-                "properties": {
-                  "associations": {
-                    "minItems": 1
-                  }
-                },
-                "additionalProperties": true
-              }
-            ]
-          }
-        },
-        "locked": {
-          "description": "Whether this plugin configuration is locked against overrides from extending configurations.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "associations": {
-          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
-          "anyOf": [
-            {
-              "description": "File patterns, one or more.",
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "overrides": {
-          "description": "Plugin configuration overrides for specific file patterns.",
-          "anyOf": [
-            {
-              "description": "Overrides of a plugin's configuration, one or more.",
-              "anyOf": [
-                {
-                  "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "embedded": {
-          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
-          "type": [
-            "null",
-            "object"
-          ],
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "additionalProperties": false
-    },
     "plugin:malva": {
       "$id": "https://plugins.dprint.dev/g-plane/malva/v0.16.1/schema.json",
       "$defs": {
@@ -10580,6 +10073,513 @@
           "CMD   [ \"node\" ,\"dist/server.js\" ]"
         ]
       }
+    },
+    "plugin:exec": {
+      "$id": "dprint-built-in:/exec/schema.json",
+      "$defs": {
+        "dprint-override": {
+          "type": "object",
+          "minProperties": 2,
+          "required": [
+            "files"
+          ],
+          "properties": {
+            "files": {
+              "description": "File patterns this override applies to.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "lineWidth": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/lineWidth"
+            },
+            "indentWidth": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/indentWidth"
+            },
+            "useTabs": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/useTabs"
+            },
+            "cacheKey": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/cacheKey"
+            },
+            "cwd": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/cwd"
+            },
+            "timeout": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/timeout"
+            },
+            "setupTimeout": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/setupTimeout"
+            },
+            "playWithFire": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/playWithFire"
+            },
+            "commands": {
+              "$ref": "dprint-built-in:/exec/schema.json#/properties/commands"
+            }
+          },
+          "allOf": [
+            {
+              "properties": {
+                "files": true,
+                "embedded": true,
+                "lineWidth": true,
+                "indentWidth": true,
+                "useTabs": true,
+                "cacheKey": true,
+                "cwd": true,
+                "timeout": true,
+                "setupTimeout": true,
+                "playWithFire": true,
+                "commands": true
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "title": "ExecConfigInput",
+      "description": "The exec plugin built into dprint, which formats files with external commands.",
+      "type": "object",
+      "properties": {
+        "lineWidth": {
+          "description": "The width of a line the formatter will try to stay under. Available to commands as {{line_width}}.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "indentWidth": {
+          "description": "The number of spaces for an indent. Available to commands as {{indent_width}}.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "useTabs": {
+          "description": "Whether to use tabs (true) or spaces (false). Available to commands as {{use_tabs}}.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "cacheKey": {
+          "description": "Change this to invalidate the incremental cache, ex. when a command's version changes.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "cwd": {
+          "description": "The working directory to run the commands in. Defaults to the current working directory.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "timeout": {
+          "description": "Seconds a command may take to format a file before it's killed and the format fails.",
+          "default": 30,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "setupTimeout": {
+          "description": "Seconds a setup command may run before it's killed. A setup command that times out isn't run again for the other files.",
+          "default": 300,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "playWithFire": {
+          "description": "Allows the exec commands of remote configuration (ex. an `extends` url) to run. `true` allows any program, or list the programs their commands and setup commands may run. Only a local configuration file can allow it.\n\ndprint reads this when it combines the configuration files (see\n`remote_exec.rs`), before the configuration gets to the plugin.",
+          "default": false,
+          "anyOf": [
+            {
+              "description": "Whether the exec commands of remote configuration may run: any program, or the listed ones.",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commands": {
+          "description": "Commands to format with.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$comment": "A command needs a non-empty exts, fileNames or associations. Each alternative allows other properties, as tombi's strict mode otherwise treats it as allowing none.",
+            "description": "A command to format files with.",
+            "type": "object",
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "description": "The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments and environment values may use {{file_path}}, {{file_path_with_ext}}, {{ext}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.",
+                "anyOf": [
+                  {
+                    "description": "The program and its arguments, separated by spaces. A part in double quotes may contain spaces.",
+                    "type": "string"
+                  },
+                  {
+                    "description": "The program and its arguments, each passed as is.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "description": "The program, its arguments and its environment variables.",
+                    "type": "object",
+                    "required": [
+                      "executable"
+                    ],
+                    "properties": {
+                      "executable": {
+                        "description": "The program to run.",
+                        "type": "string"
+                      },
+                      "args": {
+                        "description": "The program's arguments, each passed as is.",
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "env": {
+                        "description": "Environment variables to set for the program, over the ones dprint runs with.",
+                        "type": [
+                          "null",
+                          "object"
+                        ],
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "exts": {
+                "description": "File extensions to format with this command, matched case-insensitively.",
+                "anyOf": [
+                  {
+                    "description": "One or more.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fileNames": {
+                "description": "File names to format with this command, matched case-insensitively, ex. for files without an extension.",
+                "anyOf": [
+                  {
+                    "description": "One or more.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "associations": {
+                "description": "A glob of the file paths to format with this command. Prefer \"exts\" when possible.",
+                "anyOf": [
+                  {
+                    "description": "A glob, or one in an array (more than one isn't implemented, which\nresolving the configuration says).",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "maxItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stdin": {
+                "description": "Whether to pass the file text to the command on stdin.",
+                "default": true,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "cwd": {
+                "description": "The working directory to run this command in.",
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "cacheKeyFiles": {
+                "description": "Files whose contents invalidate the incremental cache when they change, ex. the command's own configuration file.",
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "setupCommand": {
+                "description": "A command to run once before this command formats its first file, ex. to install it. It's killed after \"setupTimeout\" seconds.",
+                "anyOf": [
+                  {
+                    "anyOf": [
+                      {
+                        "description": "The program and its arguments, separated by spaces. A part in double quotes may contain spaces.",
+                        "type": "string"
+                      },
+                      {
+                        "description": "The program and its arguments, each passed as is.",
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "description": "The program, its arguments and its environment variables.",
+                        "type": "object",
+                        "required": [
+                          "executable"
+                        ],
+                        "properties": {
+                          "executable": {
+                            "description": "The program to run.",
+                            "type": "string"
+                          },
+                          "args": {
+                            "description": "The program's arguments, each passed as is.",
+                            "type": [
+                              "array",
+                              "null"
+                            ],
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "env": {
+                            "description": "Environment variables to set for the program, over the ones dprint runs with.",
+                            "type": [
+                              "null",
+                              "object"
+                            ],
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "serve": {
+                "description": "Keeps the command running and sends it every file on stdin, one JSON line each: {\"path\", \"text\", \"lineWidth\", \"indentWidth\", \"useTabs\"}. It answers each with one line on stdout: {\"text\"} with the formatted text, or {\"error\"} with why the file can't be formatted. Its arguments and environment values can't use {{file_path}}, {{file_path_with_ext}}, or {{ext}}.",
+                "default": false,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "workers": {
+                "description": "How many processes of a served command format files at once.",
+                "default": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false,
+            "anyOf": [
+              {
+                "required": [
+                  "exts"
+                ],
+                "properties": {
+                  "exts": {
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": true
+              },
+              {
+                "required": [
+                  "fileNames"
+                ],
+                "properties": {
+                  "fileNames": {
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": true
+              },
+              {
+                "required": [
+                  "associations"
+                ],
+                "properties": {
+                  "associations": {
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": true
+              }
+            ]
+          }
+        },
+        "locked": {
+          "description": "Whether this plugin configuration is locked against overrides from extending configurations.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "associations": {
+          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
+          "anyOf": [
+            {
+              "description": "File patterns, one or more.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "description": "Plugin configuration overrides for specific file patterns.",
+          "anyOf": [
+            {
+              "description": "Overrides of a plugin's configuration, one or more.",
+              "anyOf": [
+                {
+                  "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "additionalProperties": false
     }
   },
   "title": "dprint configuration file",
@@ -11434,81 +11434,6 @@
         }
       ]
     },
-    "exec": {
-      "description": "The configuration of the exec plugin.",
-      "type": "object",
-      "properties": {
-        "locked": {
-          "description": "Whether this plugin configuration is locked against overrides from extending configurations.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "associations": {
-          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
-          "anyOf": [
-            {
-              "description": "File patterns, one or more.",
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "overrides": {
-          "description": "Plugin configuration overrides for specific file patterns.",
-          "anyOf": [
-            {
-              "description": "Overrides of a plugin's configuration, one or more.",
-              "anyOf": [
-                {
-                  "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "embedded": {
-          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
-          "type": [
-            "null",
-            "object"
-          ],
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "allOf": [
-        {
-          "$ref": "dprint-built-in:/exec/schema.json"
-        }
-      ]
-    },
     "malva": {
       "description": "The configuration of the malva plugin.",
       "type": "object",
@@ -11806,6 +11731,81 @@
       "allOf": [
         {
           "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-dockerfile/0.8.0/schema.json"
+        }
+      ]
+    },
+    "exec": {
+      "description": "The configuration of the exec plugin.",
+      "type": "object",
+      "properties": {
+        "locked": {
+          "description": "Whether this plugin configuration is locked against overrides from extending configurations.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "associations": {
+          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
+          "anyOf": [
+            {
+              "description": "File patterns, one or more.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "description": "Plugin configuration overrides for specific file patterns.",
+          "anyOf": [
+            {
+              "description": "Overrides of a plugin's configuration, one or more.",
+              "anyOf": [
+                {
+                  "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "dprint-built-in:/exec/schema.json#/$defs/dprint-override"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "dprint-built-in:/exec/schema.json"
         }
       ]
     }
