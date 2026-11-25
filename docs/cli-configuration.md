@@ -23,7 +23,7 @@ Line numbers are 1-based and ranges include both endpoints:
 ```sh
 kprint fmt src/main.ts --lines 10-20
 kprint fmt --lines src/main.ts:10-20,35-40 --lines src/other.ts:5
-kprint fmt --stdin main.ts --lines 10-20 < src/main.ts
+kprint fmt --stdin main.ts --lines 10-20 <src/main.ts
 ```
 
 A range without a path requires a single input file or `--stdin`. With `--stdin-files`, put the range after the path on its input line, such as `src/main.ts:10-20`. Overlapping ranges are combined and processed from the end of the file to keep earlier line positions stable. Range formatting bypasses the incremental cache. Plugins decide the formatting extent; plugins without range support may format the whole file.

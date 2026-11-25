@@ -104,10 +104,10 @@ With `core.ignoreCase=true`, the pattern `A` matches both `A` and `a`, but
 
 ```sh
 git init -q repro && cd repro
-printf '[A]\n' > .gitignore
+printf '[A]\n' >.gitignore
 git -c core.ignoreCase=true check-ignore --no-index -v -n -- A a
 # both paths are reported as not ignored
-printf 'A\n' > .gitignore
+printf 'A\n' >.gitignore
 git -c core.ignoreCase=true check-ignore --no-index -v -n -- A a
 # both paths are ignored by .gitignore:1:A
 ```

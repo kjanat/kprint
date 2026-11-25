@@ -5,6 +5,9 @@ edition.workspace    = true
 repository.workspace = true
 license.workspace    = true
 
+[features]
+test-support = []
+
 [dependencies]
 kprint-async-runtime  = { workspace = true }
 kprint-communication  = { workspace = true }
@@ -72,6 +75,3 @@ wasmtime = { workspace = true, features = [
   "runtime",
   "std"
 ] }
-
-[features]
-test-support = []

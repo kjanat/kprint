@@ -10,6 +10,10 @@ license     = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+default       = []
+async_runtime = ["dep:kprint-async-runtime", "dep:tokio", "dep:tokio-util"]
+
 [dependencies]
 kprint-async-runtime = { workspace = true, optional = true }
 kprint-configuration = { workspace = true }
@@ -18,7 +22,3 @@ serde_json           = { workspace = true }
 thiserror            = { workspace = true }
 tokio                = { workspace = true, optional = true }
 tokio-util           = { workspace = true, optional = true }
-
-[features]
-default       = []
-async_runtime = ["dep:kprint-async-runtime", "dep:tokio", "dep:tokio-util"]

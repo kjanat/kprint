@@ -14,6 +14,11 @@ publish     = false
 [package.metadata]
 schema-id = "https://dprint.kjanat.dev/schemas/v0.json"
 
+[features]
+default = ["schema"]
+# the JSON schema of the model, and composing the plugins' schemas into it
+schema  = []
+
 [dependencies]
 kprint-host-api      = { workspace = true }
 kprint-plugin-types  = { workspace = true }
@@ -40,8 +45,3 @@ boon                = { workspace = true }
 kprint-test-support = { workspace = true }
 pretty_assertions   = { workspace = true }
 tempfile            = { workspace = true }
-
-[features]
-default = ["schema"]
-# the JSON schema of the model, and composing the plugins' schemas into it
-schema  = []

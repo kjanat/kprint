@@ -5,8 +5,6 @@ authors    = ["Kaj Kowalski <info@kajkowalski.nl>", "David Sherret <dsherret@gma
 edition    = "2024"
 repository = "https://github.com/kjanat/kprint"
 
-[workspace]
-
 [lib]
 crate-type = ["cdylib", "lib"]
 
@@ -14,3 +12,5 @@ crate-type = ["cdylib", "lib"]
 kprint-core = { path = "../kprint-core", features = ["wasm"] }
 serde       = { version = "1.0.137", features = ["derive"] }
 serde_json  = { version = "1.0", features = ["preserve_order"] }
+
+[workspace]

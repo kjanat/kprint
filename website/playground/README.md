@@ -3,7 +3,7 @@
 Code for the playground.
 
 ```sh
-deno task build   # bundles into dist/
+deno task build # bundles into dist/
 deno task check
 deno task test
 ```

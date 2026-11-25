@@ -10,13 +10,13 @@ license     = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+default = []
+tracing = []
+
 [dependencies]
 bumpalo       = { workspace = true, features = ["allocator-api2", "collections"] }
 hashbrown     = { workspace = true }
 rustc-hash    = { workspace = true }
 serde         = { workspace = true }
 unicode-width = { workspace = true }
-
-[features]
-default = []
-tracing = []
