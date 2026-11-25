@@ -21,7 +21,7 @@ function withProject(test: (root: string, fromFile: string) => void) {
 
 Deno.test("the source kprint.toml extends the shared remote configuration and allows remote exec", () => {
   const text = readFileSync(sourceConfig, "utf8");
-  match(text, new RegExp(`^extends = "${defaultRemoteConfigUrl.replaceAll("/", "\\/")}"$`, "m"));
+  ok(text.split(/\r?\n/).includes(`extends = ["${defaultRemoteConfigUrl}"]`), "expected the shared remote configuration in extends");
   match(text, /^\[exec\]$/m);
   match(text, /^playWithFire = true$/m);
 });

@@ -222,6 +222,8 @@ await $`mkdir -p ${dprintDir} ${scopeDir}`;
     description: `Runs \`kprint fmt\` (${mainPackage}) as \`fmt\` or \`kfmt\`, with kjanat's configuration by default.`,
     bin: { fmt: "fmt.cjs", kfmt: "fmt.cjs" },
     files: ["fmt.cjs", "kprint.toml"],
+    // The native executable needs a filesystem path to the bundled configuration under Yarn PnP.
+    preferUnplugged: true,
     repository: { type: "git", url: `git+${repositoryUrl}.git` },
     keywords: ["dprint", "formatter", "format", "fmt"],
     author: "Kaj Kowalski",
