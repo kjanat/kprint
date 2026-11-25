@@ -2,13 +2,20 @@
 
 ## [Unreleased]
 
+## [0.65.0] (2026-11-26)
+
 ### Added
 
-- The language server formats notebook cells and untitled documents. Editor integrations can request approval before running external formatters or accessing resources that require workspace trust.
+- The language server formats notebook cells and untitled documents. Editor integrations can request approval before running external formatters or accessing resources that require workspace trust. [#108](https://github.com/kjanat/kprint/pull/108)
 
 ### Changed
 
-- Interactive `kprint config update` lets users choose plugin and versioned npm configuration updates.
+- `kprint config update` updates versioned npm packages in `extends` as well as plugins. In an interactive terminal, you can choose which updates to apply. kprint validates the selected updates together before writing the configuration. [#108](https://github.com/kjanat/kprint/pull/108)
+- `@kjanat/fmt` uses a bundled `kprint.toml` when no project configuration is found, so external formatters in its shared default configuration can run. [#107](https://github.com/kjanat/kprint/pull/107)
+
+### Fixed
+
+- File discovery honors `info/exclude` in linked Git worktrees and submodules by finding the repository's Git common directory. [#108](https://github.com/kjanat/kprint/pull/108)
 
 ## [0.64.1] (2026-11-18)
 
@@ -178,7 +185,8 @@
 - kprint re-checks a cached remote configuration file after an hour, or after an immutable response's `max-age`. When the check fails, it uses the cached copy.
 - Shell completions complete option values. `--excludes`, `--excludes-override`, `--includes-override` and `--plugins` can repeat, and a bare `--config-discovery` uses the default mode.
 
-[Unreleased]: https://github.com/kjanat/kprint/compare/0.64.1...HEAD
+[Unreleased]: https://github.com/kjanat/kprint/compare/0.65.0...HEAD
+[0.65.0]: https://github.com/kjanat/kprint/compare/0.64.1...0.65.0
 [0.64.1]: https://github.com/kjanat/kprint/compare/0.64.0...0.64.1
 [0.64.0]: https://github.com/kjanat/kprint/compare/0.63.0...0.64.0
 [0.63.0]: https://github.com/kjanat/kprint/compare/0.62.0...0.63.0
