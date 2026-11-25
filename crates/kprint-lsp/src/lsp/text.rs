@@ -66,8 +66,7 @@ impl LineIndex {
         utf16_offsets.push(curr_offset_u16);
 
         if !utf16_chars.is_empty() {
-          utf16_lines.insert(line, utf16_chars);
-          utf16_chars = Vec::new();
+          utf16_lines.insert(line, std::mem::take(&mut utf16_chars));
         }
 
         curr_col = 0.into();

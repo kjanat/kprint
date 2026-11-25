@@ -4060,9 +4060,13 @@ Created {}",
     // Test updating the plugin in the global config
     run_test_cli(vec!["config", "update", "--global"], &environment).unwrap();
 
+    let config_path = Path::new("/config/dprint").join("dprint.json");
     assert_eq!(
       environment.take_stderr_messages(),
-      ["Select updates for /config/dprint/dprint.json:", "Updating test-plugin 0.1.0 to 0.2.0..."]
+      [
+        format!("Select updates for {}:", config_path.display()),
+        "Updating test-plugin 0.1.0 to 0.2.0...".to_string(),
+      ]
     );
 
     let expected_text = format!(
@@ -6926,7 +6930,10 @@ text",
         .any(|m| m.contains("Failed resolving the npm package for test-plugin. Keeping its url.")),
       "got: {stderr:?}"
     );
-    assert!(stderr.contains(&"Updating test-plugin 0.1.0 to 0.2.0...".to_string()), "got: {stderr:?}");
+    assert!(
+      stderr.iter().any(|message| message == "Updating test-plugin 0.1.0 to 0.2.0..."),
+      "got: {stderr:?}"
+    );
   }
 
   #[test]
