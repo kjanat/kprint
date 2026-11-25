@@ -99,6 +99,14 @@ impl InterpretedModule {
     match self.version {
       PluginSchemaVersion::V3 => add_v3_imports(&mut linker)?,
       PluginSchemaVersion::V4 => add_v4_imports(&mut linker)?,
+      PluginSchemaVersion::V5 => {
+        add_v4_imports(&mut linker)?;
+        linker.func_wrap(
+          "dprint",
+          "host_format_language",
+          |_: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32| -> u32 { 0 },
+        )?;
+      }
     }
     super::instance::wasi::interpreted::add_wasi_imports(&mut linker)?;
     super::instance::wasi::interpreted::add_unsupported_wasi_imports(&mut linker, &mut store, &self.module)?;

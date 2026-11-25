@@ -169,7 +169,7 @@ pub fn host_format(state: &mut ImportObjectEnvironmentV3) -> Result<u32, String>
   };
   // todo: worth it to use a oneshot channel library here?
   let (tx, rx) = std::sync::mpsc::channel();
-  let result = match state.host_format_sender.send((request, tx)) {
+  let result = match state.host_format_sender.send((super::WasmHostRequest::Path(request), tx)) {
     Ok(()) => match rx.recv() {
       Ok(result) => result,
       Err(_) => Ok(None), // receive error

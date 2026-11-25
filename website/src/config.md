@@ -498,6 +498,17 @@ Some plugins format code embedded in a file by handing it back to kprint, ex. th
 - An override's `"embedded"` applies to the code in the files the override matches. The last matching override that names the code's file extension wins, otherwise the plugin's own `"embedded"` does.
 - `"extends"` merges `"embedded"` by file extension, with the extending config's entries taking precedence.
 
+A plugin can send a language label such as `typescript` or `bash` directly. kprint
+uses the label to choose a filename and a formatter already configured for the
+outer file. The label and its compatible extensions can be used as keys in
+`"embedded"`, subject to the same spelling rules as extension keys. In the last
+matching outer-file override, the label takes precedence over its extensions.
+An empty list at the winning key preserves the embedded code.
+
+When an extension is shared by several languages, a filename alone may be
+insufficient to identify a formatter. Use an explicit `"embedded"` entry to select
+one. Shell dialect labels such as `bash` and `zsh` select their own dialect.
+
 ### Shell examples and placeholders
 
 A shell formatter treats `<dialect>` as shell redirection syntax. For example,

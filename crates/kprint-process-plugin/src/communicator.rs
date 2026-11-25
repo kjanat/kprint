@@ -19,6 +19,7 @@ use super::PLUGIN_SCHEMA_VERSION;
 use super::messages::CheckConfigUpdatesMessageBody;
 use super::messages::CheckConfigUpdatesResponseBody;
 use super::messages::FormatMessageBody;
+use super::messages::HostFormatLanguageMessageBody;
 use super::messages::HostFormatMessageBody;
 use super::messages::MessageBody;
 use super::messages::ProcessPluginMessage;
@@ -109,6 +110,8 @@ impl From<CommunicatorError> for FormatError {
   }
 }
 
+use kprint_plugin_types::EmbeddedLanguageFormatCallback;
+use kprint_plugin_types::EmbeddedLanguageFormatRequest;
 pub use kprint_plugin_types::HostFormatCallback;
 
 pub struct ProcessPluginCommunicatorFormatRequest {
@@ -128,12 +131,14 @@ enum MessageResponseChannel {
 }
 
 struct Context {
+  schema_version: u32,
   stdin_writer: SingleThreadMessageWriter<ProcessPluginMessage>,
   shutdown_flag: Arc<AtomicFlag>,
   id_generator: IdGenerator,
   messages: RcIdStore<MessageResponseChannel>,
   format_request_tokens: RcIdStore<Arc<CancellationToken>>,
   host_format_callbacks: RcIdStore<HostFormatCallback>,
+  host_language_callbacks: RcIdStore<EmbeddedLanguageFormatCallback>,
 }
 
 /// Communicates with a process plugin.
@@ -202,7 +207,7 @@ impl ProcessPluginCommunicator {
     })
     .await??;
 
-    if schema_version != PLUGIN_SCHEMA_VERSION {
+    if !(5..=PLUGIN_SCHEMA_VERSION).contains(&schema_version) {
       // kill the child to prevent it from ouputting to stderr
       let _ = child.kill();
       let err = if schema_version < PLUGIN_SCHEMA_VERSION {
@@ -221,12 +226,14 @@ impl ProcessPluginCommunicator {
 
     let stdin_writer = SingleThreadMessageWriter::for_stdin(stdin_writer);
     let context = Rc::new(Context {
+      schema_version,
       id_generator: Default::default(),
       shutdown_flag,
       stdin_writer,
       messages: Default::default(),
       format_request_tokens: Default::default(),
       host_format_callbacks: Default::default(),
+      host_language_callbacks: Default::default(),
     });
 
     // read from stdout
@@ -356,10 +363,15 @@ impl ProcessPluginCommunicator {
   }
 
   pub async fn format_text(&self, request: ProcessPluginCommunicatorFormatRequest) -> FormatResult {
+    self.format_text_with_language(request, Rc::new(|_| Box::pin(async { Ok(None) }))).await
+  }
+
+  pub async fn format_text_with_language(&self, request: ProcessPluginCommunicatorFormatRequest, callback: EmbeddedLanguageFormatCallback) -> FormatResult {
     let (tx, rx) = oneshot::channel::<Result<Option<Vec<u8>>>>();
 
     let message_id = self.context.id_generator.next();
     let store_guard = self.context.host_format_callbacks.store_with_guard(message_id, request.on_host_format);
+    let language_guard = self.context.host_language_callbacks.store_with_guard(message_id, callback);
     let maybe_result = self
       .send_message_with_id(
         message_id,
@@ -377,6 +389,7 @@ impl ProcessPluginCommunicator {
       .await;
 
     drop(store_guard); // explicit for clarity
+    drop(language_guard);
 
     if request.token.is_cancelled() {
       Ok(None)
@@ -556,6 +569,7 @@ fn handle_stdout_message(message: ProcessPluginMessage, context: &Rc<Context>) -
         token.cancel();
       }
       context.host_format_callbacks.take(message_id);
+      context.host_language_callbacks.take(message_id);
       // do not clear from context.messages here because the cancellation will do that
     }
     MessageBody::HostFormat(body) => {
@@ -574,6 +588,25 @@ fn handle_stdout_message(message: ProcessPluginMessage, context: &Rc<Context>) -
               message_id: message.id,
               data: result,
             }),
+            Err(err) => MessageBody::Error(ResponseBody {
+              message_id: message.id,
+              data: error_to_string(&err).into_bytes(),
+            }),
+          },
+        });
+      });
+    }
+    MessageBody::HostFormatLanguage(body) => {
+      if context.schema_version < 6 {
+        return Err(CommunicatorError::UnknownMessageKind(17).into());
+      }
+      let context = context.clone();
+      kprint_async_runtime::spawn(async move {
+        let result = host_format_language(context.clone(), message.id, body).await;
+        let _ignore = context.stdin_writer.send(ProcessPluginMessage {
+          id: context.id_generator.next(),
+          body: match result {
+            Ok(data) => MessageBody::FormatResponse(ResponseBody { message_id: message.id, data }),
             Err(err) => MessageBody::Error(ResponseBody {
               message_id: message.id,
               data: error_to_string(&err).into_bytes(),
@@ -633,5 +666,24 @@ async fn host_format(context: Rc<Context>, message_id: u32, body: HostFormatMess
   })
   .await;
   drop(store_guard); // explicit for clarity
+  result
+}
+
+async fn host_format_language(context: Rc<Context>, message_id: u32, body: HostFormatLanguageMessageBody) -> FormatResult {
+  let Some(callback) = context.host_language_callbacks.get_cloned(body.original_message_id) else {
+    return Err(CommunicatorError::HostFormatCallbackNotFound(body.original_message_id).into());
+  };
+  let token = Arc::new(CancellationToken::new());
+  let guard = context.format_request_tokens.store_with_guard(message_id, token.clone());
+  let override_config = serde_json::from_slice(&body.override_config).map_err(FormatError::new)?;
+  let result = callback(EmbeddedLanguageFormatRequest {
+    language: body.language,
+    file_bytes: body.file_text,
+    range: body.range,
+    override_config,
+    token,
+  })
+  .await;
+  drop(guard);
   result
 }

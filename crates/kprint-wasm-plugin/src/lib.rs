@@ -15,7 +15,7 @@ pub mod __private {
 
 /// The plugin system schema version that is incremented
 /// when there are any breaking changes.
-pub const PLUGIN_SYSTEM_SCHEMA_VERSION: u32 = 4;
+pub const PLUGIN_SYSTEM_SCHEMA_VERSION: u32 = 5;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 unsafe extern "C" {
@@ -139,6 +139,26 @@ pub mod macros {
       }
 
       fn format_with_host(request: $crate::SyncHostFormatRequest) -> $crate::FormatResult {
+        format_with_host_target(
+          &request.file_path.to_string_lossy(),
+          request.file_bytes,
+          request.range,
+          request.override_config,
+          false,
+        )
+      }
+
+      fn format_language(request: $crate::SyncEmbeddedLanguageFormatRequest) -> $crate::FormatResult {
+        format_with_host_target(request.language, request.file_bytes, request.range, request.override_config, true)
+      }
+
+      fn format_with_host_target(
+        target: &str,
+        file_bytes: &[u8],
+        range: $crate::FormatRange,
+        config: &$crate::__private::configuration::ConfigKeyMap,
+        language: bool,
+      ) -> $crate::FormatResult {
         use std::borrow::Cow;
 
         #[link(wasm_import_module = "dprint")]
@@ -154,29 +174,58 @@ pub mod macros {
             file_text_ptr: *const u8,
             file_text_len: u32,
           ) -> u8;
+          fn host_format_language(
+            target_ptr: *const u8,
+            target_len: u32,
+            range_kind: u32,
+            start: u32,
+            end: u32,
+            config_ptr: *const u8,
+            config_len: u32,
+            bytes_ptr: *const u8,
+            bytes_len: u32,
+          ) -> u8;
           fn host_get_formatted_text() -> u32;
           fn host_get_error_text() -> u32;
         }
 
-        let file_path = request.file_path.to_string_lossy();
-        let override_config = if !request.override_config.is_empty() {
-          Cow::Owned($crate::__private::serde_json::to_string(request.override_config).unwrap())
+        let override_config = if !config.is_empty() {
+          Cow::Owned($crate::__private::serde_json::to_string(config).unwrap())
         } else {
           Cow::Borrowed("")
         };
-        let range = request.range.unwrap_or(0..request.file_bytes.len());
+        let range_kind = u32::from(range.is_some());
+        let range = range.unwrap_or(0..file_bytes.len());
+        let size = |value: usize| u32::try_from(value).map_err(|_| $crate::FormatError::new("Host format input exceeds the Wasm protocol size limit."));
+        if range.start > range.end || range.end > file_bytes.len() {
+          return Err($crate::FormatError::new("Host format range is outside the input."));
+        }
 
         return match unsafe {
-          host_format(
-            file_path.as_ptr(),
-            file_path.len() as u32,
-            range.start as u32,
-            range.end as u32,
-            override_config.as_ptr(),
-            override_config.len() as u32,
-            request.file_bytes.as_ptr(),
-            request.file_bytes.len() as u32,
-          )
+          if language {
+            host_format_language(
+              target.as_ptr(),
+              size(target.len())?,
+              range_kind,
+              size(range.start)?,
+              size(range.end)?,
+              override_config.as_ptr(),
+              size(override_config.len())?,
+              file_bytes.as_ptr(),
+              size(file_bytes.len())?,
+            )
+          } else {
+            host_format(
+              target.as_ptr(),
+              size(target.len())?,
+              size(range.start)?,
+              size(range.end)?,
+              override_config.as_ptr(),
+              size(override_config.len())?,
+              file_bytes.as_ptr(),
+              size(file_bytes.len())?,
+            )
+          }
         } {
           0 => {
             // no change
@@ -265,7 +314,7 @@ pub mod macros {
         let file_bytes = take_from_shared_bytes();
 
         let request = $crate::SyncFormatRequest::<$wasm_plugin_config>::new(&file_path, file_bytes, config_id, &config, range, &HostCancellationToken);
-        let formatted_text = unsafe { WASM_PLUGIN.get().format(request, format_with_host) };
+        let formatted_text = unsafe { WASM_PLUGIN.get().format_with_host_language(request, format_with_host, format_language) };
         match formatted_text {
           Ok(None) => {
             0 // no change
@@ -412,7 +461,7 @@ pub mod macros {
       static SHARED_BYTES: StaticCell<Vec<u8>> = StaticCell::new(Vec::new());
 
       #[unsafe(no_mangle)]
-      pub fn dprint_plugin_version_4() -> u32 {
+      pub fn dprint_plugin_version_5() -> u32 {
         $crate::PLUGIN_SYSTEM_SCHEMA_VERSION
       }
 

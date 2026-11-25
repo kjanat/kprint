@@ -6,6 +6,7 @@
 //! Compatibility facade for dprint's independently usable libraries.
 
 pub use kprint_configuration as configuration;
+pub use kprint_configuration::generate_str_to_from;
 
 #[cfg(feature = "async_runtime")]
 pub use kprint_async_runtime as async_runtime;

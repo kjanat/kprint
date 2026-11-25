@@ -18,6 +18,7 @@ use kprint_plugin_types::FormatResult;
 use kprint_plugin_types::PluginInfo;
 use kprint_plugin_types::PluginResolveConfigurationResult;
 use kprint_process_plugin::AsyncPluginHandler;
+use kprint_process_plugin::EmbeddedLanguageFormatRequest;
 use kprint_process_plugin::FormatRequest;
 use kprint_process_plugin::HostFormatRequest;
 use kprint_process_plugin::get_parent_process_id_from_cli_args;
@@ -62,6 +63,39 @@ impl TestProcessPluginHandler {
 #[async_trait(?Send)]
 impl AsyncPluginHandler for TestProcessPluginHandler {
   type Configuration = Configuration;
+
+  async fn format_with_host_language(
+    &self,
+    request: FormatRequest<Self::Configuration>,
+    format_with_host: impl FnMut(HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> + 'static,
+    mut format_with_host_language: impl FnMut(EmbeddedLanguageFormatRequest) -> LocalBoxFuture<'static, FormatResult> + 'static,
+  ) -> FormatResult {
+    if let Some(language) = request.file_bytes.strip_prefix(b"language-cycle: ") {
+      return format_with_host_language(EmbeddedLanguageFormatRequest {
+        language: String::from_utf8(language.to_vec())?,
+        file_bytes: request.file_bytes.clone(),
+        range: request.range,
+        override_config: Default::default(),
+        token: request.token,
+      })
+      .await;
+    }
+    if let Some(text) = request.file_bytes.strip_prefix(b"language: ") {
+      let Some(index) = text.iter().position(|byte| *byte == b':') else {
+        return Err("Expected language label and text".into());
+      };
+      let (language, text) = text.split_at(index);
+      return format_with_host_language(EmbeddedLanguageFormatRequest {
+        language: String::from_utf8(language.to_vec())?,
+        file_bytes: text[1..].to_vec(),
+        range: request.range,
+        override_config: Default::default(),
+        token: request.token,
+      })
+      .await;
+    }
+    self.format(request, format_with_host).await
+  }
 
   fn plugin_info(&self) -> PluginInfo {
     PluginInfo {

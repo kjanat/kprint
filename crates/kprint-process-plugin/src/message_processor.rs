@@ -10,6 +10,7 @@ use super::context::ProcessContext;
 use super::context::StoredConfig;
 use super::messages::CheckConfigUpdatesMessageBody;
 use super::messages::CheckConfigUpdatesResponseBody;
+use super::messages::HostFormatLanguageMessageBody;
 use super::messages::HostFormatMessageBody;
 use super::messages::MessageBody;
 use super::messages::ProcessPluginMessage;
@@ -26,6 +27,7 @@ use kprint_communication::MessageWriter;
 use kprint_communication::SingleThreadMessageWriter;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::GlobalConfiguration;
+use kprint_plugin_types::EmbeddedLanguageFormatRequest;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatResult;
@@ -236,10 +238,17 @@ pub async fn handle_process_stdio_messages<THandler: AsyncPluginHandler>(handler
           kprint_async_runtime::spawn(async move {
             let original_message_id = message.id;
             let result = handler
-              .format(request, {
-                let context = context.clone();
-                move |request| host_format(&context, original_message_id, request)
-              })
+              .format_with_host_language(
+                request,
+                {
+                  let context = context.clone();
+                  move |request| host_format(&context, original_message_id, request)
+                },
+                {
+                  let context = context.clone();
+                  move |request| host_format_language(&context, original_message_id, request)
+                },
+              )
               .await;
             drop(token_storage_guard);
             if !token.is_cancelled() {
@@ -281,7 +290,7 @@ pub async fn handle_process_stdio_messages<THandler: AsyncPluginHandler>(handler
         MessageBody::Success(_) | MessageBody::DataResponse(_) => {
           // ignore
         }
-        MessageBody::HostFormat(_) => {
+        MessageBody::HostFormat(_) | MessageBody::HostFormatLanguage(_) => {
           send_error_response(&context, message.id, MessageProcessorError::CannotHostFormat.into());
         }
         MessageBody::Unknown(message_kind) => panic!("Received unknown message kind: {}", message_kind),
@@ -297,25 +306,56 @@ fn host_format<TConfiguration: Serialize + Clone + Send + Sync>(
   original_message_id: u32,
   request: HostFormatRequest,
 ) -> LocalBoxFuture<'static, FormatResult> {
+  let body = MessageBody::HostFormat(HostFormatMessageBody {
+    original_message_id,
+    file_path: request.file_path,
+    file_text: request.file_bytes,
+    range: request.range,
+    override_config: serde_json::to_vec(&request.override_config).unwrap(),
+  });
+  send_host_format(context, body, request.token)
+}
+
+fn host_format_language<TConfiguration: Serialize + Clone + Send + Sync>(
+  context: &ProcessContext<TConfiguration>,
+  original_message_id: u32,
+  request: EmbeddedLanguageFormatRequest,
+) -> LocalBoxFuture<'static, FormatResult> {
+  if request.language.is_empty() || request.language.len() > 1024 {
+    return async { Err("Invalid language label length".into()) }.boxed_local();
+  }
+  if request.file_bytes.len() > u32::MAX as usize
+    || request
+      .range
+      .as_ref()
+      .is_some_and(|range| range.start > range.end || range.end > request.file_bytes.len())
+  {
+    return async { Err("Invalid embedded format range or text length".into()) }.boxed_local();
+  }
+  let body = MessageBody::HostFormatLanguage(HostFormatLanguageMessageBody {
+    original_message_id,
+    language: request.language,
+    file_text: request.file_bytes,
+    range: request.range,
+    override_config: serde_json::to_vec(&request.override_config).unwrap(),
+  });
+  send_host_format(context, body, request.token)
+}
+
+fn send_host_format<TConfiguration: Serialize + Clone + Send + Sync>(
+  context: &ProcessContext<TConfiguration>,
+  body: MessageBody,
+  token: Arc<dyn kprint_plugin_types::CancellationToken>,
+) -> LocalBoxFuture<'static, FormatResult> {
   let (tx, rx) = tokio::sync::oneshot::channel::<FormatResult>();
   let id = context.id_generator.next();
   context.format_host_senders.store(id, tx);
 
   context
     .stdout_writer
-    .send(ProcessPluginMessage {
-      id,
-      body: MessageBody::HostFormat(HostFormatMessageBody {
-        original_message_id,
-        file_path: request.file_path,
-        file_text: request.file_bytes,
-        range: request.range,
-        override_config: serde_json::to_vec(&request.override_config).unwrap(),
-      }),
-    })
+    .send(ProcessPluginMessage { id, body })
     .unwrap_or_else(|err| panic!("Error sending host format response: {:#}", err));
 
-  let token = request.token;
   let stdout_writer = context.stdout_writer.clone();
   let id_generator = context.id_generator.clone();
   let original_message_id = id;

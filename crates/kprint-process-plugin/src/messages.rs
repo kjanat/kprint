@@ -37,6 +37,7 @@ mod message_ids {
   pub const FORMAT_RESPONSE_ID: MessageId = 14;
   pub const CANCEL_FORMAT_ID: MessageId = 15;
   pub const HOST_FORMAT_ID: MessageId = 16;
+  pub const HOST_FORMAT_LANGUAGE_ID: MessageId = 17;
 }
 
 #[derive(Debug)]
@@ -141,6 +142,31 @@ impl ProcessPluginMessage {
           },
           file_text,
           override_config,
+        })
+      }
+      message_ids::HOST_FORMAT_LANGUAGE_ID => {
+        let original_message_id = reader.read_u32()?;
+        let length = reader.read_u32()? as usize;
+        if length == 0 || length > 1024 {
+          return Err(std::io::Error::new(ErrorKind::InvalidData, "Invalid language label length"));
+        }
+        let language = String::from_utf8(reader.read_bytes(length)?).map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
+        let range = match reader.read_u32()? {
+          0 => None,
+          1 => Some(reader.read_u32()? as usize..reader.read_u32()? as usize),
+          _ => return Err(std::io::Error::new(ErrorKind::InvalidData, "Invalid range kind")),
+        };
+        let override_config = reader.read_sized_bytes()?;
+        let file_text = reader.read_sized_bytes()?;
+        if range.as_ref().is_some_and(|range| range.start > range.end || range.end > file_text.len()) {
+          return Err(std::io::Error::new(ErrorKind::InvalidData, "Invalid format range"));
+        }
+        MessageBody::HostFormatLanguage(HostFormatLanguageMessageBody {
+          original_message_id,
+          language,
+          range,
+          override_config,
+          file_text,
         })
       }
       _ => {
@@ -249,6 +275,29 @@ impl Message for ProcessPluginMessage {
         writer.send_sized_bytes(&body.override_config)?;
         writer.send_sized_bytes(&body.file_text)?;
       }
+      MessageBody::HostFormatLanguage(body) => {
+        if body.language.is_empty() || body.language.len() > 1024 {
+          return Err(std::io::Error::new(ErrorKind::InvalidInput, "Invalid language label length"));
+        }
+        writer.send_u32(message_ids::HOST_FORMAT_LANGUAGE_ID)?;
+        writer.send_u32(body.original_message_id)?;
+        writer.send_sized_bytes(body.language.as_bytes())?;
+        match &body.range {
+          None => writer.send_u32(0)?,
+          Some(range) => {
+            if range.start > range.end || range.end > body.file_text.len() {
+              return Err(std::io::Error::new(ErrorKind::InvalidInput, "Invalid format range"));
+            }
+            let start = u32::try_from(range.start).map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "Format range exceeds u32"))?;
+            let end = u32::try_from(range.end).map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "Format range exceeds u32"))?;
+            writer.send_u32(1)?;
+            writer.send_u32(start)?;
+            writer.send_u32(end)?;
+          }
+        }
+        writer.send_sized_bytes(&body.override_config)?;
+        writer.send_sized_bytes(&body.file_text)?;
+      }
       MessageBody::Unknown(_) => unreachable!(), // should never be written
     }
     writer.send_success_bytes()?;
@@ -275,6 +324,7 @@ pub enum MessageBody {
   FormatResponse(ResponseBody<Option<Vec<u8>>>),
   CancelFormat(MessageId),
   HostFormat(HostFormatMessageBody),
+  HostFormatLanguage(HostFormatLanguageMessageBody),
   /// If encountered, process plugin should panic and
   /// the CLI should kill the process plugin.
   Unknown(u32),
@@ -317,4 +367,140 @@ pub struct HostFormatMessageBody {
   pub range: FormatRange,
   pub override_config: Vec<u8>,
   pub file_text: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct HostFormatLanguageMessageBody {
+  pub original_message_id: MessageId,
+  pub language: String,
+  pub range: FormatRange,
+  pub override_config: Vec<u8>,
+  pub file_text: Vec<u8>,
+}
+
+#[cfg(test)]
+mod language_tests {
+  use super::*;
+
+  #[test]
+  fn schema_five_host_format_wire_layout_is_unchanged() {
+    let message = ProcessPluginMessage {
+      id: 1,
+      body: MessageBody::HostFormat(HostFormatMessageBody {
+        original_message_id: 2,
+        file_path: "x.js".into(),
+        range: Some(1..3),
+        override_config: b"{}".to_vec(),
+        file_text: b"text".to_vec(),
+      }),
+    };
+    let mut actual = Vec::new();
+    message.write(&mut MessageWriter::new(&mut actual)).unwrap();
+    let mut expected = Vec::new();
+    for value in [1u32, 16, 2, 4] {
+      expected.extend_from_slice(&value.to_be_bytes());
+    }
+    expected.extend_from_slice(b"x.js");
+    for value in [1u32, 3, 2] {
+      expected.extend_from_slice(&value.to_be_bytes());
+    }
+    expected.extend_from_slice(b"{}");
+    expected.extend_from_slice(&4u32.to_be_bytes());
+    expected.extend_from_slice(b"text");
+    expected.extend_from_slice(&[255; 4]);
+    assert_eq!(actual, expected);
+    assert!(matches!(
+      ProcessPluginMessage::read(&mut MessageReader::new(expected.as_slice())).unwrap().body,
+      MessageBody::HostFormat(_)
+    ));
+  }
+
+  #[test]
+  fn language_message_round_trips_and_preserves_context() {
+    let message = ProcessPluginMessage {
+      id: 42,
+      body: MessageBody::HostFormatLanguage(HostFormatLanguageMessageBody {
+        original_message_id: 7,
+        language: "TypeScript".into(),
+        range: Some(1..3),
+        override_config: br#"{"indentWidth":4}"#.to_vec(),
+        file_text: b"text".to_vec(),
+      }),
+    };
+    let mut bytes = Vec::new();
+    message.write(&mut MessageWriter::new(&mut bytes)).unwrap();
+    let decoded = ProcessPluginMessage::read(&mut MessageReader::new(bytes.as_slice())).unwrap();
+    let MessageBody::HostFormatLanguage(body) = decoded.body else {
+      panic!("wrong message")
+    };
+    assert_eq!(decoded.id, 42);
+    assert_eq!(body.original_message_id, 7);
+    assert_eq!(body.language, "TypeScript");
+    assert_eq!(body.range, Some(1..3));
+    assert_eq!(body.override_config, br#"{"indentWidth":4}"#);
+    assert_eq!(body.file_text, b"text");
+  }
+
+  #[test]
+  fn malformed_language_labels_are_rejected_before_allocation() {
+    for (length, label) in [(0u32, &b""[..]), (1025, &b""[..]), (1, &b"\xff"[..])] {
+      let mut bytes = Vec::new();
+      for value in [1u32, 17, 2, length] {
+        bytes.extend_from_slice(&value.to_be_bytes());
+      }
+      bytes.extend_from_slice(label);
+      let error = ProcessPluginMessage::read(&mut MessageReader::new(bytes.as_slice())).unwrap_err();
+      assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+  }
+
+  #[test]
+  fn language_range_is_validated_and_full_range_is_distinct_from_none() {
+    for range in [None, Some(0..4)] {
+      let message = ProcessPluginMessage {
+        id: 1,
+        body: MessageBody::HostFormatLanguage(HostFormatLanguageMessageBody {
+          original_message_id: 2,
+          language: "js".into(),
+          range: range.clone(),
+          override_config: vec![],
+          file_text: b"text".to_vec(),
+        }),
+      };
+      let mut bytes = Vec::new();
+      message.write(&mut MessageWriter::new(&mut bytes)).unwrap();
+      let decoded = ProcessPluginMessage::read(&mut MessageReader::new(bytes.as_slice())).unwrap();
+      let MessageBody::HostFormatLanguage(body) = decoded.body else {
+        panic!("wrong message")
+      };
+      assert_eq!(body.range, range);
+    }
+    for range in [3..2, 0..5] {
+      let message = ProcessPluginMessage {
+        id: 1,
+        body: MessageBody::HostFormatLanguage(HostFormatLanguageMessageBody {
+          original_message_id: 2,
+          language: "js".into(),
+          range: Some(range),
+          override_config: vec![],
+          file_text: b"text".to_vec(),
+        }),
+      };
+      assert_eq!(message.write(&mut MessageWriter::new(Vec::new())).unwrap_err().kind(), ErrorKind::InvalidInput);
+    }
+    let mut bytes = Vec::new();
+    for value in [1u32, 17, 2, 2] {
+      bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(b"js");
+    for value in [1u32, 3, 2, 0, 4] {
+      bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(b"text");
+    bytes.extend_from_slice(&[255; 4]);
+    assert_eq!(
+      ProcessPluginMessage::read(&mut MessageReader::new(bytes.as_slice())).unwrap_err().kind(),
+      ErrorKind::InvalidData
+    );
+  }
 }

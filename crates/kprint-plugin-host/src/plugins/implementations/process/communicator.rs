@@ -124,17 +124,28 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
   }
 
   pub async fn format_text(&self, request: InitializedPluginFormatRequest) -> FormatResult {
+    self.format_text_with_language(request, Rc::new(|_| Box::pin(async { Ok(None) }))).await
+  }
+
+  pub async fn format_text_with_language(
+    &self,
+    request: InitializedPluginFormatRequest,
+    callback: kprint_plugin_types::EmbeddedLanguageFormatCallback,
+  ) -> FormatResult {
     let communicator = self.get_inner_ensure_config(&request.config).await.map_err(FormatError::new)?;
     match communicator
-      .format_text(ProcessPluginCommunicatorFormatRequest {
-        file_path: request.file_path,
-        file_bytes: request.file_text,
-        range: request.range,
-        config_id: request.config.id,
-        override_config: request.override_config,
-        on_host_format: request.on_host_format,
-        token: request.token,
-      })
+      .format_text_with_language(
+        ProcessPluginCommunicatorFormatRequest {
+          file_path: request.file_path,
+          file_bytes: request.file_text,
+          range: request.range,
+          config_id: request.config.id,
+          override_config: request.override_config,
+          on_host_format: request.on_host_format,
+          token: request.token,
+        },
+        callback,
+      )
       .await
     {
       Ok(result) => Ok(result),

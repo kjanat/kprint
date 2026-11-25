@@ -11,6 +11,14 @@ pub struct SyncHostFormatRequest<'a> {
   pub override_config: &'a ConfigKeyMap,
 }
 
+/// A request to format embedded text by its raw language label.
+pub struct SyncEmbeddedLanguageFormatRequest<'a> {
+  pub language: &'a str,
+  pub file_bytes: &'a [u8],
+  pub range: FormatRange,
+  pub override_config: &'a ConfigKeyMap,
+}
+
 pub struct SyncFormatRequest<'a, TConfiguration> {
   pub file_path: &'a std::path::Path,
   pub file_bytes: Vec<u8>,
@@ -62,4 +70,13 @@ pub trait SyncPluginHandler<TConfiguration: Clone + serde::Serialize> {
   fn check_config_updates(&self, message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>, FormatError>;
   /// Formats the provided file text based on the provided file path and configuration.
   fn format(&mut self, request: SyncFormatRequest<TConfiguration>, format_with_host: impl FnMut(SyncHostFormatRequest) -> FormatResult) -> FormatResult;
+
+  fn format_with_host_language(
+    &mut self,
+    request: SyncFormatRequest<TConfiguration>,
+    format_with_host: impl FnMut(SyncHostFormatRequest) -> FormatResult,
+    _format_language: impl FnMut(SyncEmbeddedLanguageFormatRequest) -> FormatResult,
+  ) -> FormatResult {
+    self.format(request, format_with_host)
+  }
 }

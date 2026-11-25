@@ -703,21 +703,24 @@ where
       stage.replace(FormatStage::Formatting { plugin: i, pass });
       let start_instant = Instant::now();
       let format_text_result = initialized_plugin
-        .format_text(InitializedPluginWithConfigFormatRequest {
-          file_path: plugin_file_path.to_path_buf(),
-          real_file_path: file_path.clone(),
-          file_bytes: file_text.to_vec(),
-          range: range.clone(),
-          override_config: plugin.get_config_file_overrides_for_path(&file_path),
-          on_host_format: observe_host_format(
-            scope.create_host_format_callback_for_path(plugin.clone(), file_path.clone(), file_path.clone(), plugin_file_path.to_path_buf()),
-            &scope,
-            plugin,
-            &file_path,
-            stage,
-          ),
-          token: Arc::new(NullCancellationToken),
-        })
+        .format_text_with_language(
+          InitializedPluginWithConfigFormatRequest {
+            file_path: plugin_file_path.to_path_buf(),
+            real_file_path: file_path.clone(),
+            file_bytes: file_text.to_vec(),
+            range: range.clone(),
+            override_config: plugin.get_config_file_overrides_for_path(&file_path),
+            on_host_format: observe_host_format(
+              scope.create_host_format_callback_for_path(plugin.clone(), file_path.clone(), file_path.clone(), plugin_file_path.to_path_buf()),
+              &scope,
+              plugin,
+              &file_path,
+              stage,
+            ),
+            token: Arc::new(NullCancellationToken),
+          },
+          scope.create_host_language_format_callback(plugin.clone(), file_path.clone()),
+        )
         .await;
       log_debug!(
         environment,

@@ -11,6 +11,7 @@ use kprint_plugin_types::CancellationToken;
 use kprint_plugin_types::CheckConfigUpdatesMessage;
 use kprint_plugin_types::ConfigChange;
 use kprint_plugin_types::CriticalFormatError;
+use kprint_plugin_types::EmbeddedLanguageFormatCallback;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatError;
@@ -190,6 +191,10 @@ pub trait InitializedPlugin {
   async fn check_config_updates(&self, message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>>;
   /// Formats the text in memory based on the file path and file text.
   async fn format_text(&self, format_request: InitializedPluginFormatRequest) -> FormatResult;
+  /// Formats with an additional callback for embedded language labels.
+  async fn format_text_with_language(&self, request: InitializedPluginFormatRequest, _callback: EmbeddedLanguageFormatCallback) -> FormatResult {
+    self.format_text(request).await
+  }
   /// Releases a configuration nothing formats with any more.
   async fn release_config(&self, config_id: FormatConfigId) -> Result<()>;
   /// Shuts down the plugin. This is used for process plugins.

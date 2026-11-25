@@ -134,9 +134,16 @@ Implementing a Wasm plugin is easier if you're using Rust as there are several h
 
 ### Format using other plugin
 
-To format code using a different plugin, call the `format_with_host(file_path, file_text)` function that is exposed via the `generate_plugin_code!()` macro.
+Implement `SyncPluginHandler::format_with_host_language` to receive callbacks
+for path-based formatting and embedded-language formatting. For a code block,
+pass a `SyncEmbeddedLanguageFormatRequest` to the language callback with the
+raw language label, text bytes, optional byte range, and configuration
+overrides. The host retains the outer file path and selects a formatter for the
+label. Existing handlers can continue to implement `format` alone.
 
-For example, this function is used by the markdown plugin to format code blocks.
+The language callback uses the kprint Wasm schema version 5. kprint continues
+to load version 3 and 4 plugins; version 5 plugins require a host that supports
+that schema. The ABI is described in [the version 5 interface](../wit/v5/dprint-plugin.wit).
 
 ## WASI and formatting capabilities
 
@@ -176,7 +183,7 @@ Low level communication:
 
 Initialization functions:
 
-- `dprint_plugin_version_4() -> u32` - Return `4`, but the CLI never calls this function (it only checks for it in the exports)
+- `dprint_plugin_version_5() -> u32` - Return `5`; the CLI checks the export name without calling it. Versions 3 and 4 remain supported.
 - `register_config(config_id: u32)` - Called when the plugin and global configuration is done transferring over. Store it somewhere.
 - `release_config(config_id: u32)` - Release a config registered in this instance. The host forwards release only once for a registered ID and can register it again later. Older plugins without this export remain supported.
 - `get_config_diagnostics(config_id: u32) -> u32` - Called by the CLI to get the configuration diagnostics. Serialize the diagnostics as a JSON string, store it in the local bytes, and return the byte length.
@@ -193,7 +200,7 @@ Initialization functions:
 
 ### Optional kprint configuration metadata
 
-These additions use the existing schema-4 marker. Plugins built with upstream
+These additions are also supported under the schema-4 marker. Plugins built with upstream
 dprint crates may implement the discovery exports directly. Plugins built with
 kprint can return the fields in `get_plugin_info` JSON. All discovery exports
 have the core signature `() -> i32`: put UTF-8 JSON in the plugin-owned shared

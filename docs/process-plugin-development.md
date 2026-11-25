@@ -154,7 +154,7 @@ Implementing a Process plugin is easy if you're using Rust as there are several 
    handle_process_stdio_messages(MyPluginHandler).await
    ```
 
-## Schema Version 5 Overview
+## Schema Version 6 Overview
 
 Process plugins are expected to read and respond to messages on a single thread, then spawn formatting threads/tasks for doing concurrent formatting.
 
@@ -163,7 +163,9 @@ Process plugins are expected to read and respond to messages on a single thread,
 To maintain compatibility with past dprint clients, an initial schema version establishment phase occurs that is the same as past schema versions.
 
 1. An initial `0` (4 bytes) is sent asking for the schema version.
-2. At this point, the client responds with `0` (4 bytes) for success, then `5` (4 bytes) for the schema version.
+2. The plugin responds with `0` (4 bytes) for success, then `6` (4 bytes) for the schema version.
+
+Current hosts also accept schema 5 plugins and retain their path-based host formatting. A schema 6 plugin requires a host that supports schema 6; older hosts reject it during this handshake.
 
 ### Messages
 
@@ -384,6 +386,22 @@ Message body:
 - File text.
 
 Response: Format Text Response
+
+#### `17` - Host Format by Language (Plugin to CLI, schema 6)
+
+Message body:
+
+- u32 - Message id of the original format request
+- u32 - Length of the UTF-8 language label in bytes (1–1024)
+- Raw language label bytes
+- u32 - Range kind (`0` for none, `1` for a range)
+- For kind `1`, u32 start and u32 end byte indices (start ≤ end ≤ text length)
+- u32 - Size of the override configuration
+- JSON serialized override configuration
+- u32 - Size of the file text
+- File text
+
+The host resolves the label and uses the configuration and original path captured for the enclosing request. Response: Format Text Response.
 
 ### Creating a `plugin.json` file
 

@@ -139,6 +139,67 @@ pub fn host_format(
   file_bytes_ptr: u32,
   file_bytes_len: u32,
 ) -> Result<u32, String> {
+  host_format_target(
+    memory,
+    state,
+    file_path_ptr,
+    file_path_len,
+    range_start,
+    range_end,
+    override_cfg_ptr,
+    override_cfg_len,
+    file_bytes_ptr,
+    file_bytes_len,
+    None,
+  )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn host_format_language(
+  memory: &[u8],
+  state: &mut ImportObjectEnvironmentV4,
+  target_ptr: u32,
+  target_len: u32,
+  range_kind: u32,
+  range_start: u32,
+  range_end: u32,
+  config_ptr: u32,
+  config_len: u32,
+  bytes_ptr: u32,
+  bytes_len: u32,
+) -> Result<u32, String> {
+  host_format_target(
+    memory,
+    state,
+    target_ptr,
+    target_len,
+    range_start,
+    range_end,
+    config_ptr,
+    config_len,
+    bytes_ptr,
+    bytes_len,
+    Some(range_kind),
+  )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn host_format_target(
+  memory: &[u8],
+  state: &mut ImportObjectEnvironmentV4,
+  file_path_ptr: u32,
+  file_path_len: u32,
+  range_start: u32,
+  range_end: u32,
+  override_cfg_ptr: u32,
+  override_cfg_len: u32,
+  file_bytes_ptr: u32,
+  file_bytes_len: u32,
+  language: Option<u32>,
+) -> Result<u32, String> {
+  if language.is_some() && (file_path_len == 0 || file_path_len > 1024) {
+    return Err("Embedded language label length must be between 1 and 1024 bytes.".to_string());
+  }
   let override_config = if override_cfg_len == 0 {
     ConfigKeyMap::default()
   } else {
@@ -147,20 +208,39 @@ pub fn host_format(
   };
   let file_path = {
     let bytes = &memory[checked_range(memory, file_path_ptr, file_path_len as usize)?];
-    PathBuf::from(String::from_utf8(bytes.to_vec()).map_err(|err| format!("Invalid file path: {err}"))?)
+    String::from_utf8(bytes.to_vec()).map_err(|err| format!("Invalid target: {err}"))?
   };
   let file_bytes = memory[checked_range(memory, file_bytes_ptr, file_bytes_len as usize)?].to_vec();
-  let range = if range_start == 0 && range_end == file_bytes_len {
+  if range_start > range_end || range_end > file_bytes_len {
+    return Err("Host format range is outside the input.".to_string());
+  }
+  let range = if let Some(kind) = language {
+    match kind {
+      0 => None,
+      1 => Some(range_start as usize..range_end as usize),
+      _ => return Err("Invalid range kind.".to_string()),
+    }
+  } else if range_start == 0 && range_end == file_bytes_len {
     None
   } else {
     Some(range_start as usize..range_end as usize)
   };
-  let request = HostFormatRequest {
-    file_path,
-    file_bytes,
-    range,
-    override_config,
-    token: state.token.clone(),
+  let request = if language.is_some() {
+    super::WasmHostRequest::Language(kprint_plugin_types::EmbeddedLanguageFormatRequest {
+      language: file_path,
+      file_bytes,
+      range,
+      override_config,
+      token: state.token.clone(),
+    })
+  } else {
+    super::WasmHostRequest::Path(HostFormatRequest {
+      file_path: PathBuf::from(file_path),
+      file_bytes,
+      range,
+      override_config,
+      token: state.token.clone(),
+    })
   };
   // todo: worth it to use a oneshot channel library here?
   let (tx, rx) = std::sync::mpsc::channel();
@@ -174,6 +254,10 @@ pub fn host_format(
 
   Ok(match result {
     Ok(Some(formatted_text)) => {
+      if u32::try_from(formatted_text.len()).is_err() {
+        state.error_text_store = "Host format result exceeds the Wasm protocol size limit.".to_string();
+        return Ok(2);
+      }
       state.formatted_text_store = formatted_text;
       1 // change
     }
@@ -182,7 +266,12 @@ pub fn host_format(
     }
     // ignore critical error as we can just continue formatting
     Err(err) => {
-      state.error_text_store = err.to_string();
+      let message = err.to_string();
+      state.error_text_store = if u32::try_from(message.len()).is_ok() {
+        message
+      } else {
+        "Host format error exceeds the Wasm protocol size limit.".to_string()
+      };
       2 // error
     }
   })
@@ -567,5 +656,69 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
 
   fn call_len(&mut self, name: &str, params: &[u32]) -> Result<usize> {
     Ok(self.exports.call_u32(name, params)? as usize)
+  }
+}
+
+#[cfg(test)]
+mod embedded_language_tests {
+  use super::*;
+  use crate::plugins::implementations::wasm::instance::WasmHostRequest;
+
+  fn state() -> (
+    ImportObjectEnvironmentV4,
+    tokio::sync::mpsc::UnboundedReceiver<(WasmHostRequest, std::sync::mpsc::Sender<FormatResult>)>,
+  ) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    (ImportObjectEnvironmentV4::new(Arc::new(|_| {}), tx), rx)
+  }
+
+  #[test]
+  fn language_delegation_preserves_raw_label_and_bytes() {
+    let (mut state, mut rx) = state();
+    let receiver = std::thread::spawn(move || {
+      let (request, reply) = rx.blocking_recv().unwrap();
+      match request {
+        WasmHostRequest::Language(request) => {
+          assert_eq!(request.language, " TypeScript React ");
+          assert_eq!(request.file_bytes, b"code");
+          assert_eq!(request.range, Some(1..3));
+        }
+        WasmHostRequest::Path(_) => panic!("expected language request"),
+      }
+      reply.send(Ok(Some(b"formatted".to_vec()))).unwrap();
+    });
+    let memory = b" TypeScript React code";
+    assert_eq!(host_format_language(memory, &mut state, 0, 18, 1, 1, 3, 0, 0, 18, 4).unwrap(), 1);
+    assert_eq!(host_get_formatted_text(&mut state), 9);
+    assert_eq!(state.shared_bytes, b"formatted");
+    receiver.join().unwrap();
+  }
+
+  #[test]
+  fn rejects_invalid_utf8_bounds_and_range() {
+    let (mut state, _rx) = state();
+    assert!(host_format_language(&[255], &mut state, 0, 1, 0, 0, 0, 0, 0, 0, 0).is_err());
+    assert!(host_format_language(b"x", &mut state, u32::MAX, 2, 0, 0, 0, 0, 0, 0, 0).is_err());
+    assert!(host_format_language(b"x", &mut state, 0, 1, 1, 0, 2, 0, 0, 0, 1).is_err());
+    assert!(host_format_language(b"x", &mut state, 0, 1, 2, 0, 1, 0, 0, 0, 1).is_err());
+    assert!(host_format_language(b"x", &mut state, 0, 1025, 0, 0, 0, 0, 0, 0, 0).is_err());
+  }
+
+  #[test]
+  fn full_range_is_distinct_from_no_range() {
+    let (mut state, mut rx) = state();
+    let receiver = std::thread::spawn(move || {
+      for expected in [None, Some(0..1)] {
+        let (request, reply) = rx.blocking_recv().unwrap();
+        let WasmHostRequest::Language(request) = request else {
+          panic!("expected language request")
+        };
+        assert_eq!(request.range, expected);
+        reply.send(Ok(None)).unwrap();
+      }
+    });
+    assert_eq!(host_format_language(b"xx", &mut state, 0, 1, 0, 0, 1, 0, 0, 1, 1).unwrap(), 0);
+    assert_eq!(host_format_language(b"xx", &mut state, 0, 1, 1, 0, 1, 0, 0, 1, 1).unwrap(), 0);
+    receiver.join().unwrap();
   }
 }

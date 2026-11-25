@@ -73,11 +73,11 @@ use self::text::get_range_utf16_edits;
 use self::text::normalize_to_source_line_endings;
 use self::text::to_lsp_edits;
 use kprint_host::HostSession;
+use kprint_host::resolution::EditorFormatTarget;
 
 pub(crate) mod client;
 mod config_completion;
 mod documents;
-mod language;
 mod notebook;
 mod text;
 mod untitled;
@@ -154,13 +154,43 @@ impl PendingTokens {
 }
 
 struct EditorFormatRequest {
-  pub file_path: PathBuf,
-  pub notebook_path: Option<PathBuf>,
-  pub language_id: Option<String>,
+  pub target: EditorDocument,
   pub file_text: String,
   pub maybe_line_index: Option<LineIndex>,
   pub range: FormatRange,
   pub token: Arc<CancellationToken>,
+}
+
+enum EditorDocument {
+  File { path: PathBuf, language: Option<String> },
+  Untitled { directory: PathBuf, language: String },
+  NotebookCell { notebook: PathBuf, language: String },
+}
+
+impl EditorDocument {
+  fn directory(&self) -> Option<&std::path::Path> {
+    match self {
+      Self::File { path, .. } => path.parent(),
+      Self::Untitled { directory, .. } => Some(directory),
+      Self::NotebookCell { notebook, .. } => notebook.parent(),
+    }
+  }
+
+  fn path(&mut self) -> &mut PathBuf {
+    match self {
+      Self::File { path, .. } => path,
+      Self::Untitled { directory, .. } => directory,
+      Self::NotebookCell { notebook, .. } => notebook,
+    }
+  }
+
+  fn target(&self) -> EditorFormatTarget<'_> {
+    match self {
+      Self::File { path, .. } => EditorFormatTarget::File(path),
+      Self::Untitled { directory, language } => EditorFormatTarget::Untitled { directory, language },
+      Self::NotebookCell { notebook, language } => EditorFormatTarget::NotebookCell { notebook, language },
+    }
+  }
 }
 
 struct ConfigEditorRequest {
@@ -184,63 +214,50 @@ async fn handle_format_request<TEnvironment: Environment>(
   scope_container: Rc<HostSession<TEnvironment>>,
   environment: &TEnvironment,
 ) -> Result<Option<Vec<TextEdit>>> {
-  let Some(parent_dir) = request.file_path.parent() else {
-    log_warn!(environment, "Cannot format non-file path: {}", request.file_path.display());
+  let Some(parent_dir) = request.target.directory() else {
     return Ok(None);
   };
   if request.token.is_cancelled() {
     return Ok(None);
   }
   let Some(scope) = scope_container.resolve_by_path(parent_dir).await? else {
-    log_stderr_info!(environment, "Path did not have a dprint config file: {}", request.file_path.display());
+    log_stderr_info!(environment, "Path did not have a dprint config file: {}", parent_dir.display());
     return Ok(None);
   };
   if request.token.is_cancelled() {
     return Ok(None);
   }
-  // canonicalize the path
-  request.file_path = environment
-    .canonicalize_maybe_not_exists(&request.file_path)
-    .map(|p| p.into_path_buf())
-    .unwrap_or(request.file_path);
-
-  let canonical_notebook_path = request
-    .notebook_path
-    .as_ref()
-    .and_then(|path| environment.canonicalize_maybe_not_exists(path).ok());
-  let notebook_path = canonical_notebook_path.as_ref().map(AsRef::as_ref).or(request.notebook_path.as_deref());
-  let (can_format, checked_path) = match notebook_path {
-    Some(path) => (
-      !scope.plugin_name_maps.get_plugin_names_from_file_path(path).into_names().is_empty() && scope.can_format_for_editor(path, None),
-      path,
-    ),
-    None => (
-      scope.can_format_for_editor(&request.file_path, Some(request.file_text.as_bytes())),
-      request.file_path.as_path(),
-    ),
+  let path = request.target.path();
+  if let Ok(canonical) = environment.canonicalize_maybe_not_exists(&*path) {
+    *path = canonical.into_path_buf();
+  }
+  let Some(selection) = scope.select_editor_format(request.target.target(), request.file_text.as_bytes()) else {
+    return Ok(None);
   };
-  if !can_format {
-    log_debug!(environment, "Excluded file: {}", checked_path.display());
-    return Ok(None);
-  }
 
-  let supports_range = scope.supports_range_formatting(&request.file_path, request.file_text.as_bytes());
+  let supports_range = selection.supports_range_formatting();
   if request.range.is_some() && supports_range == Some(false) {
-    log_debug!(environment, "A plugin does not support formatting a range: {}", request.file_path.display());
+    log_debug!(environment, "A plugin does not support formatting a range: {}", selection.file_path().display());
     return Ok(None);
   }
-  let notebook_range = request.notebook_path.as_ref().map(|_| request.range.clone());
+  let file_path = selection.file_path().to_path_buf();
+  let notebook_range = matches!(&request.target, EditorDocument::NotebookCell { .. }).then(|| request.range.clone());
+  let editor_language = match &request.target {
+    EditorDocument::File { language, .. } => language.as_deref(),
+    _ => None,
+  };
   let range = RangeFormat::new(&request.file_text, request.range, supports_range == Some(true));
   let Some(result) = scope
-    .format_with_language_id(
+    .format_editor_selection(
+      selection,
       HostFormatRequest {
-        file_path: request.file_path,
+        file_path,
         file_bytes: request.file_text.as_bytes().to_vec(),
         range: range.plugin_range,
         override_config: Default::default(),
         token: request.token,
       },
-      request.language_id.as_deref(),
+      editor_language,
     )
     .await?
   else {
@@ -392,21 +409,26 @@ impl<TEnvironment: Environment> Backend<TEnvironment> {
     }
   }
 
-  fn format_paths(&self, uri: &Uri) -> Option<(PathBuf, Option<PathBuf>, Option<String>)> {
+  fn format_target(&self, uri: &Uri) -> Option<EditorDocument> {
     let state = self.state.lock();
     if untitled::is_untitled_uri(uri) {
       let home = self.environment.get_home_dir();
       let folder = state.workspace_folders.first().map(PathBuf::as_path).or(home.as_ref().map(AsRef::as_ref))?;
-      let language_id = state.documents.language_id(uri)?;
-      let path = untitled::get_untitled_file_path(folder, language_id)?;
-      return Some((path, None, Some(language_id.to_owned())));
+      return Some(EditorDocument::Untitled {
+        directory: folder.to_path_buf(),
+        language: state.documents.language_id(uri)?.to_owned(),
+      });
     }
     if let Some((notebook_uri, language_id)) = state.documents.notebook_cell(uri) {
-      let notebook_path = uri_to_file_path(notebook_uri)?;
-      let cell_path = notebook::get_notebook_cell_file_path(&notebook_path, language_id)?;
-      return Some((cell_path, Some(notebook_path), Some(language_id.to_owned())));
+      return Some(EditorDocument::NotebookCell {
+        notebook: uri_to_file_path(notebook_uri)?,
+        language: language_id.to_owned(),
+      });
     }
-    Some((uri_to_file_path(uri)?, None, state.documents.language_id(uri).map(str::to_owned)))
+    Some(EditorDocument::File {
+      path: uri_to_file_path(uri)?,
+      language: state.documents.language_id(uri).map(str::to_owned),
+    })
   }
 
   async fn send_format_request(&self, uri: &Uri, request: EditorFormatRequest) -> LspResult<Option<Vec<TextEdit>>> {
@@ -581,7 +603,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
   }
 
   async fn formatting(&self, params: DocumentFormattingParams, token: CancellationToken) -> LspResult<Option<Vec<TextEdit>>> {
-    let Some((file_path, notebook_path, language_id)) = self.format_paths(&params.text_document.uri) else {
+    let Some(target) = self.format_target(&params.text_document.uri) else {
       return Ok(None);
     };
     let Some((file_text, maybe_line_index)) = self.state.lock().documents.get_content(&params.text_document.uri) else {
@@ -591,9 +613,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
       .send_format_request(
         &params.text_document.uri,
         EditorFormatRequest {
-          file_path,
-          notebook_path,
-          language_id,
+          target,
           file_text,
           range: None,
           maybe_line_index,
@@ -604,7 +624,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
   }
 
   async fn range_formatting(&self, params: DocumentRangeFormattingParams, token: CancellationToken) -> LspResult<Option<Vec<TextEdit>>> {
-    let Some((file_path, notebook_path, language_id)) = self.format_paths(&params.text_document.uri) else {
+    let Some(target) = self.format_target(&params.text_document.uri) else {
       return Ok(None);
     };
     let Some((file_text, range, line_index)) = self.state.lock().documents.get_content_with_range(&params.text_document.uri, params.range) else {
@@ -614,9 +634,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
       .send_format_request(
         &params.text_document.uri,
         EditorFormatRequest {
-          file_path,
-          notebook_path,
-          language_id,
+          target,
           file_text,
           range,
           maybe_line_index: Some(line_index),

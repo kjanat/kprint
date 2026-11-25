@@ -20,6 +20,8 @@ use kprint_plugin_types::CancellationToken;
 use kprint_plugin_types::CheckConfigUpdatesMessage;
 use kprint_plugin_types::ConfigChange;
 use kprint_plugin_types::CriticalFormatError;
+use kprint_plugin_types::EmbeddedLanguageFormatCallback;
+use kprint_plugin_types::EmbeddedLanguageFormatRequest;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatError;
@@ -51,6 +53,8 @@ use crate::environment::CanonicalizedPathBuf;
 use crate::environment::HostEnvironment as Environment;
 use crate::incremental::FileMetadata;
 use crate::incremental::IncrementalFile;
+use crate::language::LanguageCandidates;
+use crate::language::hash_language_routing;
 use crate::paths::FilesPathsByPlugins;
 use crate::paths::NoFilesFoundError;
 use crate::paths::get_and_resolve_file_paths;
@@ -89,6 +93,67 @@ struct Embedder {
   plugin: Rc<PluginWithConfig>,
   outer_path: PathBuf,
   file_path_mapping: Option<(PathBuf, PathBuf)>,
+  delegation: Option<Rc<ActiveDelegation>>,
+}
+
+struct ActiveDelegation {
+  plugin_name: String,
+  path: PathBuf,
+  input_hash: u64,
+  parent: Option<Rc<Self>>,
+}
+
+impl ActiveDelegation {
+  fn enter(parent: Option<Rc<Self>>, plugin_name: &str, path: &Path, input: &[u8]) -> Option<Rc<Self>> {
+    let input_hash = crate::utils::get_bytes_hash(input);
+    // Repeated work is a cycle. Also cap the depth if a plugin keeps changing
+    // its input or delegates to a different target on every call.
+    let mut ancestor = parent.as_deref();
+    for _ in 0..32 {
+      let Some(active) = ancestor else {
+        return Some(Rc::new(Self {
+          plugin_name: plugin_name.to_string(),
+          path: path.to_path_buf(),
+          input_hash,
+          parent,
+        }));
+      };
+      if active.plugin_name == plugin_name && active.path == path && active.input_hash == input_hash {
+        break;
+      }
+      ancestor = active.parent.as_deref();
+    }
+    None
+  }
+}
+
+struct SelectedFormat {
+  plugin_path: PathBuf,
+  config_path: PathBuf,
+  plugin_names: Vec<String>,
+}
+
+pub enum EditorFormatTarget<'a> {
+  File(&'a Path),
+  Untitled { directory: &'a Path, language: &'a str },
+  NotebookCell { notebook: &'a Path, language: &'a str },
+}
+
+/// A single selection used for LSP eligibility, range support and formatting.
+pub struct EditorFormatSelection {
+  format: SelectedFormat,
+  language: Option<String>,
+  range_support: Option<bool>,
+}
+
+impl EditorFormatSelection {
+  pub fn file_path(&self) -> &Path {
+    &self.format.config_path
+  }
+
+  pub fn supports_range_formatting(&self) -> Option<bool> {
+    self.range_support
+  }
 }
 
 pub enum GetPluginResult {
@@ -226,6 +291,21 @@ impl PluginWithConfig {
       .find_map(|override_config| override_config.embedded.as_ref()?.get(extension))
       .or_else(|| self.embedded.as_ref()?.get(extension))
       .map(Vec::as_slice)
+  }
+
+  fn embedded_language_route<'a, 'b>(&'a self, outer_path: &Path, candidates: &'b LanguageCandidates) -> Option<(&'b str, &'a [String])> {
+    self
+      .overrides
+      .iter()
+      .rev()
+      .filter(|override_config| override_config.matcher.matches(outer_path))
+      .filter_map(|override_config| override_config.embedded.as_ref())
+      .chain(self.embedded.as_ref())
+      .find_map(|routes| {
+        candidates
+          .selectors()
+          .find_map(|selector| routes.get(selector).map(|plugins| (selector, plugins.as_slice())))
+      })
   }
 
   fn embedded_plugin_keys(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -388,19 +468,31 @@ impl InitializedPluginWithConfig {
   }
 
   pub async fn format_text(&self, request: InitializedPluginWithConfigFormatRequest) -> FormatResult {
+    self.instance.format_text(self.plugin_format_request(request)).await
+  }
+
+  pub async fn format_text_with_language(
+    &self,
+    request: InitializedPluginWithConfigFormatRequest,
+    on_host_format_language: EmbeddedLanguageFormatCallback,
+  ) -> FormatResult {
     self
       .instance
-      .format_text(InitializedPluginFormatRequest {
-        file_path: request.file_path,
-        real_file_path: request.real_file_path,
-        file_text: request.file_bytes,
-        range: request.range,
-        config: self.plugin.format_config.clone(),
-        override_config: request.override_config,
-        on_host_format: request.on_host_format,
-        token: request.token,
-      })
+      .format_text_with_language(self.plugin_format_request(request), on_host_format_language)
       .await
+  }
+
+  fn plugin_format_request(&self, request: InitializedPluginWithConfigFormatRequest) -> InitializedPluginFormatRequest {
+    InitializedPluginFormatRequest {
+      file_path: request.file_path,
+      real_file_path: request.real_file_path,
+      file_text: request.file_bytes,
+      range: request.range,
+      config: self.plugin.format_config.clone(),
+      override_config: request.override_config,
+      on_host_format: request.on_host_format,
+      token: request.token,
+    }
   }
 }
 
@@ -532,6 +624,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   pub fn plugins_hash(&self) -> u64 {
     use std::hash::Hash;
     let mut hasher = FastInsecureHasher::default();
+    hash_language_routing(&mut hasher);
     for plugin in self.plugins.values() {
       plugin.incremental_hash(&mut hasher);
     }
@@ -557,6 +650,17 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     real_path: PathBuf,
     plugin_path: PathBuf,
   ) -> HostFormatCallback {
+    self.create_host_format_callback_with_delegation(plugin, outer_path, real_path, plugin_path, None)
+  }
+
+  fn create_host_format_callback_with_delegation(
+    self: &Rc<Self>,
+    plugin: Rc<PluginWithConfig>,
+    outer_path: PathBuf,
+    real_path: PathBuf,
+    plugin_path: PathBuf,
+    delegation: Option<Rc<ActiveDelegation>>,
+  ) -> HostFormatCallback {
     let scope = self.clone();
     let file_path_mapping = (real_path != plugin_path).then_some((plugin_path, real_path));
     Rc::new(move |host_request| {
@@ -564,21 +668,38 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         plugin: plugin.clone(),
         outer_path: outer_path.clone(),
         file_path_mapping: file_path_mapping.clone(),
+        delegation: delegation.clone(),
       };
       scope.format_from(host_request, Some(embedder), None)
     })
   }
 
+  pub fn create_host_language_format_callback(self: &Rc<Self>, plugin: Rc<PluginWithConfig>, outer_path: PathBuf) -> EmbeddedLanguageFormatCallback {
+    self.create_host_language_format_callback_with_delegation(plugin, outer_path, None)
+  }
+
+  fn create_host_language_format_callback_with_delegation(
+    self: &Rc<Self>,
+    plugin: Rc<PluginWithConfig>,
+    outer_path: PathBuf,
+    delegation: Option<Rc<ActiveDelegation>>,
+  ) -> EmbeddedLanguageFormatCallback {
+    let scope = self.clone();
+    Rc::new(move |request| scope.format_embedded_language_with_delegation(plugin.clone(), outer_path.clone(), request, delegation.clone()))
+  }
+
   fn embedded_plugin_names(&self, embedder: &Embedder, file_path: &Path) -> Option<Vec<String>> {
     let extension = get_lowercase_file_extension(file_path)?;
     let keys = embedder.plugin.get_embedded_plugins(&embedder.outer_path, &extension)?;
-    Some(
-      keys
-        .iter()
-        .filter_map(|key| self.plugins.values().find(|plugin| plugin.info().config_key == *key))
-        .map(|plugin| plugin.name().to_string())
-        .collect(),
-    )
+    Some(self.names_from_config_keys(keys))
+  }
+
+  fn names_from_config_keys(&self, keys: &[String]) -> Vec<String> {
+    keys
+      .iter()
+      .filter_map(|key| self.plugins.values().find(|plugin| plugin.info().config_key == *key))
+      .map(|plugin| plugin.name().to_string())
+      .collect()
   }
 
   /// Whether the editor should ask this scope to format the file.
@@ -645,10 +766,162 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     self.format_from(request, None, language_id)
   }
 
+  pub fn format_embedded_language(
+    self: &Rc<Self>,
+    embedder: Rc<PluginWithConfig>,
+    outer_path: PathBuf,
+    request: EmbeddedLanguageFormatRequest,
+  ) -> LocalBoxFuture<'static, FormatResult> {
+    self.format_embedded_language_with_delegation(embedder, outer_path, request, None)
+  }
+
+  fn format_embedded_language_with_delegation(
+    self: &Rc<Self>,
+    plugin: Rc<PluginWithConfig>,
+    outer_path: PathBuf,
+    request: EmbeddedLanguageFormatRequest,
+    delegation: Option<Rc<ActiveDelegation>>,
+  ) -> LocalBoxFuture<'static, FormatResult> {
+    let Some(candidates) = LanguageCandidates::new(&request.language) else {
+      return std::future::ready(Ok(None)).boxed_local();
+    };
+    let Some(parent) = outer_path.parent() else {
+      return std::future::ready(Ok(None)).boxed_local();
+    };
+    let base = parent.join("code_block");
+    let selected = match plugin.embedded_language_route(&outer_path, &candidates) {
+      Some((selector, keys)) => {
+        let extension = candidates.extensions().find(|ext| *ext == selector);
+        let path = candidates.virtual_path(&base, extension);
+        Some(SelectedFormat {
+          plugin_names: self.names_from_config_keys(keys),
+          config_path: path.clone(),
+          plugin_path: path,
+        })
+      }
+      None => self.select_language_path(&base, &candidates, false, |_| true),
+    };
+    let Some(selected) = selected else {
+      log_debug!(
+        self.environment,
+        "No embedded formatter for language {:?} in {}",
+        request.language,
+        outer_path.display()
+      );
+      return std::future::ready(Ok(None)).boxed_local();
+    };
+    let embedder = Embedder {
+      plugin,
+      outer_path,
+      file_path_mapping: None,
+      delegation,
+    };
+    let language = request.language;
+    let request = HostFormatRequest {
+      file_path: selected.plugin_path.clone(),
+      file_bytes: request.file_bytes,
+      range: request.range,
+      override_config: request.override_config,
+      token: request.token,
+    };
+    self.format_selected(selected, request, Some(embedder), Some(&language), true)
+  }
+
+  pub fn select_editor_format(&self, target: EditorFormatTarget<'_>, bytes: &[u8]) -> Option<EditorFormatSelection> {
+    let (format, language) = match target {
+      EditorFormatTarget::File(path) => {
+        if !self.matches_editor_file_patterns(path) {
+          log_debug!(self.environment, "Excluded file: {}", path.display());
+          return None;
+        }
+        (self.select_path(path, bytes, None), None)
+      }
+      EditorFormatTarget::Untitled { directory, language } => {
+        let base = directory.join("Untitled");
+        let format = self.select_language_path(&base, &LanguageCandidates::new(language)?, false, |path| {
+          let eligible = self.matches_editor_file_patterns(path);
+          if !eligible {
+            log_debug!(self.environment, "Excluded file: {}", path.display());
+          }
+          eligible
+        })?;
+        (format, Some(language.to_string()))
+      }
+      EditorFormatTarget::NotebookCell { notebook, language } => {
+        if self.plugin_name_maps.get_plugin_names_from_file_path(notebook).into_names().is_empty() || !self.can_format_for_editor(notebook, None) {
+          log_debug!(self.environment, "Excluded file: {}", notebook.display());
+          return None;
+        }
+        let base = notebook.parent()?.join("code_block");
+        let format = self.select_language_path(&base, &LanguageCandidates::new(language)?, true, |_| true)?;
+        (format, Some(language.to_string()))
+      }
+    };
+    let range_support = self.range_support(format.plugin_names.iter().map(String::as_str));
+    (!format.plugin_names.is_empty()).then_some(EditorFormatSelection {
+      format,
+      language,
+      range_support,
+    })
+  }
+
+  pub fn format_editor_selection(
+    self: &Rc<Self>,
+    selection: EditorFormatSelection,
+    request: HostFormatRequest,
+    editor_language: Option<&str>,
+  ) -> LocalBoxFuture<'static, FormatResult> {
+    self.format_selected(selection.format, request, None, selection.language.as_deref().or(editor_language), false)
+  }
+
+  fn select_language_path(
+    &self,
+    base: &Path,
+    candidates: &LanguageCandidates,
+    is_notebook_cell: bool,
+    eligible: impl Fn(&Path) -> bool,
+  ) -> Option<SelectedFormat> {
+    let paths = candidates
+      .extensions()
+      .map(|extension| base.with_extension(extension))
+      .chain(candidates.filenames().map(|name| base.with_file_name(name)));
+    for path in paths.filter(|path| eligible(path)) {
+      let extension = get_lowercase_file_extension(&path);
+      if is_notebook_cell && extension.as_deref() == Some("ipynb") {
+        continue;
+      }
+      if candidates.is_unregistered_extension()
+        && !extension
+          .as_deref()
+          .is_some_and(|extension| self.plugin_name_maps.has_file_extension(extension))
+      {
+        continue;
+      }
+      let names = self.plugin_name_maps.get_plugin_names_for_target(&path, |name| {
+        let plugin = self.get_plugin(name);
+        extension
+          .as_deref()
+          .is_none_or(|extension| candidates.allows_formatter(extension, &plugin.info().config_key, &plugin.file_matching.file_extensions))
+      });
+      if names.has_claiming_plugin() {
+        return Some(SelectedFormat {
+          plugin_names: names.into_names().into_iter().map(ToOwned::to_owned).collect(),
+          config_path: path.clone(),
+          plugin_path: path,
+        });
+      }
+    }
+    None
+  }
+
   /// Whether every selected plugin supports ranges, with legacy plugins left unspecified.
   pub fn supports_range_formatting(&self, file_path: &Path, bytes: &[u8]) -> Option<bool> {
+    self.range_support(self.plugin_name_maps.get_plugin_names_from_file_path_and_bytes(file_path, bytes).into_iter())
+  }
+
+  fn range_support<'a>(&self, names: impl Iterator<Item = &'a str>) -> Option<bool> {
     let mut result = Some(true);
-    for name in self.plugin_name_maps.get_plugin_names_from_file_path_and_bytes(file_path, bytes) {
+    for name in names {
       match self.plugins.get(name).and_then(|plugin| plugin.info().supports_range_formatting) {
         Some(false) => return Some(false),
         None => result = None,
@@ -665,22 +938,21 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       plugin: plugin.clone(),
       outer_path: outer_path.to_path_buf(),
       file_path_mapping: None,
+      delegation: None,
     };
-    self.host_format_plugin_names(request, Some(&embedder))
+    self.host_format_plugin_names(&request.file_path, &request.file_bytes, Some(&embedder))
   }
 
   /// The names of the plugins that format what `request` asks the host to.
-  fn host_format_plugin_names(&self, request: &HostFormatRequest, embedder: Option<&Embedder>) -> Vec<String> {
-    match embedder.and_then(|embedder| self.embedded_plugin_names(embedder, &request.file_path)) {
+  fn host_format_plugin_names(&self, path: &Path, bytes: &[u8], embedder: Option<&Embedder>) -> Vec<String> {
+    match embedder.and_then(|embedder| self.embedded_plugin_names(embedder, path)) {
       Some(plugin_names) => plugin_names,
       None => {
-        let names = match Self::mapped_real_path(&request.file_path, embedder) {
+        let names = match Self::mapped_real_path(path, embedder) {
           Some(real_path) => self
             .plugin_name_maps
-            .get_plugin_names_with_added_extension(real_path, &get_lowercase_file_extension(&request.file_path).unwrap_or_default()),
-          None => self
-            .plugin_name_maps
-            .get_plugin_names_from_file_path_and_bytes(&request.file_path, &request.file_bytes),
+            .get_plugin_names_with_added_extension(real_path, &get_lowercase_file_extension(path).unwrap_or_default()),
+          None => self.plugin_name_maps.get_plugin_names_from_file_path_and_bytes(path, bytes),
         };
         names.into_iter().map(ToOwned::to_owned).collect()
       }
@@ -692,18 +964,34 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     (path == synthetic).then_some(real.as_path())
   }
 
+  fn select_path(&self, path: &Path, bytes: &[u8], embedder: Option<&Embedder>) -> SelectedFormat {
+    SelectedFormat {
+      plugin_names: self.host_format_plugin_names(path, bytes, embedder),
+      config_path: Self::mapped_real_path(path, embedder).unwrap_or(path).to_path_buf(),
+      plugin_path: self.plugin_name_maps.get_plugin_file_path(path, bytes).into_owned(),
+    }
+  }
+
   fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>, language_id: Option<&str>) -> LocalBoxFuture<'static, FormatResult> {
-    // owned because they outlive this scope by moving into the future below
-    let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
-    let real_file_path = Self::mapped_real_path(&request.file_path, embedder.as_ref())
-      .unwrap_or(&request.file_path)
-      .to_path_buf();
-    let plugin_file_path = self.plugin_name_maps.get_plugin_file_path(&request.file_path, &request.file_bytes).into_owned();
+    let selection = self.select_path(&request.file_path, &request.file_bytes, embedder.as_ref());
+    self.format_selected(selection, request, embedder, language_id, false)
+  }
+
+  fn format_selected(
+    self: &Rc<Self>,
+    selected: SelectedFormat,
+    request: HostFormatRequest,
+    embedder: Option<Embedder>,
+    language_id: Option<&str>,
+    language_delegation: bool,
+  ) -> LocalBoxFuture<'static, FormatResult> {
+    let SelectedFormat {
+      plugin_names,
+      config_path: real_file_path,
+      plugin_path: plugin_file_path,
+    } = selected;
     let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.is_sandboxed());
-    let outer_path = match embedder {
-      Some(embedder) => embedder.outer_path,
-      None => real_file_path.clone(),
-    };
+    let (outer_path, delegation) = embedder.map_or_else(|| (real_file_path.clone(), None), |embedder| (embedder.outer_path, embedder.delegation));
     log_debug!(
       self.environment,
       "Host formatting {}{} - File length: {} - Plugins: [{}] - Range: {:?}",
@@ -720,6 +1008,20 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       let mut had_change = false;
       let plugins_len = plugin_names.len();
       for (index, plugin_name) in plugin_names.into_iter().enumerate() {
+        let active = if language_delegation || delegation.is_some() {
+          let Some(active) = ActiveDelegation::enter(delegation.clone(), &plugin_name, &plugin_file_path, &file_text) else {
+            log_debug!(
+              scope.environment,
+              "Skipping recursive embedded format for {} with {}",
+              plugin_file_path.display(),
+              plugin_name
+            );
+            continue;
+          };
+          Some(active)
+        } else {
+          None
+        };
         let plugin = scope.get_plugin(&plugin_name);
         let request_override_config = if from_sandbox && !plugin.plugin.is_sandboxed() && plugin.info().allow_plugin_override_config != Some(true) {
           global_config_only(&request.override_config)
@@ -729,20 +1031,24 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         match plugin.get_or_create_checking_config_diagnostics(&scope.environment).await {
           Ok(GetPluginResult::Success(initialized_plugin)) => {
             let result = initialized_plugin
-              .format_text(InitializedPluginWithConfigFormatRequest {
-                file_path: plugin_file_path.clone(),
-                real_file_path: real_file_path.clone(),
-                file_bytes: file_text.clone(),
-                range: range.clone(),
-                override_config: plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config),
-                on_host_format: scope.create_host_format_callback_for_path(
-                  plugin.clone(),
-                  outer_path.clone(),
-                  real_file_path.clone(),
-                  plugin_file_path.clone(),
-                ),
-                token: request.token.clone(),
-              })
+              .format_text_with_language(
+                InitializedPluginWithConfigFormatRequest {
+                  file_path: plugin_file_path.clone(),
+                  real_file_path: real_file_path.clone(),
+                  file_bytes: file_text.clone(),
+                  range: range.clone(),
+                  override_config: plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config),
+                  on_host_format: scope.create_host_format_callback_with_delegation(
+                    plugin.clone(),
+                    outer_path.clone(),
+                    real_file_path.clone(),
+                    plugin_file_path.clone(),
+                    active.clone(),
+                  ),
+                  token: request.token.clone(),
+                },
+                scope.create_host_language_format_callback_with_delegation(plugin.clone(), outer_path.clone(), active),
+              )
               .await;
             if let Some(new_text) = result? {
               if index + 1 < plugins_len

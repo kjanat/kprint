@@ -201,6 +201,14 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedProcessPlugin<T
     self.communicator.format_text(request).await
   }
 
+  async fn format_text_with_language(
+    &self,
+    request: InitializedPluginFormatRequest,
+    callback: kprint_plugin_types::EmbeddedLanguageFormatCallback,
+  ) -> FormatResult {
+    self.communicator.format_text_with_language(request, callback).await
+  }
+
   async fn release_config(&self, config_id: FormatConfigId) -> Result<()> {
     self.communicator.release_config(config_id).await
   }

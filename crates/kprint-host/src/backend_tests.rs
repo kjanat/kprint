@@ -8,7 +8,9 @@ use kprint_plugin_types::HostFormatRequest;
 use tokio_util::sync::CancellationToken;
 
 use crate::configuration::resolve_config_from_args;
+use crate::environment::CanonicalizedPathBuf;
 use crate::environment::TestEnvironmentBuilder;
+use crate::incremental::IncrementalFile;
 use crate::plugins::FormatConfig;
 use crate::plugins::PluginCache;
 use crate::plugins::PluginResolver;
@@ -196,6 +198,88 @@ fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
       synthetic.display()
     );
     assert_eq!(format_messages, [&without_id, &without_id, &with_id]);
+    environment.clear_logs();
+  });
+}
+
+#[test]
+fn native_embedder_routes_language_with_the_outer_and_virtual_paths() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+    .with_default_config(|config| {
+      config
+        .add_remote_wasm_plugin()
+        .add_remote_process_plugin()
+        .add_config_section(
+          "test-plugin",
+          r#"{
+            "associations":["**/*.{rs,py}"],
+            "overrides":{"files":"**/code_block.rs","ending":"virtual"}
+          }"#,
+        )
+        .add_config_section(
+          "testProcessPlugin",
+          r#"{
+            "embedded": {"objc":["test-plugin"], "rust":["test-plugin"], "txt_ps":["testProcessPlugin"]},
+            "overrides": {"files":"**/skip.txt_ps","embedded":{"rs":[]}}
+          }"#,
+        );
+    })
+    .build();
+  environment.set_log_level(kprint_host_api::ui::LogLevel::Debug);
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment.clone(), resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let run = |path: &str, text: &str| {
+      scope.format(HostFormatRequest {
+        file_path: PathBuf::from(path),
+        file_bytes: text.as_bytes().to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    assert_eq!(run("/docs/keep.txt_ps", "language:  RuSt :body").await.unwrap(), Some(b"body_virtual".to_vec()));
+    assert_eq!(run("/docs/keep.txt_ps", "language: Python:body").await.unwrap(), Some(b"body_formatted".to_vec()));
+    assert_eq!(run("/docs/skip.txt_ps", "language: Rust:body").await.unwrap(), None);
+    assert_eq!(run("/docs/keep.txt_ps", "language: unregistered-language:body").await.unwrap(), None);
+    assert_eq!(run("/docs/keep.txt_ps", "language: ../../escape:body").await.unwrap(), None);
+    assert_eq!(run("/docs/keep.txt_ps", "language: objc:body").await.unwrap(), Some(b"body_formatted".to_vec()));
+    assert_eq!(
+      tokio::time::timeout(Duration::from_secs(10), run("/docs/keep.txt_ps", "language-cycle: txt_ps"))
+        .await
+        .expect("recursive format returned")
+        .unwrap(),
+      None
+    );
+    session.shutdown().await;
+    let log = environment.take_stderr_messages();
+    let virtual_path = PathBuf::from("/docs").join("code_block.rs");
+    let expected = format!("Host formatting {} - Language ID: \" RuSt \"", virtual_path.display());
+    assert!(log.iter().any(|entry| entry.contains(&expected)), "{log:?}");
+    assert!(log.iter().any(|entry| entry.contains("Skipping recursive embedded format")), "{log:?}");
+  });
+}
+
+#[test]
+fn language_routing_invalidates_entries_from_the_legacy_incremental_hash() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin().build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment.clone(), resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let mut old_hash = crate::utils::FastInsecureHasher::default();
+    for plugin in scope.plugins.values() {
+      plugin.incremental_hash(&mut old_hash);
+    }
+    let old_hash = old_hash.finish();
+    let path = CanonicalizedPathBuf::new_for_testing("/incremental.json");
+    let previous = IncrementalFile::new(path.clone(), old_hash, false, environment.clone());
+    previous.update_file(b"previous");
+    previous.write();
+    assert!(IncrementalFile::new(path.clone(), old_hash, false, environment.clone()).has_known_files());
+    assert!(!IncrementalFile::new(path, scope.plugins_hash(), false, environment.clone()).has_known_files());
+    session.shutdown().await;
     environment.clear_logs();
   });
 }

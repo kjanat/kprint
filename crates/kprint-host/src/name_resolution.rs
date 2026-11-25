@@ -17,25 +17,6 @@ use crate::utils::get_lowercase_file_name;
 use crate::utils::get_shebang_line;
 use crate::utils::is_shebang_prefix_match;
 
-include!(concat!(env!("OUT_DIR"), "/language_extensions.rs"));
-
-/// Looks up Linguist's preferred extension for a language name or alias.
-pub fn resolve_language_extension(language_id: &str) -> Option<&'static str> {
-  let index = LINGUIST_EXTENSIONS
-    .binary_search_by(|(id, _)| id.bytes().cmp(language_id.bytes().map(|byte| byte.to_ascii_lowercase())))
-    .ok()?;
-  Some(LINGUIST_EXTENSIONS[index].1)
-}
-
-#[test]
-fn resolves_linguist_names_and_aliases_to_extensions() {
-  assert_eq!(resolve_language_extension("HCL"), Some("hcl"));
-  assert_eq!(resolve_language_extension("terraform"), Some("hcl"));
-  assert_eq!(resolve_language_extension("objc"), Some("m"));
-  assert_eq!(resolve_language_extension("Jupyter Notebook"), Some("ipynb"));
-  assert_eq!(resolve_language_extension("unknown-language"), None);
-}
-
 #[derive(Default)]
 pub struct PluginNameResolutionMaps {
   /// The scope's plugins in configuration order, which is the order they
@@ -111,13 +92,21 @@ impl PluginNameResolutionMaps {
   }
 
   pub fn get_plugin_names_from_file_path<'a>(&'a self, file_path: &Path) -> PathPluginNames<'a> {
+    self.get_plugin_names_for_target(file_path, |_| true)
+  }
+
+  pub(crate) fn get_plugin_names_for_target<'a>(&'a self, file_path: &Path, allow_default: impl Fn(&str) -> bool) -> PathPluginNames<'a> {
     let file_name = get_lowercase_file_name(file_path);
     let extension = get_lowercase_file_extension(file_path);
-    let claiming_plugins = self.claiming_plugins(file_path, file_name.as_deref(), extension.as_deref());
+    let claiming_plugins = self.claiming_plugins_matching(file_path, file_name.as_deref(), extension.as_deref(), &allow_default);
     PathPluginNames {
       has_claiming_plugin: !claiming_plugins.is_empty(),
-      names: self.get_plugin_names(&claiming_plugins, file_path, file_name.as_deref(), extension.as_deref()),
+      names: self.get_plugin_names(&claiming_plugins, file_path, file_name.as_deref(), extension.as_deref(), &allow_default),
     }
+  }
+
+  pub(crate) fn has_file_extension(&self, extension: &str) -> bool {
+    self.extension_to_plugin_indexes_map.contains_key(extension)
   }
 
   /// Resolves plugins for a file, falling back to its shebang line when it's
@@ -165,7 +154,7 @@ impl PluginNameResolutionMaps {
     // claims the file—an additive plugin still matches by the file's own name
     let file_name = get_lowercase_file_name(file_path);
     let claiming_plugins = self.claiming_plugins(file_path, None, Some(extension));
-    Some(self.get_plugin_names(&claiming_plugins, file_path, file_name.as_deref(), Some(extension)))
+    Some(self.get_plugin_names(&claiming_plugins, file_path, file_name.as_deref(), Some(extension), &|_| true))
   }
 
   /// Gets the file path to provide to the plugins when formatting the file.
@@ -206,7 +195,7 @@ impl PluginNameResolutionMaps {
     // claims the file—an additive plugin still matches by the file's own name
     let file_name = get_lowercase_file_name(real_file_path);
     let claiming_plugins = self.claiming_plugins(real_file_path, None, Some(extension));
-    self.get_plugin_names(&claiming_plugins, real_file_path, file_name.as_deref(), Some(extension))
+    self.get_plugin_names(&claiming_plugins, real_file_path, file_name.as_deref(), Some(extension), &|_| true)
   }
 
   /// Gets the extension that an extensionless file's shebang line maps to.
@@ -224,7 +213,14 @@ impl PluginNameResolutionMaps {
 
   /// The plugins that format the file, in configuration order: the plugins that
   /// claim it plus every additive plugin that matches it.
-  fn get_plugin_names<'a>(&'a self, claiming_plugins: &ClaimingPlugins, file_path: &Path, file_name: Option<&str>, extension: Option<&str>) -> Vec<&'a str> {
+  fn get_plugin_names<'a>(
+    &'a self,
+    claiming_plugins: &ClaimingPlugins,
+    file_path: &Path,
+    file_name: Option<&str>,
+    extension: Option<&str>,
+    allow_default: &impl Fn(&str) -> bool,
+  ) -> Vec<&'a str> {
     if !self.has_additive {
       return claiming_plugins.indexes().iter().map(|&index| self.plugins[index].name.as_str()).collect();
     }
@@ -234,7 +230,7 @@ impl PluginNameResolutionMaps {
       .enumerate()
       .filter(|(index, plugin)| {
         let matches = if plugin.additive {
-          self.matches_file(*index, file_path, file_name, extension)
+          self.matches_associations(*index, file_path) || (allow_default(&plugin.name) && self.matches_default(*index, file_path, file_name, extension))
         } else {
           claiming_plugins.contains(*index)
         };
@@ -248,19 +244,29 @@ impl PluginNameResolutionMaps {
   /// match it, otherwise the first that matches it by file name, otherwise the
   /// first that matches it by extension.
   fn claiming_plugins(&self, file_path: &Path, file_name: Option<&str>, extension: Option<&str>) -> ClaimingPlugins {
+    self.claiming_plugins_matching(file_path, file_name, extension, &|_| true)
+  }
+
+  fn claiming_plugins_matching(
+    &self,
+    file_path: &Path,
+    file_name: Option<&str>,
+    extension: Option<&str>,
+    allow_default: &impl Fn(&str) -> bool,
+  ) -> ClaimingPlugins {
     let association_indexes = self
       .association_indexes
       .iter()
       .copied()
-      .filter(|&index| self.matches_associations(index, file_path))
+      .filter(|&index| allow_default(&self.plugins[index].name) && self.matches_associations(index, file_path))
       .collect::<Vec<_>>();
     if !association_indexes.is_empty() {
       return ClaimingPlugins::Many(association_indexes);
     }
 
     let index = file_name
-      .and_then(|file_name| self.first_claiming_index(&self.file_name_to_plugin_indexes_map, file_name, file_path))
-      .or_else(|| extension.and_then(|extension| self.first_claiming_index(&self.extension_to_plugin_indexes_map, extension, file_path)));
+      .and_then(|file_name| self.first_claiming_index(&self.file_name_to_plugin_indexes_map, file_name, file_path, allow_default))
+      .or_else(|| extension.and_then(|extension| self.first_claiming_index(&self.extension_to_plugin_indexes_map, extension, file_path, allow_default)));
     match index {
       Some(index) => ClaimingPlugins::One(index),
       None => ClaimingPlugins::None,
@@ -269,20 +275,16 @@ impl PluginNameResolutionMaps {
 
   /// The first non-additive plugin in the map's entry that isn't excluded from
   /// the file by its own associations.
-  fn first_claiming_index(&self, map: &HashMap<String, Vec<usize>>, key: &str, file_path: &Path) -> Option<usize> {
-    map
-      .get(key)?
-      .iter()
-      .copied()
-      .find(|&index| !self.plugins[index].additive && self.is_not_associations_excluded(index, file_path))
+  fn first_claiming_index(&self, map: &HashMap<String, Vec<usize>>, key: &str, file_path: &Path, allow_default: &impl Fn(&str) -> bool) -> Option<usize> {
+    map.get(key)?.iter().copied().find(|&index| {
+      let plugin = &self.plugins[index];
+      !plugin.additive && allow_default(&plugin.name) && self.is_not_associations_excluded(index, file_path)
+    })
   }
 
-  /// Whether a plugin matches a file by its associations, or by its default
-  /// file name and extension matching when its associations don't exclude it.
-  fn matches_file(&self, index: usize, file_path: &Path, file_name: Option<&str>, extension: Option<&str>) -> bool {
-    if self.matches_associations(index, file_path) {
-      return true;
-    }
+  /// Whether a plugin matches a file by its name or extension, and is not
+  /// excluded from it by an association.
+  fn matches_default(&self, index: usize, file_path: &Path, file_name: Option<&str>, extension: Option<&str>) -> bool {
     let matches_default = file_name.is_some_and(|file_name| map_contains(&self.file_name_to_plugin_indexes_map, file_name, index))
       || extension.is_some_and(|extension| map_contains(&self.extension_to_plugin_indexes_map, extension, index));
     matches_default && self.is_not_associations_excluded(index, file_path)
@@ -377,4 +379,39 @@ fn get_plugin_association_glob_matcher(plugin: &PluginWithConfig, config_base_pa
 
 fn ends_with_path_separator(path: &Path) -> bool {
   path.to_string_lossy().chars().next_back().is_some_and(std::path::is_separator)
+}
+
+#[test]
+fn language_selection_filters_default_additive_matches_for_shared_extensions() {
+  let base = CanonicalizedPathBuf::new_for_testing("/");
+  let map = PluginNameResolutionMaps {
+    plugins: vec![
+      PluginEntry {
+        name: "objective-c".into(),
+        additive: false,
+        associations: None,
+        additive_associations: None,
+      },
+      PluginEntry {
+        name: "matlab".into(),
+        additive: true,
+        associations: None,
+        additive_associations: None,
+      },
+      PluginEntry {
+        name: "configured".into(),
+        additive: true,
+        associations: None,
+        additive_associations: Some(get_patterns_as_glob_matcher(&["**/*.m".into()], &base).unwrap()),
+      },
+    ],
+    has_additive: true,
+    extension_to_plugin_indexes_map: HashMap::from([("m".into(), vec![0, 1])]),
+    ..Default::default()
+  };
+  let path = Path::new("/docs/code_block.m");
+  assert_eq!(map.get_plugin_names_from_file_path(path).into_names(), ["objective-c", "matlab", "configured"]);
+  let candidates = crate::language::LanguageCandidates::new("objc").unwrap();
+  let names = map.get_plugin_names_for_target(path, |key| candidates.allows_formatter("m", key, &[]));
+  assert_eq!(names.into_names(), ["objective-c", "configured"]);
 }

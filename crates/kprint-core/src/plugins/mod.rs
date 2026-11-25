@@ -12,6 +12,8 @@ pub use kprint_process_plugin::HostFormatRequest;
 #[cfg(feature = "wasm")]
 pub use kprint_wasm_plugin as wasm;
 #[cfg(feature = "wasm")]
+pub use kprint_wasm_plugin::SyncEmbeddedLanguageFormatRequest;
+#[cfg(feature = "wasm")]
 pub use kprint_wasm_plugin::SyncFormatRequest;
 #[cfg(feature = "wasm")]
 pub use kprint_wasm_plugin::SyncHostFormatRequest;

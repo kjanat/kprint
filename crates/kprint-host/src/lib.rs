@@ -7,6 +7,7 @@ pub mod environment {
 }
 pub use kprint_plugin_host as plugins;
 mod get_plugin_config_map;
+mod language;
 pub use get_plugin_config_map::*;
 pub mod configuration {
   pub use crate::get_plugin_config_map::*;
@@ -25,8 +26,8 @@ mod utils {
 pub use kprint_test_support::test_helpers;
 
 mod name_resolution;
+pub use language::resolve_language_extension;
 pub use name_resolution::PluginNameResolutionMaps;
-pub use name_resolution::resolve_language_extension;
 pub mod session;
 pub use kprint_config::options::ConfigOptions;
 pub use kprint_config::options::SessionOptions;

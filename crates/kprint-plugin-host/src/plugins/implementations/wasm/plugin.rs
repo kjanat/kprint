@@ -8,13 +8,13 @@ use kprint_plugin_types::CancellationToken;
 use kprint_plugin_types::CheckConfigUpdatesMessage;
 use kprint_plugin_types::ConfigChange;
 use kprint_plugin_types::CriticalFormatError;
+use kprint_plugin_types::EmbeddedLanguageFormatCallback;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatRange;
 use kprint_plugin_types::FormatResult;
 use kprint_plugin_types::HostFormatCallback;
-use kprint_plugin_types::HostFormatRequest;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -41,6 +41,7 @@ use super::engine_choice::FormatEngine;
 use super::engine_choice::FormatRate;
 use super::instance::InitializedWasmPluginInstance;
 use super::instance::LogFn;
+use super::instance::WasmHostRequest;
 use super::instance::create_host_state;
 fn is_stack_overflow(err: &anyhow::Error) -> bool {
   crate::plugins::maybe_critical_format_error(err).is_some_and(|critical| critical.0.downcast_ref::<super::instance::WasmStackOverflowError>().is_some())
@@ -384,6 +385,7 @@ type WasmPluginSender = std::sync::mpsc::Sender<WasmPluginRequest>;
 #[derive(Clone)]
 struct InstanceState {
   host_format_callback: HostFormatCallback,
+  host_format_language_callback: EmbeddedLanguageFormatCallback,
 }
 
 struct WasmPluginSenderWithState {
@@ -592,7 +594,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
     let start_instant = Instant::now();
     log_debug!(self.environment, "Creating instance of {} ({:?})", self.info.name, engine);
 
-    let (host_format_tx, mut host_format_rx) = tokio::sync::mpsc::unbounded_channel::<(HostFormatRequest, std::sync::mpsc::Sender<FormatResult>)>();
+    let (host_format_tx, mut host_format_rx) = tokio::sync::mpsc::unbounded_channel::<(WasmHostRequest, std::sync::mpsc::Sender<FormatResult>)>();
     let instance_state_cell: Rc<RefCell<Option<InstanceState>>> = Default::default();
     // the time the instance waited for other plugins to format for it (ex.
     // markdown's code blocks), which isn't its own formatting
@@ -607,7 +609,10 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
           match instance_state {
             Some(instance_state) => {
               let start = Instant::now();
-              let message = (instance_state.host_format_callback)(request).await;
+              let message = match request {
+                WasmHostRequest::Path(request) => (instance_state.host_format_callback)(request).await,
+                WasmHostRequest::Language(request) => (instance_state.host_format_language_callback)(request).await,
+              };
               host_format_nanos.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
               if sender.send(message).is_err() {
                 return; // disconnected
@@ -791,6 +796,10 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
   }
 
   async fn format_text(&self, request: InitializedPluginFormatRequest) -> FormatResult {
+    self.format_text_with_language(request, Rc::new(|_| async { Ok(None) }.boxed_local())).await
+  }
+
+  async fn format_text_with_language(&self, request: InitializedPluginFormatRequest, callback: EmbeddedLanguageFormatCallback) -> FormatResult {
     if request.token.is_cancelled() {
       return Ok(None);
     }
@@ -804,6 +813,7 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
     });
     let instance_state = InstanceState {
       host_format_callback: request.on_host_format,
+      host_format_language_callback: callback,
     };
     let result = self
       .with_instance(Some(instance_state), move |plugin_sender| {
@@ -917,6 +927,63 @@ mod test {
         token: Arc::new(kprint_plugin_types::NullCancellationToken),
       })
       .await
+  }
+
+  #[tokio::test]
+  async fn v5_plugin_delegates_embedded_language_on_both_engines() {
+    let wasm = include_bytes!("../../../../../test-plugin/test_plugin_v5.wasm");
+    for engine in [FormatEngine::Interpreter, FormatEngine::Native] {
+      let environment = TestEnvironment::new();
+      let load_native: LoadModule<WasmModule> = Box::new(|| {
+        async {
+          let compiled = crate::plugins::compile_wasm(wasm)?;
+          super::super::WasmModuleCreator::default().create_from_serialized(&compiled.bytes)
+        }
+        .boxed_local()
+      });
+      let formatting = Rc::new(Formatting {
+        native: Rc::new(LazyModule::new(load_native)),
+        load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
+        invalid_native: Cell::new(false),
+        native_module_path: PathBuf::from("/plugin.cwasm"),
+        native_exists: Cell::new(None),
+        format_rate_path: PathBuf::from("/plugin.rate.json"),
+        chosen: Cell::new(Some(Choice { engine, bytes_to_format: 13 })),
+        environment: environment.clone(),
+      });
+      let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(wasm).unwrap(), Arc::new(|_| {})));
+      let plugin = InitializedWasmPlugin::new(test_plugin_info(), interpreter, formatting, environment);
+      let result = plugin
+        .format_text_with_language(
+          InitializedPluginFormatRequest {
+            real_file_path: PathBuf::from("/outer.md"),
+            file_path: PathBuf::from("/outer.md"),
+            file_text: b"embedded:code".to_vec(),
+            range: None,
+            config: Arc::new(FormatConfig {
+              id: FormatConfigId::from_raw(1),
+              global: Default::default(),
+              plugin: Default::default(),
+              base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+            }),
+            override_config: Default::default(),
+            on_host_format: Rc::new(|_| async { panic!("unexpected path request") }.boxed_local()),
+            token: Arc::new(kprint_plugin_types::NullCancellationToken),
+          },
+          Rc::new(|request| {
+            async move {
+              assert_eq!(request.language, "TypeScript React");
+              assert_eq!(request.file_bytes, b"code");
+              assert_eq!(request.range, None);
+              Ok(Some(b"formatted".to_vec()))
+            }
+            .boxed_local()
+          }),
+        )
+        .await
+        .unwrap();
+      assert_eq!(result, Some(b"formatted".to_vec()));
+    }
   }
 
   #[tokio::test]

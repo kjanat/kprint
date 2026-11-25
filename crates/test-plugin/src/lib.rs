@@ -14,6 +14,7 @@ use kprint_core::plugins::FormatError;
 use kprint_core::plugins::FormatResult;
 use kprint_core::plugins::PluginInfo;
 use kprint_core::plugins::PluginResolveConfigurationResult;
+use kprint_core::plugins::SyncEmbeddedLanguageFormatRequest;
 use kprint_core::plugins::SyncFormatRequest;
 use kprint_core::plugins::SyncHostFormatRequest;
 use kprint_core::plugins::SyncPluginHandler;
@@ -144,6 +145,23 @@ impl SyncPluginHandler<Configuration> for TestWasmPlugin {
       });
     }
     Ok(changes)
+  }
+
+  fn format_with_host_language(
+    &mut self,
+    request: SyncFormatRequest<Configuration>,
+    format_with_host: impl FnMut(SyncHostFormatRequest) -> FormatResult,
+    mut format_language: impl FnMut(SyncEmbeddedLanguageFormatRequest) -> FormatResult,
+  ) -> FormatResult {
+    if let Some(bytes) = request.file_bytes.strip_prefix(b"embedded:") {
+      return format_language(SyncEmbeddedLanguageFormatRequest {
+        language: "TypeScript React",
+        file_bytes: bytes,
+        range: None,
+        override_config: &ConfigKeyMap::default(),
+      });
+    }
+    self.format(request, format_with_host)
   }
 
   fn format(&mut self, request: SyncFormatRequest<Configuration>, mut format_with_host: impl FnMut(SyncHostFormatRequest) -> FormatResult) -> FormatResult {

@@ -15,6 +15,16 @@ pub struct HostFormatRequest {
   pub token: std::sync::Arc<dyn CancellationToken>,
 }
 
+/// A request to format embedded text selected by its raw language label.
+#[derive(Debug)]
+pub struct EmbeddedLanguageFormatRequest {
+  pub language: String,
+  pub file_bytes: Vec<u8>,
+  pub range: FormatRange,
+  pub override_config: ConfigKeyMap,
+  pub token: std::sync::Arc<dyn CancellationToken>,
+}
+
 pub struct FormatRequest<TConfiguration> {
   pub file_path: std::path::PathBuf,
   pub file_bytes: Vec<u8>,
@@ -47,7 +57,21 @@ pub trait AsyncPluginHandler: 'static {
     request: FormatRequest<Self::Configuration>,
     format_with_host: impl FnMut(HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> + 'static,
   ) -> FormatResult;
+
+  /// Formats a file with access to language-labelled embedded formatting.
+  /// Existing handlers can continue to implement only `format`.
+  async fn format_with_host_language(
+    &self,
+    request: FormatRequest<Self::Configuration>,
+    format_with_host: impl FnMut(HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> + 'static,
+    _format_with_host_language: impl FnMut(EmbeddedLanguageFormatRequest) -> LocalBoxFuture<'static, FormatResult> + 'static,
+  ) -> FormatResult {
+    self.format(request, format_with_host).await
+  }
 }
 
 /// Calls the host to format a nested document, independently of transport.
 pub type HostFormatCallback = std::rc::Rc<dyn Fn(HostFormatRequest) -> LocalBoxFuture<'static, FormatResult>>;
+
+/// Calls the host to format embedded text using a language label.
+pub type EmbeddedLanguageFormatCallback = std::rc::Rc<dyn Fn(EmbeddedLanguageFormatRequest) -> LocalBoxFuture<'static, FormatResult>>;
