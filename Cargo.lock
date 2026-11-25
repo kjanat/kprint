@@ -1782,10 +1782,12 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
+ "serde_norway",
  "similar",
  "text-size",
  "tokio",
  "tokio-util",
+ "ureq",
  "url",
 ]
 
