@@ -1162,7 +1162,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
   let npm_extends_resolver = NpmExtendsResolver::default();
   let mut plugin_responses = HashMap::new();
   let mut extends_responses = HashMap::new();
-  let mut updates_per_scope = HashMap::with_capacity(scopes.len());
+  let mut direct_updates = HashMap::with_capacity(scopes.len());
   let mut originals = Vec::new();
   let mut staged = HashMap::new();
   for (i, scope) in scopes.iter().enumerate() {
@@ -1238,6 +1238,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       None
     };
     if selected.as_ref().is_some_and(HashSet::is_empty) {
+      direct_updates.insert(config_path.clone(), Vec::new());
       continue;
     }
 
@@ -1281,7 +1282,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
         };
         let resolved = async {
           let resolved = resolve_config_from_path_with_bytes(&candidate, environment).await?;
-          validate_new_plugin_references(plugin_resolver, &config.plugins.sources, resolved.plugins.sources).await
+          validate_new_plugin_references(plugin_resolver, &config.plugins.sources, &resolved.plugins.sources).await
         }
         .await;
         if let Err(err) = resolved {
@@ -1360,10 +1361,8 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
             } else {
               log_stderr_info!(environment, "Updating {} {}{} to {}...", info.name, info.old_version, in_config, new_target);
             }
-            // only record an update that rewrote an entry in this file. a plugin
-            // from an `extends`ed config is reported (its version really did
-            // move) but has nothing here to rewrite, and running its config
-            // updates would be acting on a plugin this file didn't change
+            // Record direct updates here. Changes from extends and inheritance
+            // are collected after resolving the combined update.
             if new_file_text != file_text {
               file_text = new_file_text;
               updated_plugins.push(info);
@@ -1380,7 +1379,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       originals.push((config_path.clone(), original));
       staged.insert(config_path.clone(), file_text);
     }
-    updates_per_scope.insert(config_path.clone(), updated_plugins);
+    direct_updates.insert(config_path.clone(), updated_plugins);
   }
 
   if !dry_run {
@@ -1390,12 +1389,15 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       } else {
         log_warn!(environment, "Skipping {} because it changed during the update.", path.display());
         staged.remove(path);
-        updates_per_scope.remove(path);
+        direct_updates.remove(path);
         false
       }
     });
   }
 
+  let mut schemas_to_refresh = Vec::new();
+  let mut migrations_per_scope = HashMap::new();
+  let mut inherited_preview_texts = HashMap::new();
   if !staged.is_empty() {
     for scope in scopes.iter() {
       let Some(config) = &scope.scope.config else { continue };
@@ -1411,12 +1413,51 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       let resolved = resolve_staged_config(&candidate, &staged, environment)
         .await
         .with_context(|| format!("The selected updates are incompatible in {}", path.display()))?;
-      validate_new_plugin_references(plugin_resolver, &config.plugins.sources, resolved.plugins.sources).await?;
+      let proposed = resolved.plugins.sources;
+      validate_new_plugin_references(plugin_resolver, &config.plugins.sources, &proposed).await?;
+      if staged.contains_key(path) || config.plugins.sources != proposed {
+        schemas_to_refresh.push(path);
+      }
+      if config.plugins.sources == proposed {
+        continue;
+      }
+
+      let Some(updates) = direct_updates.get(path) else { continue };
+      let mut seen = HashSet::new();
+      let mut migrations = Vec::new();
+      for (reference, plugin) in get_config_file_plugins(plugin_resolver, proposed).await {
+        let Ok(plugin) = plugin else { continue };
+        let info = plugin.info();
+        if !seen.insert(plugin.referenced_plugin_name().to_string()) {
+          continue;
+        }
+        let old_version = updates
+          .iter()
+          .find(|update| update.name == info.name && update.new_reference.path_source == reference.path_source)
+          .map(|update| &update.old_version)
+          .or_else(|| {
+            let previous = scope.scope.plugins.get(&info.name)?;
+            (previous.info().version != info.version).then_some(&previous.info().version)
+          });
+        if let Some(old_version) = old_version {
+          migrations.push(PluginConfigMigration {
+            name: info.name.clone(),
+            old_version: old_version.clone(),
+            new_reference: reference,
+          });
+        }
+      }
+      if !migrations.is_empty() {
+        if dry_run && !staged.contains_key(path) {
+          inherited_preview_texts.insert(path.clone(), candidate.content);
+        }
+        migrations_per_scope.insert(path.clone(), migrations);
+      }
     }
   }
 
   if dry_run {
-    return preview_plugin_config_updates(environment, plugin_resolver, &updates_per_scope, &staged).await;
+    return preview_plugin_config_updates(environment, plugin_resolver, &migrations_per_scope, &staged, &inherited_preview_texts).await;
   }
 
   for (path, original) in &originals {
@@ -1424,31 +1465,72 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       bail!("{} changed while validating updates. Run the update again.", path.display());
     }
   }
-  for (path, _) in &originals {
-    environment.write_file(path, &staged[path])?;
-  }
-  for (path, _) in originals {
-    update_config_schema_file(environment, plugin_resolver, &path, &[]).await;
-  }
+  write_config_updates(environment, &originals, &staged, |path, text| environment.write_file(path, text))?;
 
   // now resolve the plugins again in every scope and run their config updates
 
-  run_plugin_config_updates(environment, args, &file_pattern_args, plugin_resolver, &updates_per_scope)
+  run_plugin_config_updates(environment, args, &file_pattern_args, plugin_resolver, &migrations_per_scope)
     .await
     .with_context(|| "Failed running plugin config updates.".to_string())?;
 
+  for path in schemas_to_refresh {
+    update_config_schema_file(environment, plugin_resolver, path, &[]).await;
+  }
+
+  Ok(())
+}
+
+fn write_config_updates(
+  environment: &impl Environment,
+  originals: &[(CanonicalizedPathBuf, String)],
+  staged: &HashMap<CanonicalizedPathBuf, String>,
+  write_file: impl Fn(&CanonicalizedPathBuf, &str) -> std::io::Result<()>,
+) -> Result<()> {
+  for (index, (path, original)) in originals.iter().enumerate() {
+    let mut attempted_write = false;
+    let mut write = || -> Result<()> {
+      if environment.read_file(path)? != *original {
+        bail!("{} changed while applying updates. Run the update again.", path.display());
+      }
+      attempted_write = true;
+      write_file(path, &staged[path])?;
+      Ok(())
+    };
+    if let Err(error) = write() {
+      // A failed in-place write may already have truncated the file.
+      let attempted = index + usize::from(attempted_write);
+      for (written_path, original) in originals[..attempted].iter().rev() {
+        let restore = || -> Result<()> {
+          let current = environment.read_file_bytes(written_path)?;
+          if current == original.as_bytes() {
+            return Ok(());
+          }
+          let proposed = staged[written_path].as_bytes();
+          if current != proposed && !(written_path == path && proposed.starts_with(&current)) {
+            bail!("the file changed after the update was written");
+          }
+          write_file(written_path, original)?;
+          Ok(())
+        };
+        if let Err(restore_error) = restore() {
+          log_warn!(environment, "Failed restoring {}: {restore_error:#}", written_path.display());
+        }
+      }
+      return Err(error).with_context(|| format!("Failed applying configuration update to {}", path.display()));
+    }
+  }
   Ok(())
 }
 
 async fn validate_new_plugin_references<TEnvironment: Environment>(
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
   previous: &[PluginSourceReference],
-  proposed: Vec<PluginSourceReference>,
+  proposed: &[PluginSourceReference],
 ) -> Result<()> {
-  for reference in proposed.into_iter().filter(|reference| !previous.contains(reference)) {
+  for reference in proposed.iter().filter(|reference| !previous.contains(reference)) {
     let source = reference.display();
     plugin_resolver
-      .resolve_plugin(reference)
+      .resolve_plugin(reference.clone())
       .await
       .with_context(|| format!("Failed resolving new plugin reference {source}"))
       .map_err(crate::resolution::ResolvePluginsError::from)?;
@@ -1554,14 +1636,15 @@ async fn resolve_npm_extends_update(
 async fn preview_plugin_config_updates<TEnvironment: Environment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
-  updates_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginUpdateInfo>>,
+  migrations_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginConfigMigration>>,
   dry_run_texts: &HashMap<CanonicalizedPathBuf, String>,
+  inherited_texts: &HashMap<CanonicalizedPathBuf, String>,
 ) -> Result<()> {
-  let mut configs = dry_run_texts.iter().collect::<Vec<_>>();
+  let mut configs = dry_run_texts.iter().chain(inherited_texts).collect::<Vec<_>>();
   configs.sort_by_key(|(path, _)| path.display().to_string());
-  for (config_path, file_text) in configs {
-    let updated_plugins = &updates_per_scope[config_path];
-    let mut file_text = file_text.clone();
+  for (config_path, input_text) in configs {
+    let migrations = migrations_per_scope.get(config_path).map(Vec::as_slice).unwrap_or_default();
+    let mut file_text = input_text.clone();
     let format = ConfigFileFormat::from_file(config_path, &file_text);
     let config_map = match format.parse(&file_text) {
       Ok(map) => map,
@@ -1571,7 +1654,7 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
       }
     };
     let mut all_diagnostics = Vec::new();
-    for update_info in updated_plugins {
+    for update_info in migrations {
       let plugin = match plugin_resolver.resolve_plugin(update_info.new_reference.clone()).await {
         Ok(plugin) => plugin,
         Err(err) => {
@@ -1621,6 +1704,9 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
       }
     }
 
+    if !dry_run_texts.contains_key(config_path) && file_text == *input_text {
+      continue;
+    }
     log_stdout_info!(
       environment,
       "\n{}\n{}",
@@ -1638,13 +1724,22 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
   Ok(())
 }
 
+struct PluginConfigMigration {
+  name: String,
+  old_version: String,
+  new_reference: PluginSourceReference,
+}
+
 async fn run_plugin_config_updates<TEnvironment: Environment>(
   environment: &TEnvironment,
   args: &CliArgs,
   file_pattern_args: &FilePatternArgs,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
-  updates_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginUpdateInfo>>,
+  migrations_per_scope: &HashMap<CanonicalizedPathBuf, Vec<PluginConfigMigration>>,
 ) -> Result<()> {
+  if migrations_per_scope.is_empty() {
+    return Ok(());
+  }
   let config_discovery = args.config_discovery(environment);
   let scopes = resolve_plugins_scope_and_paths(
     args,
@@ -1668,16 +1763,14 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
         continue;
       }
     };
-    let updated_plugins = match updates_per_scope.get(config_path) {
-      Some(updates) => updates,
+    let migrations = match migrations_per_scope.get(config_path) {
+      Some(migrations) => migrations,
       None => {
         continue;
       }
     };
-    if updated_plugins.is_empty() {
-      continue;
-    }
-    let mut file_text = environment.read_file(config_path)?;
+    let original = environment.read_file(config_path)?;
+    let mut file_text = original.clone();
     let format = ConfigFileFormat::from_file(config_path, &file_text);
     let config_map = match format.parse(&file_text) {
       Ok(map) => map,
@@ -1688,11 +1781,7 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
     };
     let mut all_diagnostics = Vec::new();
     for plugin in scope.scope.plugins.values() {
-      // matching on name alone is exact: these updates all rewrote an entry in
-      // this config file, and a scope holds one plugin per name. the version
-      // isn't usable here — an npm entry's version is its package's, which is a
-      // different line from the version a plugin reports about itself
-      let Some(update_info) = updated_plugins.iter().find(|info| info.name == plugin.info().name) else {
+      let Some(update_info) = migrations.iter().find(|info| info.name == plugin.info().name) else {
         continue;
       };
       log_debug!(environment, "Updating for {}", plugin.name());
@@ -1739,7 +1828,9 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
         log_warn!(environment, "* {}", diagnostic);
       }
     }
-    environment.write_file(config_path, &file_text)?;
+    if file_text != original {
+      environment.write_file(config_path, &file_text)?;
+    }
   }
   Ok(())
 }
@@ -2521,6 +2612,7 @@ fn select_editor_args(env: &impl Environment) -> Vec<String> {
 #[cfg(test)]
 mod test {
   use kprint_platform::environment::*;
+  use std::collections::HashMap;
   use std::path::Path;
 
   use anyhow::Result;
@@ -6631,6 +6723,51 @@ text",
   }
 
   #[test]
+  fn config_update_migrates_options_when_extends_upgrades_a_plugin() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin().add_remote_wasm_0_1_0_plugin().build();
+    let old = br#"{"plugins":["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"]}"#;
+    let new = r#"{"plugins":["https://plugins.dprint.dev/test-plugin.wasm"]}"#;
+    add_npm_config_tarballs(&environment, new);
+    let tarball = crate::test_helpers::create_test_npm_tarball(&[("package/base.json", old)]);
+    environment.add_remote_file_bytes("https://registry.npmjs.org/shared-config/-/shared-config-1.0.0.tgz", tarball);
+    let config = r#"{"extends":"npm:shared-config@1.0.0/base.json","test-plugin":{"should_set_past_version":"unset"}}"#;
+    environment.write_file("/kprint.json", config).unwrap();
+
+    run_test_cli(vec!["config", "update", "--dry-run"], &environment).unwrap();
+    assert_eq!(environment.read_file("/kprint.json").unwrap(), config);
+    let preview = environment.take_stdout_messages().join("\n");
+    assert_contains!(preview, "shared-config@1.1.0");
+    assert_contains!(preview, r#""should_set_past_version":"0.1.0""#);
+    let _ = environment.take_stderr_messages();
+
+    run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+    let updated: serde_json::Value = serde_json::from_str(&environment.read_file("/kprint.json").unwrap()).unwrap();
+    assert_eq!(updated["extends"], "npm:shared-config@1.1.0/base.json");
+    assert_eq!(updated["test-plugin"]["should_set_past_version"], "0.1.0");
+    let _ = environment.take_stderr_messages();
+  }
+
+  #[test]
+  fn config_update_refreshes_the_schema_for_an_unchanged_inheriting_child() {
+    let child = r#"{"inherit":true}"#;
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file(TEST_PLUGIN_SCHEMA_URL, TEST_PLUGIN_SCHEMA)
+      .write_file("/kprint.json", r#"{"extends":"npm:shared-config@1.0.0/base.json"}"#)
+      .write_file("/nested/kprint.json", child)
+      .write_file("/nested/kprint.schema.json", "{}")
+      .build();
+    add_npm_config_tarballs(&environment, r#"{"plugins":["https://plugins.dprint.dev/test-plugin.wasm"]}"#);
+
+    run_test_cli(vec!["config", "update", "--recursive", "--yes"], &environment).unwrap();
+
+    assert_eq!(environment.read_file("/nested/kprint.json").unwrap(), child);
+    let schema = serde_json::from_str(&environment.read_file("/nested/kprint.schema.json").unwrap()).unwrap();
+    assert_eq!(config_schema_plugins(&schema), ["test-plugin"]);
+    let _ = environment.take_stderr_messages();
+    let _ = environment.take_stdout_messages();
+  }
+
+  #[test]
   fn config_update_rejects_an_extended_config_with_a_missing_plugin() {
     let environment = TestEnvironment::new();
     let missing = "https://plugins.dprint.dev/missing.wasm";
@@ -6679,6 +6816,38 @@ text",
         assert_eq!(child_after, child);
       }
       let _ = environment.take_stderr_messages();
+    }
+  }
+
+  #[test]
+  fn config_update_restores_originals_after_a_partial_write() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/kprint.json", "{}")
+      .write_file("/nested/kprint.json", r#"{"inherit":true}"#)
+      .build();
+    let parent = environment.canonicalize("/kprint.json").unwrap();
+    let child = environment.canonicalize("/nested/kprint.json").unwrap();
+    let originals = vec![
+      (parent.clone(), environment.read_file(&parent).unwrap()),
+      (child.clone(), environment.read_file(&child).unwrap()),
+    ];
+    let staged = HashMap::from([
+      (parent.clone(), r#"{"lineWidth":80}"#.to_string()),
+      (child.clone(), r#"{"inherit":true,"lineWidth":100}"#.to_string()),
+    ]);
+    let error = super::write_config_updates(&environment, &originals, &staged, |path, text| {
+      if path == &child && text == staged[&child] {
+        assert_eq!(environment.read_file(&parent).unwrap(), staged[&parent]);
+        environment.write_file(path, &text[..5])?;
+        return Err(std::io::Error::other("simulated write failure"));
+      }
+      environment.write_file(path, text)
+    })
+    .unwrap_err();
+
+    assert_contains!(format!("{error:#}"), "simulated write failure");
+    for (path, original) in originals {
+      assert_eq!(environment.read_file(&path).unwrap(), original);
     }
   }
 

@@ -33,6 +33,4 @@ sys_traits          = { workspace = true, features = ["memory"] }
 tempfile            = { workspace = true }
 
 [build-dependencies]
-serde                  = { workspace = true, features = ["derive"] }
-serde_norway.workspace = true
-ureq                   = { workspace = true, features = ["tls"] }
+linguist = { version = "0.1.18", default-features = false }
