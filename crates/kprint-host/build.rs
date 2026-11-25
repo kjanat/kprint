@@ -17,6 +17,8 @@ struct Language {
   extensions: Vec<String>,
 }
 
+// Cargo runs build scripts before an environment exists.
+#[allow(clippy::disallowed_methods)]
 fn main() {
   println!("cargo:rerun-if-changed=build.rs");
   let response = ureq::AgentBuilder::new()
