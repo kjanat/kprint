@@ -17,6 +17,25 @@ use crate::utils::get_lowercase_file_name;
 use crate::utils::get_shebang_line;
 use crate::utils::is_shebang_prefix_match;
 
+include!(concat!(env!("OUT_DIR"), "/language_extensions.rs"));
+
+/// Looks up Linguist's preferred extension for a language name or alias.
+pub fn resolve_language_extension(language_id: &str) -> Option<&'static str> {
+  let index = LINGUIST_EXTENSIONS
+    .binary_search_by(|(id, _)| id.bytes().cmp(language_id.bytes().map(|byte| byte.to_ascii_lowercase())))
+    .ok()?;
+  Some(LINGUIST_EXTENSIONS[index].1)
+}
+
+#[test]
+fn resolves_linguist_names_and_aliases_to_extensions() {
+  assert_eq!(resolve_language_extension("HCL"), Some("hcl"));
+  assert_eq!(resolve_language_extension("terraform"), Some("hcl"));
+  assert_eq!(resolve_language_extension("objc"), Some("m"));
+  assert_eq!(resolve_language_extension("Jupyter Notebook"), Some("ipynb"));
+  assert_eq!(resolve_language_extension("unknown-language"), None);
+}
+
 #[derive(Default)]
 pub struct PluginNameResolutionMaps {
   /// The scope's plugins in configuration order, which is the order they

@@ -102,7 +102,17 @@ pub fn update_plugin_in_config(file_text: &str, info: &PluginUpdateInfo) -> Stri
 
 pub(super) fn replace_extends_in_json(text: &str, old: &str, new: &str) -> Result<String> {
   let root = CstRootNode::parse(text, &Default::default())?;
-  let Some(value) = root.object_value().and_then(|obj| obj.get("extends")).and_then(|prop| prop.value()) else {
+  let Some(value) = root
+    .object_value()
+    .and_then(|obj| {
+      obj
+        .properties()
+        .into_iter()
+        .rev()
+        .find(|prop| prop.name().is_some_and(|name| name.decoded_value().is_ok_and(|value| value == "extends")))
+    })
+    .and_then(|prop| prop.value())
+  else {
     return Ok(text.to_string());
   };
   let entries = match value.as_array() {

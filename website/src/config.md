@@ -223,7 +223,7 @@ kprint config update
 
 To update configuration files in descendant directories, run `kprint config update --recursive`.
 
-In a terminal, choose which updates to apply. Process plugin updates and checksum-pinned `extends` still ask for confirmation. Run `kprint config update --yes` to apply all available updates without prompting, or `kprint config update --dry-run` to preview the changes without writing any files.
+In a terminal, choose which updates to apply. Process plugin updates and checksum-pinned `extends` still ask for confirmation. Run `kprint config update --yes` to apply all available updates without prompting, or `kprint config update --dry-run` to preview the changes without writing project configuration or schema files. On a cold cache, the preview may download and extract replacement packages into the cache.
 
 When an `extends` entry updates, its subpath is kept and its checksum is refreshed if it has one. Your package manager still manages unversioned `npm:` entries.
 

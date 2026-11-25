@@ -278,7 +278,13 @@ fn resolve_current_gitignore(
   };
   // git reads `.git/info/exclude` and the global excludes file only at the
   // repository root (https://git-scm.com/docs/gitignore)
-  let exclude_bytes = repo.and_then(|repo| environment.read_file_bytes(repo.common_dir.join("info").join("exclude")).ok());
+  let exclude_bytes = if let Some(repo) = repo {
+    environment.read_file_bytes(repo.common_dir.join("info").join("exclude")).ok()
+  } else if is_repo_root {
+    environment.read_file_bytes(dir_path.join(".git/info/exclude")).ok()
+  } else {
+    None
+  };
   let global_lines: &[String] = if is_repo_root { options.global_gitignore_lines.as_slice() } else { &[] };
   if gitignore_bytes.is_none() && exclude_bytes.is_none() && global_lines.is_empty() {
     return None;

@@ -1230,7 +1230,7 @@ EXAMPLES:
             .arg(
               Arg::new("dry-run")
                 .long("dry-run")
-                .help("Print the updates that would be made without modifying any files.")
+                .help("Preview updates without writing project configuration or schema files. This may populate the cache.")
                 .action(clap::ArgAction::SetTrue),
             )
             .arg(

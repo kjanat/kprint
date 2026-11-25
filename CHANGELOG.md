@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- The language server formats notebook cells and untitled documents. Editor integrations can request approval before running external formatters or accessing resources that require workspace trust.
+
+### Changed
+
+- Interactive `kprint config update` lets users choose plugin and versioned npm configuration updates.
+
 ## [0.64.1] (2026-11-18)
 
 - Generated configuration schemas and editor completions offer `configFile` only when kprint can load an external configuration for the plugin or the plugin defines that option itself. [#102](https://github.com/kjanat/kprint/pull/102)

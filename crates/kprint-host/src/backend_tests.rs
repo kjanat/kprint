@@ -162,6 +162,7 @@ fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
         .add_config_section("test-plugin", r#"{"overrides":{"files":"**/build","ending":"mapped"}}"#);
     })
     .build();
+  environment.set_log_level(kprint_host_api::ui::LogLevel::Debug);
   environment.clone().run_in_runtime(async move {
     let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
     let session = crate::HostSession::new(environment.clone(), resolver, None);
@@ -179,8 +180,22 @@ fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
     let callback = scope.create_host_format_callback_for_path(scope.get_plugin("test-plugin"), real.clone(), real, synthetic.clone());
     assert_eq!(callback(request()).await.unwrap().unwrap(), b"text_mapped");
     // The same filename keeps its identity after a synthetic request, too.
-    assert_eq!(scope.format(request()).await.unwrap().unwrap(), b"text_formatted");
+    assert_eq!(scope.format_with_language_id(request(), Some("txt")).await.unwrap().unwrap(), b"text_formatted");
     session.shutdown().await;
+    let messages = environment.take_stderr_messages();
+    let format_messages = messages
+      .iter()
+      .filter(|message| message.starts_with("[DEBUG] Host formatting "))
+      .collect::<Vec<_>>();
+    let without_id = format!(
+      "[DEBUG] Host formatting {} - File length: 4 - Plugins: [test-plugin] - Range: None",
+      synthetic.display()
+    );
+    let with_id = format!(
+      "[DEBUG] Host formatting {} - Language ID: \"txt\" - File length: 4 - Plugins: [test-plugin] - Range: None",
+      synthetic.display()
+    );
+    assert_eq!(format_messages, [&without_id, &without_id, &with_id]);
     environment.clear_logs();
   });
 }

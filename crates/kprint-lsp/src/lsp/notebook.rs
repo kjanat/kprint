@@ -154,11 +154,11 @@ mod tests {
     assert_eq!(get("python"), Some(PathBuf::from("/dir/code_block.py")));
     assert_eq!(get("TypeScript"), Some(PathBuf::from("/dir/code_block.ts")));
     assert_eq!(get("markdown"), Some(PathBuf::from("/dir/code_block.md")));
-    // other languages use the language id as the extension
+    assert_eq!(get("objective-c"), Some(PathBuf::from("/dir/code_block.m")));
+    assert_eq!(get("terraform"), Some(PathBuf::from("/dir/code_block.hcl")));
     assert_eq!(get("sql"), Some(PathBuf::from("/dir/code_block.sql")));
     // languages that can't be used as an extension
     assert_eq!(get(""), None);
-    assert_eq!(get("objective-c"), None);
     assert_eq!(get("ipynb"), None);
   }
 

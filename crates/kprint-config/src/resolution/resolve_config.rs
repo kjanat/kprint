@@ -219,7 +219,7 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  resolve_config_file(config_path_and_text, Ancestor::None, environment).await
+  resolve_config_file(config_path_and_text, Ancestor::None, None, environment).await
 }
 
 /// Resolves a configuration file in a directory within the directory of the
@@ -230,7 +230,7 @@ pub async fn resolve_descendant_config_from_path_with_bytes<TEnvironment: Enviro
   ancestor: &ResolvedConfig,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  resolve_config_file(config_path_and_text, Ancestor::Resolved(ancestor), environment).await
+  resolve_config_file(config_path_and_text, Ancestor::Resolved(ancestor), None, environment).await
 }
 
 /// Resolves a configuration file the way it's used for the files in its
@@ -242,7 +242,17 @@ pub async fn resolve_config_with_ancestors_from_path_with_bytes<TEnvironment: En
   config_path_and_text: &ResolvedConfigPathWithText,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  resolve_config_file(config_path_and_text, Ancestor::FromDirectories, environment).await
+  resolve_config_file(config_path_and_text, Ancestor::FromDirectories, None, environment).await
+}
+
+/// Resolves a configuration against proposed local edits, including edits to
+/// ancestors and explicitly extended files.
+pub async fn resolve_staged_config<TEnvironment: Environment>(
+  config_path_and_text: &ResolvedConfigPathWithText,
+  staged: &HashMap<CanonicalizedPathBuf, String>,
+  environment: &TEnvironment,
+) -> Result<ResolvedConfig, ResolveConfigError> {
+  resolve_config_file(config_path_and_text, Ancestor::FromDirectories, Some(staged), environment).await
 }
 
 /// What a configuration file inherits when it specifies `"inherit": true`.
@@ -262,17 +272,22 @@ enum Ancestor<'a> {
 async fn resolve_config_file<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
   ancestor: Ancestor<'_>,
+  staged: Option<&HashMap<CanonicalizedPathBuf, String>>,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
+  let mut root_file = config_path_and_text.as_file_path_with_text_ref();
+  if let Some(text) = staged_text(staged, root_file.source) {
+    root_file.content = text;
+  }
   let root = ConfigDocument {
-    file: config_path_and_text.as_file_path_with_text_ref(),
+    file: root_file,
     is_first_download: config_path_and_text.is_first_download,
     extended_by: &[],
     trusted: config_path_and_text.source.is_local(),
     requires_checksum: false,
   }
   .parse(environment)?;
-  let collected = collect_layers(root, config_path_and_text.reload, environment).await?;
+  let collected = collect_layers(root, config_path_and_text.reload, staged, environment).await?;
 
   let mut remote_exec = RemoteExec::default();
   let mut layers = collected.layers.into_iter();
@@ -308,7 +323,7 @@ async fn resolve_config_file<TEnvironment: Environment>(
       Ancestor::None => {}
       Ancestor::Resolved(ancestor) => config.inherit(ancestor, environment)?,
       Ancestor::FromDirectories => {
-        if let Some(ancestor) = resolve_ancestor_directories_config(config_path_and_text, environment).await? {
+        if let Some(ancestor) = resolve_ancestor_directories_config(config_path_and_text, staged, environment).await? {
           config.inherit(&ancestor, environment)?;
         }
       }
@@ -371,6 +386,7 @@ fn rebase_dot_config_patterns(config: &mut ResolvedConfig) {
 /// directory's configuration file, or else the global configuration file.
 async fn resolve_ancestor_directories_config<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
+  staged: Option<&HashMap<CanonicalizedPathBuf, String>>,
   environment: &TEnvironment,
 ) -> Result<Option<ResolvedConfig>, ResolveConfigError> {
   if config_path_and_text.is_global_config {
@@ -397,7 +413,7 @@ async fn resolve_ancestor_directories_config<TEnvironment: Environment>(
   };
   ancestor_path.reload = config_path_and_text.reload;
   // the ancestor's directories are above it, so this ends
-  Box::pin(resolve_config_file(&ancestor_path, Ancestor::FromDirectories, environment))
+  Box::pin(resolve_config_file(&ancestor_path, Ancestor::FromDirectories, staged, environment))
     .await
     .map(Some)
 }
@@ -446,7 +462,12 @@ struct CollectedLayers {
 /// extended) is only read where it has the highest precedence, since its
 /// properties are already set everywhere after that. A file that extends
 /// itself, directly or through other files, is an error.
-async fn collect_layers(root: ConfigLayer, reload: bool, environment: &impl Environment) -> Result<CollectedLayers> {
+async fn collect_layers(
+  root: ConfigLayer,
+  reload: bool,
+  staged: Option<&HashMap<CanonicalizedPathBuf, String>>,
+  environment: &impl Environment,
+) -> Result<CollectedLayers> {
   struct PendingReference {
     reference: ConfigReference,
     referrer: LayerOrigin,
@@ -531,7 +552,7 @@ async fn collect_layers(root: ConfigLayer, reload: bool, environment: &impl Envi
         unreachable!()
       }
     } else {
-      resolve_extended_file(&reference, reload, environment).await
+      resolve_extended_file(&reference, reload, staged, environment).await
     };
     let file = match resolved_file {
       Ok(file) => file,
@@ -584,16 +605,33 @@ async fn collect_layers(root: ConfigLayer, reload: bool, environment: &impl Envi
   Ok(CollectedLayers { inherit, layers })
 }
 
-async fn resolve_extended_file(reference: &ConfigReference, reload: bool, environment: &impl Environment) -> Result<crate::utils::ResolvedFilePathWithText> {
+fn staged_text<'a>(staged: Option<&'a HashMap<CanonicalizedPathBuf, String>>, source: &PathSource) -> Option<&'a str> {
+  staged?.get(source.maybe_local_path()?).map(String::as_str)
+}
+
+async fn resolve_extended_file(
+  reference: &ConfigReference,
+  reload: bool,
+  staged: Option<&HashMap<CanonicalizedPathBuf, String>>,
+  environment: &impl Environment,
+) -> Result<crate::utils::ResolvedFilePathWithText> {
   use crate::utils::RemoteCacheMode;
   use crate::utils::resolve_path_source_to_file_with_cache_mode;
   use crate::utils::verify_sha256_checksum;
-  let mut file = resolve_path_source_to_file_with_cache_mode(
-    reference.target.clone(),
-    environment,
-    if reload { RemoteCacheMode::Reload } else { RemoteCacheMode::Use },
-  )
-  .await?;
+  let mut file = if let Some(text) = staged_text(staged, &reference.target) {
+    crate::utils::ResolvedFilePathWithBytes {
+      source: reference.target.clone(),
+      is_first_download: false,
+      content: text.as_bytes().to_vec(),
+    }
+  } else {
+    resolve_path_source_to_file_with_cache_mode(
+      reference.target.clone(),
+      environment,
+      if reload { RemoteCacheMode::Reload } else { RemoteCacheMode::Use },
+    )
+    .await?
+  };
   if let Some(checksum) = &reference.checksum {
     if verify_sha256_checksum(&file.content, checksum).is_err() && reference.target.is_remote() {
       file = resolve_path_source_to_file_with_cache_mode(reference.target.clone(), environment, RemoteCacheMode::Reload).await?;

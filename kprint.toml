@@ -68,7 +68,7 @@ associations = ["package.json"]
 
 [exec]
 playWithFire = true
-cwd = "${configDir}"
+cwd          = "${configDir}"
 
 [[exec.commands]]
 command       = "rustfmt"

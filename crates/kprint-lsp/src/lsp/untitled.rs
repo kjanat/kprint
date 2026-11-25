@@ -165,6 +165,9 @@ mod tests {
       get_untitled_file_path(Path::new("/dir"), "typescript"),
       Some(PathBuf::from("/dir").join("Untitled.ts"))
     );
-    assert_eq!(get_untitled_file_path(Path::new("/dir"), "objective-c"), None);
+    assert_eq!(
+      get_untitled_file_path(Path::new("/dir"), "objective-c"),
+      Some(PathBuf::from("/dir").join("Untitled.m"))
+    );
   }
 }

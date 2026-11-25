@@ -31,3 +31,8 @@ kprint-plugin-host  = { workspace = true, features = ["test-support"] }
 kprint-test-support = { workspace = true, features = ["plugins"] }
 sys_traits          = { workspace = true, features = ["memory"] }
 tempfile            = { workspace = true }
+
+[build-dependencies]
+serde                  = { workspace = true, features = ["derive"] }
+serde_norway.workspace = true
+ureq                   = { workspace = true, features = ["tls"] }

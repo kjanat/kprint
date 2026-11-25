@@ -33,7 +33,6 @@ fn main() {
     let extension = language.extensions.iter().find_map(|ext| {
       let ext = ext.strip_prefix('.')?;
       (!ext.is_empty()
-        && ext != "ipynb"
         && ext
           .bytes()
           .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')))

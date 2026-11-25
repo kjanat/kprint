@@ -1,4 +1,4 @@
-include!(concat!(env!("OUT_DIR"), "/language_extensions.rs"));
+use kprint_host::resolve_language_extension;
 
 /// Gets a synthetic file name for a document with no file on disk.
 pub fn get_language_file_name(base_name: &str, language_id: &str) -> Option<String> {
@@ -9,15 +9,14 @@ pub fn get_language_file_name(base_name: &str, language_id: &str) -> Option<Stri
     "javascriptreact" => "jsx",
     "proto3" => "proto",
     "shellscript" => "sh",
-    "terraform" => "tf",
     "typescriptreact" => "tsx",
-    "ipynb" => return None,
-    _ => match LINGUIST_EXTENSIONS.binary_search_by_key(&language.as_str(), |(id, _)| *id) {
-      Ok(index) => LINGUIST_EXTENSIONS[index].1,
-      Err(_) if !language.is_empty() && language.bytes().all(|byte| byte.is_ascii_alphanumeric()) => &language,
-      Err(_) => return None,
-    },
+    _ => resolve_language_extension(&language)
+      .or_else(|| (!language.is_empty() && language.bytes().all(|byte| byte.is_ascii_alphanumeric())).then_some(language.as_str()))?,
   };
+  // Routing a cell to a notebook formatter would recurse into the notebook.
+  if ext == "ipynb" {
+    return None;
+  }
   Some(format!("{base_name}.{ext}"))
 }
 
@@ -32,7 +31,8 @@ mod tests {
       ("objc", "cell.m"),
       ("CSharp", "cell.cs"),
       ("typescriptreact", "cell.tsx"),
-      ("terraform", "cell.tf"),
+      ("hcl", "cell.hcl"),
+      ("terraform", "cell.hcl"),
       ("shellscript", "cell.sh"),
     ] {
       assert_eq!(get_language_file_name("cell", id).as_deref(), Some(name));

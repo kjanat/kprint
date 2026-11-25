@@ -30,8 +30,3 @@ url              = { workspace = true }
 
 [dev-dependencies]
 kprint-test-support = { workspace = true, features = ["plugins"] }
-
-[build-dependencies]
-serde                  = { workspace = true, features = ["derive"] }
-serde_norway.workspace = true
-ureq                   = { workspace = true, features = ["tls"] }

@@ -565,7 +565,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         outer_path: outer_path.clone(),
         file_path_mapping: file_path_mapping.clone(),
       };
-      scope.format_from(host_request, Some(embedder))
+      scope.format_from(host_request, Some(embedder), None)
     })
   }
 
@@ -638,7 +638,11 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 
   pub fn format(self: &Rc<Self>, request: HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> {
-    self.format_from(request, None)
+    self.format_with_language_id(request, None)
+  }
+
+  pub fn format_with_language_id(self: &Rc<Self>, request: HostFormatRequest, language_id: Option<&str>) -> LocalBoxFuture<'static, FormatResult> {
+    self.format_from(request, None, language_id)
   }
 
   /// Whether every selected plugin supports ranges, with legacy plugins left unspecified.
@@ -688,7 +692,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     (path == synthetic).then_some(real.as_path())
   }
 
-  fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
+  fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>, language_id: Option<&str>) -> LocalBoxFuture<'static, FormatResult> {
     // owned because they outlive this scope by moving into the future below
     let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
     let real_file_path = Self::mapped_real_path(&request.file_path, embedder.as_ref())
@@ -702,8 +706,9 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     };
     log_debug!(
       self.environment,
-      "Host formatting {} - File length: {} - Plugins: [{}] - Range: {:?}",
+      "Host formatting {}{} - File length: {} - Plugins: [{}] - Range: {:?}",
       request.file_path.display(),
+      language_id.map(|id| format!(" - Language ID: {id:?}")).unwrap_or_default(),
       request.file_bytes.len(),
       plugin_names.join(", "),
       request.range,

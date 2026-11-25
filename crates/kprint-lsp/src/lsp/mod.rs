@@ -156,6 +156,7 @@ impl PendingTokens {
 struct EditorFormatRequest {
   pub file_path: PathBuf,
   pub notebook_path: Option<PathBuf>,
+  pub language_id: Option<String>,
   pub file_text: String,
   pub maybe_line_index: Option<LineIndex>,
   pub range: FormatRange,
@@ -203,16 +204,23 @@ async fn handle_format_request<TEnvironment: Environment>(
     .map(|p| p.into_path_buf())
     .unwrap_or(request.file_path);
 
-  let can_format = match &request.notebook_path {
-    Some(path) => {
-      let canonical_path = environment.canonicalize_maybe_not_exists(path).ok();
-      let path = canonical_path.as_ref().map(AsRef::as_ref).unwrap_or(path);
-      !scope.plugin_name_maps.get_plugin_names_from_file_path(path).into_names().is_empty() && scope.can_format_for_editor(path, None)
-    }
-    None => scope.can_format_for_editor(&request.file_path, Some(request.file_text.as_bytes())),
+  let canonical_notebook_path = request
+    .notebook_path
+    .as_ref()
+    .and_then(|path| environment.canonicalize_maybe_not_exists(path).ok());
+  let notebook_path = canonical_notebook_path.as_ref().map(AsRef::as_ref).or(request.notebook_path.as_deref());
+  let (can_format, checked_path) = match notebook_path {
+    Some(path) => (
+      !scope.plugin_name_maps.get_plugin_names_from_file_path(path).into_names().is_empty() && scope.can_format_for_editor(path, None),
+      path,
+    ),
+    None => (
+      scope.can_format_for_editor(&request.file_path, Some(request.file_text.as_bytes())),
+      request.file_path.as_path(),
+    ),
   };
   if !can_format {
-    log_debug!(environment, "Excluded file: {}", request.file_path.display());
+    log_debug!(environment, "Excluded file: {}", checked_path.display());
     return Ok(None);
   }
 
@@ -224,13 +232,16 @@ async fn handle_format_request<TEnvironment: Environment>(
   let notebook_range = request.notebook_path.as_ref().map(|_| request.range.clone());
   let range = RangeFormat::new(&request.file_text, request.range, supports_range == Some(true));
   let Some(result) = scope
-    .format(HostFormatRequest {
-      file_path: request.file_path,
-      file_bytes: request.file_text.as_bytes().to_vec(),
-      range: range.plugin_range,
-      override_config: Default::default(),
-      token: request.token,
-    })
+    .format_with_language_id(
+      HostFormatRequest {
+        file_path: request.file_path,
+        file_bytes: request.file_text.as_bytes().to_vec(),
+        range: range.plugin_range,
+        override_config: Default::default(),
+        token: request.token,
+      },
+      request.language_id.as_deref(),
+    )
     .await?
   else {
     return Ok(None);
@@ -381,20 +392,21 @@ impl<TEnvironment: Environment> Backend<TEnvironment> {
     }
   }
 
-  fn format_paths(&self, uri: &Uri) -> Option<(PathBuf, Option<PathBuf>)> {
+  fn format_paths(&self, uri: &Uri) -> Option<(PathBuf, Option<PathBuf>, Option<String>)> {
     let state = self.state.lock();
     if untitled::is_untitled_uri(uri) {
       let home = self.environment.get_home_dir();
       let folder = state.workspace_folders.first().map(PathBuf::as_path).or(home.as_ref().map(AsRef::as_ref))?;
-      let path = untitled::get_untitled_file_path(folder, state.documents.language_id(uri)?)?;
-      return Some((path, None));
+      let language_id = state.documents.language_id(uri)?;
+      let path = untitled::get_untitled_file_path(folder, language_id)?;
+      return Some((path, None, Some(language_id.to_owned())));
     }
     if let Some((notebook_uri, language_id)) = state.documents.notebook_cell(uri) {
       let notebook_path = uri_to_file_path(notebook_uri)?;
       let cell_path = notebook::get_notebook_cell_file_path(&notebook_path, language_id)?;
-      return Some((cell_path, Some(notebook_path)));
+      return Some((cell_path, Some(notebook_path), Some(language_id.to_owned())));
     }
-    Some((uri_to_file_path(uri)?, None))
+    Some((uri_to_file_path(uri)?, None, state.documents.language_id(uri).map(str::to_owned)))
   }
 
   async fn send_format_request(&self, uri: &Uri, request: EditorFormatRequest) -> LspResult<Option<Vec<TextEdit>>> {
@@ -569,7 +581,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
   }
 
   async fn formatting(&self, params: DocumentFormattingParams, token: CancellationToken) -> LspResult<Option<Vec<TextEdit>>> {
-    let Some((file_path, notebook_path)) = self.format_paths(&params.text_document.uri) else {
+    let Some((file_path, notebook_path, language_id)) = self.format_paths(&params.text_document.uri) else {
       return Ok(None);
     };
     let Some((file_text, maybe_line_index)) = self.state.lock().documents.get_content(&params.text_document.uri) else {
@@ -581,6 +593,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
         EditorFormatRequest {
           file_path,
           notebook_path,
+          language_id,
           file_text,
           range: None,
           maybe_line_index,
@@ -591,7 +604,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
   }
 
   async fn range_formatting(&self, params: DocumentRangeFormattingParams, token: CancellationToken) -> LspResult<Option<Vec<TextEdit>>> {
-    let Some((file_path, notebook_path)) = self.format_paths(&params.text_document.uri) else {
+    let Some((file_path, notebook_path, language_id)) = self.format_paths(&params.text_document.uri) else {
       return Ok(None);
     };
     let Some((file_text, range, line_index)) = self.state.lock().documents.get_content_with_range(&params.text_document.uri, params.range) else {
@@ -603,6 +616,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
         EditorFormatRequest {
           file_path,
           notebook_path,
+          language_id,
           file_text,
           range,
           maybe_line_index: Some(line_index),
@@ -708,6 +722,7 @@ fn uri_to_file_path(uri: &Uri) -> Option<PathBuf> {
 #[cfg(test)]
 mod test {
   use kprint_platform::environment::*;
+  use std::path::Path;
   use std::sync::atomic::AtomicBool;
   use std::sync::atomic::Ordering;
   use std::time::Duration;
@@ -1580,6 +1595,7 @@ mod test {
       })
       .initialize()
       .build();
+    environment.set_log_level(kprint_host_api::ui::LogLevel::Debug);
     environment.run_in_runtime(async {
       let (backend, recv_task, _) = setup_backend(environment.clone());
       let initialized = backend
@@ -1621,9 +1637,20 @@ mod test {
 
       backend.notebook_did_open(open_notebook("file:///workspace/ignored.ipynb")).await;
       assert_format!(backend, cell, None);
-      environment.take_stderr_messages();
       backend.shutdown().await.unwrap();
       recv_task.await.unwrap();
+      let messages = environment.take_stderr_messages();
+      let path = Path::new("/workspace").join("code_block.txt");
+      let expected = format!("[DEBUG] Host formatting {} - Language ID: \"txt\" - ", path.display());
+      assert_eq!(messages.iter().filter(|message| message.starts_with(&expected)).count(), 1, "{messages:?}");
+      let excludes = messages
+        .iter()
+        .filter(|message| message.starts_with("[DEBUG] Excluded file: "))
+        .collect::<Vec<_>>();
+      assert_eq!(
+        excludes,
+        [&format!("[DEBUG] Excluded file: {}", Path::new("/workspace/ignored.ipynb").display())]
+      );
     });
   }
 
@@ -1631,13 +1658,17 @@ mod test {
   fn formats_untitled_documents_using_the_current_first_workspace_folder() {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .with_local_config("/first/dprint.json", |config| {
-        config.add_remote_wasm_plugin().add_config_section("test-plugin", r#"{"ending":"first"}"#);
+        config
+          .add_remote_wasm_plugin()
+          .add_excludes("Untitled.txt")
+          .add_config_section("test-plugin", r#"{"ending":"first"}"#);
       })
       .with_local_config("/second/dprint.json", |config| {
         config.add_remote_wasm_plugin().add_config_section("test-plugin", r#"{"ending":"second"}"#);
       })
       .initialize()
       .build();
+    environment.set_log_level(kprint_host_api::ui::LogLevel::Debug);
     environment.run_in_runtime(async {
       let (backend, recv_task, _) = setup_backend(environment.clone());
       backend
@@ -1659,7 +1690,7 @@ mod test {
       did_open!(backend, second_file, "input");
       assert_format!(backend, first_file, edit("_first"));
       assert_format!(backend, second_file, edit("_second"));
-      assert_format!(backend, uri, edit("_first"));
+      assert_format!(backend, uri, None);
       backend
         .did_change_workspace_folders(
           serde_json::from_value(serde_json::json!({
@@ -1669,9 +1700,20 @@ mod test {
         )
         .await;
       assert_format!(backend, uri, edit("_second"));
-      environment.take_stderr_messages();
       backend.shutdown().await.unwrap();
       recv_task.await.unwrap();
+      let messages = environment.take_stderr_messages();
+      let path = Path::new("/second").join("Untitled.txt");
+      let expected = format!("[DEBUG] Host formatting {} - Language ID: \"txt\" - ", path.display());
+      assert_eq!(messages.iter().filter(|message| message.starts_with(&expected)).count(), 1, "{messages:?}");
+      let excludes = messages
+        .iter()
+        .filter(|message| message.starts_with("[DEBUG] Excluded file: "))
+        .collect::<Vec<_>>();
+      assert_eq!(
+        excludes,
+        [&format!("[DEBUG] Excluded file: {}", Path::new("/first").join("Untitled.txt").display())]
+      );
     });
   }
 

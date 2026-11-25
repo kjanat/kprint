@@ -1740,11 +1740,13 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "serde_norway",
  "sys_traits",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
+ "ureq",
  "url",
 ]
 
@@ -1782,12 +1784,10 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
- "serde_norway",
  "similar",
  "text-size",
  "tokio",
  "tokio-util",
- "ureq",
  "url",
 ]
 
