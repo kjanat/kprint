@@ -722,7 +722,6 @@ fn uri_to_file_path(uri: &Uri) -> Option<PathBuf> {
 #[cfg(test)]
 mod test {
   use kprint_platform::environment::*;
-  use std::path::Path;
   use std::sync::atomic::AtomicBool;
   use std::sync::atomic::Ordering;
   use std::time::Duration;
@@ -1640,17 +1639,13 @@ mod test {
       backend.shutdown().await.unwrap();
       recv_task.await.unwrap();
       let messages = environment.take_stderr_messages();
-      let path = Path::new("/workspace").join("code_block.txt");
-      let expected = format!("[DEBUG] Host formatting {} - Language ID: \"txt\" - ", path.display());
-      assert_eq!(messages.iter().filter(|message| message.starts_with(&expected)).count(), 1, "{messages:?}");
+      let expected = "[DEBUG] Host formatting /workspace/code_block.txt - Language ID: \"txt\" - ";
+      assert_eq!(messages.iter().filter(|message| message.starts_with(expected)).count(), 1, "{messages:?}");
       let excludes = messages
         .iter()
-        .filter(|message| message.starts_with("[DEBUG] Excluded file: "))
+        .filter_map(|message| message.strip_prefix("[DEBUG] Excluded file: "))
         .collect::<Vec<_>>();
-      assert_eq!(
-        excludes,
-        [&format!("[DEBUG] Excluded file: {}", Path::new("/workspace/ignored.ipynb").display())]
-      );
+      assert_eq!(excludes, ["/workspace/ignored.ipynb"]);
     });
   }
 
@@ -1703,17 +1698,13 @@ mod test {
       backend.shutdown().await.unwrap();
       recv_task.await.unwrap();
       let messages = environment.take_stderr_messages();
-      let path = Path::new("/second").join("Untitled.txt");
-      let expected = format!("[DEBUG] Host formatting {} - Language ID: \"txt\" - ", path.display());
-      assert_eq!(messages.iter().filter(|message| message.starts_with(&expected)).count(), 1, "{messages:?}");
+      let expected = "[DEBUG] Host formatting /second/Untitled.txt - Language ID: \"txt\" - ";
+      assert_eq!(messages.iter().filter(|message| message.starts_with(expected)).count(), 1, "{messages:?}");
       let excludes = messages
         .iter()
-        .filter(|message| message.starts_with("[DEBUG] Excluded file: "))
+        .filter_map(|message| message.strip_prefix("[DEBUG] Excluded file: "))
         .collect::<Vec<_>>();
-      assert_eq!(
-        excludes,
-        [&format!("[DEBUG] Excluded file: {}", Path::new("/first").join("Untitled.txt").display())]
-      );
+      assert_eq!(excludes, ["/first/Untitled.txt"]);
     });
   }
 
