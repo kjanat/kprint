@@ -169,6 +169,34 @@ impl ConfigFileFormat {
     }
   }
 
+  /// Replaces the matching top-level `extends` entries, preserving comments and layout.
+  pub fn replace_extends(self, text: &str, old: &str, new: &str) -> Result<String> {
+    match self {
+      Self::Json => super::manipulation::replace_extends_in_json(text, old, new),
+      Self::Toml => {
+        let mut document = parse_document(text)?;
+        let Some(extends) = document.get_mut("extends").and_then(Item::as_value_mut) else {
+          return Ok(text.to_string());
+        };
+        let replace = |value: &mut Value| {
+          if value.as_str() == Some(old) {
+            let decor = value.decor().clone();
+            *value = Value::from(new);
+            *value.decor_mut() = decor;
+          }
+        };
+        if let Some(array) = extends.as_array_mut() {
+          for value in array.iter_mut() {
+            replace(value);
+          }
+        } else {
+          replace(extends);
+        }
+        Ok(document.to_string())
+      }
+    }
+  }
+
   /// See [`apply_config_changes`].
   pub fn apply_changes(self, text: &str, plugin_key: &str, changes: &[ConfigChange]) -> ApplyConfigChangesResult {
     match self {
@@ -522,7 +550,7 @@ fn update_plugin_in_toml(text: &str, info: &PluginUpdateInfo) -> String {
 
 /// Whether the config entry refers to the plugin reference, which for npm
 /// specifiers is compared by what they mean since they display normalized.
-fn is_same_reference(entry: &str, reference: &PluginSourceReference) -> bool {
+pub(super) fn is_same_reference(entry: &str, reference: &PluginSourceReference) -> bool {
   match &reference.path_source {
     PathSource::Npm(npm_source) => {
       parse_npm_specifier(entry).is_ok_and(|parsed| parsed.specifier == npm_source.specifier && parsed.checksum == reference.checksum)
