@@ -67,8 +67,10 @@ associations = ["package.json"]
 # sortExportDeclarations = "maintain"
 
 [exec]
+playWithFire = true
 cwd = "${configDir}"
 
 [[exec.commands]]
-command = "rustfmt"
-exts    = ["rs"]
+command       = "rustfmt"
+exts          = ["rs"]
+cacheKeyFiles = ["rustfmt.toml"]
