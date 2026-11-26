@@ -475,7 +475,8 @@ mod language_tests {
       };
       assert_eq!(body.range, range);
     }
-    for range in [3..2, 0..5] {
+    for (start, end) in [(3, 2), (0, 5)] {
+      let range = start..end;
       let message = ProcessPluginMessage {
         id: 1,
         body: MessageBody::HostFormatLanguage(HostFormatLanguageMessageBody {
