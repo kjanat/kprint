@@ -18,6 +18,10 @@ cargo=cargo
 if [[ "${BUILD}" == zigbuild ]]; then
 	cargo_target="${TARGET}.${GLIBC:?}"
 	cargo='cargo-zigbuild'
+	if [[ "${TARGET}" == aarch64-unknown-linux-gnu ]]; then
+		script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+		export CARGO_ZIGBUILD_ZIG_PATH="${script_dir}/zig-aarch64.sh"
+	fi
 fi
 
 setup() {

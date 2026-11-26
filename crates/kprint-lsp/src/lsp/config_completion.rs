@@ -827,8 +827,8 @@ mod test {
     completions_for(schema, &text, &LineIndex::new(&text), offset)
   }
 
-  fn labels(items: &[lsp::CompletionItem]) -> Vec<String> {
-    items.iter().map(|item| item.label.clone()).collect()
+  fn labels(items: &[lsp::CompletionItem]) -> Vec<&str> {
+    items.iter().map(|item| item.label.as_str()).collect()
   }
 
   fn new_text(item: &lsp::CompletionItem) -> &str {
@@ -871,10 +871,10 @@ mod test {
         .unwrap();
       let labels = labels(&items);
       // what only the built-in exec has
-      assert!(labels.contains(&"playWithFire".to_string()), "{:?}", labels);
-      assert!(labels.contains(&"setupTimeout".to_string()), "{:?}", labels);
+      assert!(labels.contains(&"playWithFire"), "{:?}", labels);
+      assert!(labels.contains(&"setupTimeout"), "{:?}", labels);
       // and dprint's properties of every plugin table
-      assert!(labels.contains(&"associations".to_string()), "{:?}", labels);
+      assert!(labels.contains(&"associations"), "{:?}", labels);
     });
   }
 
@@ -882,9 +882,9 @@ mod test {
   fn completes_root_property_names() {
     let items = complete(&base_only(), "{\n  %\n}");
     let labels = labels(&items);
-    assert!(labels.contains(&"lineWidth".to_string()));
-    assert!(labels.contains(&"plugins".to_string()));
-    assert!(labels.contains(&"newLineKind".to_string()));
+    assert!(labels.contains(&"lineWidth"));
+    assert!(labels.contains(&"plugins"));
+    assert!(labels.contains(&"newLineKind"));
     // a property name should be inserted quoted
     assert_eq!(new_text(item(&items, "lineWidth")), "\"lineWidth\"");
     assert_eq!(item(&items, "lineWidth").kind, Some(lsp::CompletionItemKind::PROPERTY));
@@ -904,8 +904,8 @@ mod test {
   fn excludes_already_present_keys() {
     let items = complete(&base_only(), "{ \"lineWidth\": 80, % }");
     let labels = labels(&items);
-    assert!(!labels.contains(&"lineWidth".to_string()));
-    assert!(labels.contains(&"indentWidth".to_string()));
+    assert!(!labels.contains(&"lineWidth"));
+    assert!(labels.contains(&"indentWidth"));
   }
 
   #[test]
@@ -949,10 +949,10 @@ mod test {
     let items = complete(&with_typescript_plugin(), "{ \"typescript\": { % } }");
     let labels = labels(&items);
     // the plugin's own properties
-    assert!(labels.contains(&"semiColons".to_string()));
+    assert!(labels.contains(&"semiColons"));
     // plus the properties common to every plugin section
-    assert!(labels.contains(&"locked".to_string()));
-    assert!(labels.contains(&"associations".to_string()));
+    assert!(labels.contains(&"locked"));
+    assert!(labels.contains(&"associations"));
   }
 
   #[test]
@@ -967,17 +967,17 @@ mod test {
     let items = complete(&with_typescript_plugin(), "{ \"typescript\": { \"overrides\": { % } } }");
     let labels = labels(&items);
     // the override's own `files` key
-    assert!(labels.contains(&"files".to_string()), "{:?}", labels);
+    assert!(labels.contains(&"files"), "{:?}", labels);
     // plus the plugin's config that can be overridden
-    assert!(labels.contains(&"semiColons".to_string()), "{:?}", labels);
+    assert!(labels.contains(&"semiColons"), "{:?}", labels);
   }
 
   #[test]
   fn completes_inside_overrides_array_element() {
     let items = complete(&with_typescript_plugin(), "{ \"typescript\": { \"overrides\": [{ % }] } }");
     let labels = labels(&items);
-    assert!(labels.contains(&"files".to_string()), "{:?}", labels);
-    assert!(labels.contains(&"semiColons".to_string()), "{:?}", labels);
+    assert!(labels.contains(&"files"), "{:?}", labels);
+    assert!(labels.contains(&"semiColons"), "{:?}", labels);
   }
 
   #[test]
@@ -996,8 +996,8 @@ mod test {
       schema: None,
       url: None,
     }]);
-    assert!(labels(&complete(&schema, "{ \"exec\": { \"overrides\": [{ % }] } }")).contains(&"files".to_string()));
-    assert!(labels(&complete(&schema, "{ \"exec\": { % } }")).contains(&"associations".to_string()));
+    assert!(labels(&complete(&schema, "{ \"exec\": { \"overrides\": [{ % }] } }")).contains(&"files"));
+    assert!(labels(&complete(&schema, "{ \"exec\": { % } }")).contains(&"associations"));
     assert_eq!(item(&complete(&schema, "{ % }"), "exec").detail.as_deref(), Some("plugin"));
   }
 

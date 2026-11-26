@@ -11,3 +11,6 @@ rustflags = "-Dwarnings"
 [target]
 # statically link the c runtime https://github.com/rust-lang/rust/issues/100874
 'cfg(all(windows, target_env = "msvc"))'.rustflags = ["-C", "target-feature=+crt-static"]
+
+# Nightly's bundled PowerPC musl libc has relocations that a static PIE cannot use.
+powerpc64le-unknown-linux-musl.rustflags = ["-Dwarnings", "-C", "relocation-model=static"]

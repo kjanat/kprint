@@ -823,85 +823,6 @@ fn canonicalize_path(path: impl AsRef<Path>) -> io::Result<CanonicalizedPathBuf>
   }
 }
 
-#[cfg(test)]
-mod test {
-  use super::*;
-
-  /// Asks git's own fsmonitor daemon for changes over its pipe, which answers
-  /// a token it doesn't know with its own and that everything changed.
-  #[cfg(windows)]
-  #[test]
-  fn asks_the_fsmonitor_daemon_of_git_over_its_pipe() {
-    let dir = tempfile::tempdir().unwrap();
-    let git = |args: &[&str]| Command::new("git").arg("-C").arg(dir.path()).args(args).output();
-    let started =
-      git(&["init", "-q"]).is_ok_and(|output| output.status.success()) && git(&["fsmonitor--daemon", "start"]).is_ok_and(|output| output.status.success());
-    if !started {
-      return; // a git without the daemon
-    }
-    let git_dir = canonicalize_path(dir.path()).unwrap().into_path_buf().join(".git");
-    let result = git_ipc_request(&git_dir.join("fsmonitor--daemon.ipc"), b"builtin:unknown:0");
-    let _ignore = git(&["fsmonitor--daemon", "stop"]);
-    let response = result.unwrap();
-    assert!(response.starts_with(b"builtin:"), "{}", String::from_utf8_lossy(&response));
-  }
-
-  #[test]
-  fn reads_only_regular_files_beneath_the_directory() {
-    let temp = tempfile::tempdir().unwrap();
-    let directory = cap_std::fs::Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
-    directory.create_dir("config").unwrap();
-    directory.write("config/schema.json", "{}").unwrap();
-    directory.write("secret.json", "secret").unwrap();
-    let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
-    let root = temp.path().join("config");
-    assert_eq!(environment.read_file_within(&root, &root.join("schema.json")).unwrap(), "{}");
-    assert!(environment.read_file_within(&root, &root.join("../secret.json")).is_err());
-    assert!(environment.read_file_within(&root, &root).is_err());
-  }
-
-  #[cfg(unix)]
-  #[test]
-  fn confined_reads_reject_symlink_escapes_and_fifos() {
-    let temp = tempfile::tempdir().unwrap();
-    let directory = cap_std::fs::Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
-    directory.create_dir("config").unwrap();
-    directory.write("secret.json", "secret").unwrap();
-    directory.symlink("../secret.json", "config/schema.json").unwrap();
-    let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
-    let root = temp.path().join("config");
-    assert!(environment.read_file_within(&root, &root.join("schema.json")).is_err());
-    let fifo = root.join("fifo.json");
-    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
-    assert!(environment.read_file_within(&root, &fifo).is_err());
-  }
-
-  #[cfg(unix)]
-  #[test]
-  fn sends_git_ipc_requests_over_a_unix_socket() {
-    let dir = tempfile::tempdir().unwrap();
-    let socket_path = dir.path().join("fsmonitor--daemon.ipc");
-    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
-    let server = std::thread::spawn(move || {
-      let (mut stream, _) = listener.accept().unwrap();
-      let request = kprint_git::read_pkt_line_message(&mut stream).unwrap();
-      kprint_git::write_pkt_line_message(&mut stream, b"builtin:1:3\0a.txt\0dir/\0").unwrap();
-      request
-    });
-    let response = git_ipc_request(&socket_path, b"builtin:1:2").unwrap();
-    assert_eq!(response, b"builtin:1:3\0a.txt\0dir/\0");
-    assert_eq!(server.join().unwrap(), b"builtin:1:2");
-  }
-
-  #[cfg(unix)]
-  #[test]
-  fn errors_when_no_git_ipc_server_listens() {
-    let dir = tempfile::tempdir().unwrap();
-    let err = git_ipc_request(&dir.path().join("fsmonitor--daemon.ipc"), b"builtin:1:2").unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::NotFound);
-  }
-}
-
 impl<S: NativeServices> OutputEnvironment for NativeEnvironment<S> {
   fn __log__(&self, text: &str) {
     self.services.__log__(text)
@@ -1040,5 +961,84 @@ impl<S: NativeServices> ConsentEnvironment for NativeEnvironment<S> {
   }
   fn is_terminal_interactive(&self) -> bool {
     self.services.is_terminal_interactive()
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  /// Asks git's own fsmonitor daemon for changes over its pipe, which answers
+  /// a token it doesn't know with its own and that everything changed.
+  #[cfg(windows)]
+  #[test]
+  fn asks_the_fsmonitor_daemon_of_git_over_its_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(dir.path()).args(args).output();
+    let started =
+      git(&["init", "-q"]).is_ok_and(|output| output.status.success()) && git(&["fsmonitor--daemon", "start"]).is_ok_and(|output| output.status.success());
+    if !started {
+      return; // a git without the daemon
+    }
+    let git_dir = canonicalize_path(dir.path()).unwrap().into_path_buf().join(".git");
+    let result = git_ipc_request(&git_dir.join("fsmonitor--daemon.ipc"), b"builtin:unknown:0");
+    let _ignore = git(&["fsmonitor--daemon", "stop"]);
+    let response = result.unwrap();
+    assert!(response.starts_with(b"builtin:"), "{}", String::from_utf8_lossy(&response));
+  }
+
+  #[test]
+  fn reads_only_regular_files_beneath_the_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = cap_std::fs::Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+    directory.create_dir("config").unwrap();
+    directory.write("config/schema.json", "{}").unwrap();
+    directory.write("secret.json", "secret").unwrap();
+    let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
+    let root = temp.path().join("config");
+    assert_eq!(environment.read_file_within(&root, &root.join("schema.json")).unwrap(), "{}");
+    assert!(environment.read_file_within(&root, &root.join("../secret.json")).is_err());
+    assert!(environment.read_file_within(&root, &root).is_err());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn confined_reads_reject_symlink_escapes_and_fifos() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = cap_std::fs::Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+    directory.create_dir("config").unwrap();
+    directory.write("secret.json", "secret").unwrap();
+    directory.symlink("../secret.json", "config/schema.json").unwrap();
+    let environment = NativeEnvironment::new(HeadlessServices, "test").unwrap();
+    let root = temp.path().join("config");
+    assert!(environment.read_file_within(&root, &root.join("schema.json")).is_err());
+    let fifo = root.join("fifo.json");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    assert!(environment.read_file_within(&root, &fifo).is_err());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn sends_git_ipc_requests_over_a_unix_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("fsmonitor--daemon.ipc");
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    let server = std::thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      let request = kprint_git::read_pkt_line_message(&mut stream).unwrap();
+      kprint_git::write_pkt_line_message(&mut stream, b"builtin:1:3\0a.txt\0dir/\0").unwrap();
+      request
+    });
+    let response = git_ipc_request(&socket_path, b"builtin:1:2").unwrap();
+    assert_eq!(response, b"builtin:1:3\0a.txt\0dir/\0");
+    assert_eq!(server.join().unwrap(), b"builtin:1:2");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn errors_when_no_git_ipc_server_listens() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = git_ipc_request(&dir.path().join("fsmonitor--daemon.ipc"), b"builtin:1:2").unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::NotFound);
   }
 }

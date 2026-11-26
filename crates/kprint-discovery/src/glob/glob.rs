@@ -790,7 +790,7 @@ mod test {
     // a.txt, nested/deep/b.txt, skip/keep.txt, script and notes per dir, and
     // the root `.gitignore`, which has no extension either
     assert_eq!(result.len(), 1001);
-    assert!(result.contains(&"/.gitignore".to_string()));
+    assert!(result.iter().any(|path| path == "/.gitignore"));
     assert!(result.iter().all(|p| !p.contains("ignored")));
     assert_eq!(result.iter().filter(|p| p.ends_with("/skip/keep.txt")).count(), 200);
     assert_eq!(result.iter().filter(|p| p.ends_with("/skip/d.txt")).count(), 0);
