@@ -1886,7 +1886,9 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
         }));
       }
     };
-    if let Some(built_in) = plugin.built_in() {
+    if let Some(built_in) = plugin.built_in()
+      && plugin.info().update_url.is_none()
+    {
       log_debug!(
         environment,
         "Skipping {}. It's served by kprint's built-in {}, which updates with kprint.",

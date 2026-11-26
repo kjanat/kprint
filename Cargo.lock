@@ -925,6 +925,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "dprint-core"
+version = "0.69.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67359cea061dd052fca921d3589a9ce59bc16fa23bfb9d06d5c669a1dbd23915"
+dependencies = [
+ "bumpalo",
+ "hashbrown 0.15.5",
+ "indexmap",
+ "rustc-hash",
+ "serde",
+ "unicode-width 0.2.3",
+]
+
+[[package]]
+name = "dprint-core-macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1675ad2b358481f3cc46202040d64ac7a36c4ade414a696df32e0e45421a6e9f"
+dependencies = [
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1278,6 +1302,8 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -1873,6 +1899,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "deno_semver",
+ "dprint-core",
+ "dprint-core-macros",
  "flate2",
  "indexmap",
  "jsonc-parser",
@@ -1901,6 +1929,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "unicode-width 0.2.3",
  "url",
  "wasmi",
  "wasmtime",

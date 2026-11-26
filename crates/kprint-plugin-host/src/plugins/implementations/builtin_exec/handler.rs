@@ -33,6 +33,7 @@ use tokio::sync::oneshot::Sender;
 
 use kprint_owned_child::OwnedChild;
 
+use super::super::in_process::InProcessFormatCallbacks;
 use super::super::in_process::InProcessHandler;
 use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
@@ -129,7 +130,7 @@ impl InProcessHandler for ExecHandler {
     }
   }
 
-  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf) -> FormatResult {
+  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf, _callbacks: InProcessFormatCallbacks) -> FormatResult {
     if request.range.is_some() {
       // we don't support range formatting for this plugin
       return Ok(None);

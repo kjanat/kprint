@@ -11,10 +11,12 @@ use kprint_configuration::ConfigurationDiagnostic;
 use kprint_configuration::GlobalConfiguration;
 use kprint_plugin_types::CheckConfigUpdatesMessage;
 use kprint_plugin_types::ConfigChange;
+use kprint_plugin_types::EmbeddedLanguageFormatCallback;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatRequest;
 use kprint_plugin_types::FormatResult;
+use kprint_plugin_types::HostFormatCallback;
 use kprint_plugin_types::PluginInfo;
 use kprint_plugin_types::PluginResolveConfigurationResult;
 use serde::Serialize;
@@ -26,6 +28,11 @@ use crate::plugins::InitializedPlugin;
 use crate::plugins::InitializedPluginFormatRequest;
 use crate::plugins::Plugin;
 
+pub struct InProcessFormatCallbacks {
+  pub path: HostFormatCallback,
+  pub language: EmbeddedLanguageFormatCallback,
+}
+
 /// A formatter that runs inside the dprint process.
 #[async_trait(?Send)]
 pub trait InProcessHandler: 'static {
@@ -33,6 +40,13 @@ pub trait InProcessHandler: 'static {
 
   fn plugin_info(&self) -> PluginInfo;
   fn license_text(&self) -> String;
+  fn uses_sandboxed_config_policy() -> bool {
+    false
+  }
+
+  fn check_config_updates(&self, _message: CheckConfigUpdatesMessage) -> Vec<ConfigChange> {
+    Vec::new()
+  }
   /// Resolves a configuration whose file patterns are relative to `base_dir`.
   async fn resolve_config(
     &self,
@@ -40,7 +54,7 @@ pub trait InProcessHandler: 'static {
     global_config: GlobalConfiguration,
     base_dir: &CanonicalizedPathBuf,
   ) -> PluginResolveConfigurationResult<Self::Configuration>;
-  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf) -> FormatResult;
+  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf, callbacks: InProcessFormatCallbacks) -> FormatResult;
 }
 
 /// Runs an [`InProcessHandler`] inside the dprint process.
@@ -48,16 +62,16 @@ pub struct InProcessPlugin<THandler: InProcessHandler> {
   info: PluginInfo,
   // a constructor rather than the handler itself because a plugin must be
   // `Send + Sync`, which handlers needn't be
-  create_handler: fn() -> THandler,
+  create_handler: Box<dyn Fn() -> THandler + Send + Sync>,
   config_schema: &'static str,
   built_in: &'static BuiltInFormatter,
 }
 
 impl<THandler: InProcessHandler> InProcessPlugin<THandler> {
-  pub fn new(create_handler: fn() -> THandler, config_schema: &'static str, built_in: &'static BuiltInFormatter) -> Self {
+  pub fn new(create_handler: impl Fn() -> THandler + Send + Sync + 'static, config_schema: &'static str, built_in: &'static BuiltInFormatter) -> Self {
     Self {
       info: create_handler().plugin_info(),
-      create_handler,
+      create_handler: Box::new(create_handler),
       config_schema,
       built_in,
     }
@@ -83,6 +97,10 @@ impl<THandler: InProcessHandler> Plugin for InProcessPlugin<THandler> {
 
   fn is_sandboxed(&self) -> bool {
     false
+  }
+
+  fn uses_sandboxed_config_policy(&self) -> bool {
+    THandler::uses_sandboxed_config_policy()
   }
 
   fn config_schema(&self) -> Option<&'static str> {
@@ -142,11 +160,15 @@ impl<THandler: InProcessHandler> InitializedPlugin for InitializedInProcessPlugi
     Ok(self.resolve(&config).await.diagnostics.clone())
   }
 
-  async fn check_config_updates(&self, _message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>> {
-    Ok(Vec::new())
+  async fn check_config_updates(&self, message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>> {
+    Ok(self.handler.check_config_updates(message))
   }
 
   async fn format_text(&self, request: InitializedPluginFormatRequest) -> FormatResult {
+    self.format_text_with_language(request, Rc::new(|_| Box::pin(async { Ok(None) }))).await
+  }
+
+  async fn format_text_with_language(&self, request: InitializedPluginFormatRequest, format_language: EmbeddedLanguageFormatCallback) -> FormatResult {
     let config = if request.override_config.is_empty() {
       self.resolve(&request.config).await.config.clone()
     } else {
@@ -174,6 +196,10 @@ impl<THandler: InProcessHandler> InitializedPlugin for InitializedInProcessPlugi
           token: request.token,
         },
         request.real_file_path,
+        InProcessFormatCallbacks {
+          path: request.on_host_format,
+          language: format_language,
+        },
       )
       .await
   }

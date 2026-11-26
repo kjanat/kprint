@@ -3048,12 +3048,19 @@ mod test {
 }
 "#
       );
-      let mut expected_messages = get_standard_logged_messages_no_plugin_selection();
-      expected_messages.push(concat!(
-        "You are using an old version of kprint so the latest plugins may not be suggested. ",
-        "Consider upgrading to support new plugins. ",
-        "Plugin system schema version is 4, latest is 999."
-      ));
+      let warning = format!(
+        concat!(
+          "You are using an old version of kprint so the latest plugins may not be suggested. ",
+          "Consider upgrading to support new plugins. ",
+          "Plugin system schema version is {}, latest is 999."
+        ),
+        wasm::PLUGIN_SYSTEM_SCHEMA_VERSION
+      );
+      let mut expected_messages = get_standard_logged_messages_no_plugin_selection()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+      expected_messages.push(warning);
       assert_eq!(environment.take_stderr_messages(), expected_messages);
     });
   }

@@ -107,28 +107,59 @@ impl LanguageCandidates {
   }
 
   pub(crate) fn allows_formatter(&self, extension: &str, config_key: &str, supported_extensions: &[String]) -> bool {
-    !is_shared_extension(extension)
-      || self.label == "txt"
-      || self.label.eq_ignore_ascii_case(config_key)
-      || self.definition.is_some_and(|definition| {
-        definition.name.eq_ignore_ascii_case(config_key)
-          || self
-            .extensions()
-            .filter(|extension| !is_shared_extension(extension))
-            .any(|extension| supported_extensions.iter().any(|supported| supported.eq_ignore_ascii_case(extension)))
+    let Some(owners) = shared_extension_owners(extension) else {
+      return true;
+    };
+    if self.label == "txt" || self.label.eq_ignore_ascii_case(config_key) {
+      return true;
+    }
+    let formatter_language = get_definition(&config_key.to_ascii_lowercase());
+    let supports_extension = |extension: &str| supported_extensions.iter().any(|supported| supported.eq_ignore_ascii_case(extension));
+    let has_unique_extension = |extensions: &[&str]| {
+      extensions
+        .iter()
+        .any(|extension| shared_extension_owners(extension).is_none() && supports_extension(extension))
+    };
+    if self
+      .definition
+      .is_some_and(|definition| formatter_language.is_some_and(|language| language.name == definition.name) || has_unique_extension(&self.extensions))
+    {
+      return true;
+    }
+
+    // A generic formatter can serve a uniquely preferred extension if
+    // its claims don't identify any of the alternative owners.
+    let owners = || owners.iter().map(|index| &LINGUIST_LANGUAGES[*index]);
+    let mut preferred = owners().filter(|owner| owner.extensions.first().is_some_and(|ext| ext.eq_ignore_ascii_case(extension)));
+    let Some(preferred_owner) = preferred.next() else {
+      return false;
+    };
+    preferred.next().is_none()
+      && match self.definition {
+        Some(definition) => definition.name == preferred_owner.name,
+        None => self.is_unregistered_extension() && self.label.eq_ignore_ascii_case(extension),
+      }
+      && !owners().filter(|owner| owner.name != preferred_owner.name).any(|owner| {
+        formatter_language.is_some_and(|language| language.name == owner.name)
+          || owner
+            .extensions
+            .iter()
+            .any(|extension| !preferred_owner.extensions.iter().any(|preferred| preferred.eq_ignore_ascii_case(extension)) && supports_extension(extension))
       })
   }
 }
 
-fn is_shared_extension(extension: &str) -> bool {
-  SHARED_EXTENSIONS.binary_search(&extension.to_ascii_lowercase().as_str()).is_ok()
+fn shared_extension_owners(extension: &str) -> Option<&'static [usize]> {
+  let lowered = extension.to_ascii_lowercase();
+  let index = SHARED_EXTENSION_OWNERS.binary_search_by_key(&lowered.as_str(), |(ext, _)| *ext).ok()?;
+  Some(SHARED_EXTENSION_OWNERS[index].1)
 }
 
 pub(crate) fn hash_language_routing(hasher: &mut impl std::hash::Hasher) {
   use std::hash::Hash;
   // The format result can change when an installed plugin starts matching an
   // alias following a Linguist update. Keep that state in the incremental key.
-  const ROUTING_VERSION: u8 = 1;
+  const ROUTING_VERSION: u8 = 2;
   ROUTING_VERSION.hash(hasher);
   LINGUIST_CATALOG_HASH.hash(hasher);
 }
@@ -149,8 +180,20 @@ fn language_candidates_keep_shell_dialects_and_require_evidence_for_shared_exten
   assert_eq!(LanguageCandidates::new("zsh").unwrap().extensions().collect::<Vec<_>>(), ["zsh"]);
   let objective_c = LanguageCandidates::new("objc").unwrap();
   assert!(!objective_c.allows_formatter("m", "matlab", &["m".into()]));
+  assert!(!objective_c.allows_formatter("m", "exec", &["m".into()]));
   assert!(objective_c.allows_formatter("m", "objective-c", &["m".into()]));
   let docker = LanguageCandidates::new("Dockerfile").unwrap();
   assert_eq!(docker.filenames().next(), Some("Dockerfile"));
   assert_eq!(LanguageCandidates::new("Terraform").unwrap().extensions().next(), Some("tf"));
+}
+
+#[test]
+fn a_formatter_can_claim_a_shared_extension_uniquely_preferred_by_the_requested_language() {
+  let csharp = LanguageCandidates::new("csharp").unwrap();
+  assert!(csharp.allows_formatter("cs", "exec", &["cs".into()]));
+  assert!(LanguageCandidates::new("cs").unwrap().allows_formatter("cs", "exec", &["cs".into()]));
+  assert!(!csharp.allows_formatter("cs", "smalltalk", &["cs".into()]));
+  assert!(!csharp.allows_formatter("cs", "squeak", &["cs".into()]));
+  assert!(!csharp.allows_formatter("cs", "formatter", &["st".into(), "cs".into()]));
+  assert!(!LanguageCandidates::new("smalltalk").unwrap().allows_formatter("cs", "exec", &["cs".into()]));
 }

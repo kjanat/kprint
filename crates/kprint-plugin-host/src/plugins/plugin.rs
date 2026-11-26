@@ -44,8 +44,8 @@ pub enum FormattingIdentity {
 
 /// A formatter that ships inside dprint instead of being loaded as a plugin.
 ///
-/// It's released with dprint, so it has no version, update URL or schema URL
-/// of its own.
+/// A built-in can provide an internal formatter or serve a particular release
+/// of an external plugin.
 pub struct BuiltInFormatter {
   /// Its name, ex. "exec".
   pub name: &'static str,
@@ -58,7 +58,7 @@ pub struct BuiltInFormatter {
   /// "dprint-plugin-exec". Configuration tooling uses this name for it, since
   /// that's the plugin a configuration file refers to.
   pub serves_plugin: &'static str,
-  /// Whether a reference is to the external plugin it serves, in any version.
+  /// Whether the built-in serves this particular reference.
   pub refers_to_served_plugin: fn(&PluginSourceReference) -> bool,
 }
 
@@ -95,10 +95,13 @@ pub trait Plugin {
   fn is_process_plugin(&self) -> bool;
 
   /// Whether the plugin runs in a sandbox, which only a Wasm plugin does.
-  /// What it asks the host to format can't configure a plugin that doesn't,
-  /// beyond the global configuration, as that could run any program (ex.
-  /// the exec plugin's `commands`).
   fn is_sandboxed(&self) -> bool;
+
+  /// Whether to apply Wasm's configuration rules. A built-in that takes the
+  /// place of a Wasm formatter can opt in to retain its configuration behavior.
+  fn uses_sandboxed_config_policy(&self) -> bool {
+    self.is_sandboxed()
+  }
 
   /// The schema of the plugin's configuration when it's built into dprint, so
   /// it isn't downloaded from the plugin info's `config_schema_url`.

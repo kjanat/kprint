@@ -17,7 +17,9 @@ use super::InitializedPlugin;
 use super::implementations::ExecFormatter;
 use super::implementations::WasmModuleCreator;
 use super::implementations::create_builtin_exec_plugin;
+use super::implementations::create_builtin_markdown_plugin;
 use super::implementations::create_plugin;
+use super::implementations::is_builtin_markdown_reference;
 use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::BuiltInFormatter;
 use crate::plugins::FormatEngine;
@@ -74,6 +76,11 @@ impl PluginWrapper {
   /// Whether the plugin runs in a sandbox (see [`Plugin::is_sandboxed`]).
   pub fn is_sandboxed(&self) -> bool {
     self.plugin.is_sandboxed()
+  }
+
+  /// Whether to apply Wasm's rules for accepting and forwarding configuration.
+  pub fn uses_sandboxed_config_policy(&self) -> bool {
+    self.plugin.uses_sandboxed_config_policy()
   }
 
   /// Set when the plugin is a formatter built into dprint.
@@ -168,6 +175,7 @@ impl ConfigReleaseQueue {
 enum PluginCacheKey {
   Source(PluginSourceReference),
   BuiltinExec,
+  BuiltinMarkdown,
 }
 
 pub struct PluginResolver<TEnvironment: Environment> {
@@ -315,15 +323,21 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
   }
 
   pub async fn resolve_plugin(&self, plugin_reference: PluginSourceReference) -> Result<Rc<PluginWrapper>> {
+    let builtin_markdown = is_builtin_markdown_reference(&plugin_reference);
+    let key = if builtin_markdown {
+      PluginCacheKey::BuiltinMarkdown
+    } else {
+      PluginCacheKey::Source(plugin_reference.clone())
+    };
     let cell = {
       let mut mem_cache = self.memory_cache.borrow_mut();
-      mem_cache
-        .entry(PluginCacheKey::Source(plugin_reference.clone()))
-        .or_insert_with(|| Rc::new(tokio::sync::OnceCell::new()))
-        .clone()
+      mem_cache.entry(key).or_insert_with(|| Rc::new(tokio::sync::OnceCell::new())).clone()
     };
     let plugin = cell
       .get_or_try_init(|| async {
+        if builtin_markdown {
+          return Ok(Rc::new(PluginWrapper::new(create_builtin_markdown_plugin(self.environment.clone()))));
+        }
         if let Some(plugin) = create_builtin_exec_plugin(&self.environment, &plugin_reference) {
           return Ok(Rc::new(PluginWrapper::new(plugin)));
         }

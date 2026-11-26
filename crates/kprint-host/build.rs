@@ -11,7 +11,7 @@ fn main() {
   // Keep alias precedence deterministic when multiple languages share an alias.
   let languages: BTreeMap<_, _> = linguist::definitions::LANGUAGES.iter().collect();
   let mut definitions = Vec::new();
-  let mut extension_counts = BTreeMap::new();
+  let mut extension_owners = BTreeMap::<_, Vec<usize>>::new();
   for (name, language) in &languages {
     let extensions = language
       .extensions
@@ -32,7 +32,10 @@ fn main() {
       continue;
     }
     for extension in &extensions {
-      *extension_counts.entry(extension.to_ascii_lowercase()).or_insert(0u32) += 1;
+      let owners = extension_owners.entry(extension.to_ascii_lowercase()).or_default();
+      if owners.last() != Some(&definitions.len()) {
+        owners.push(definitions.len());
+      }
     }
     definitions.push((name.to_ascii_lowercase(), language, extensions, filenames));
   }
@@ -60,10 +63,10 @@ fn main() {
   for (name, index) in aliases {
     writeln!(generated, "  ({name:?}, {index}),").unwrap();
   }
-  generated.push_str("];\nconst SHARED_EXTENSIONS: &[&str] = &[\n");
-  for (extension, count) in extension_counts {
-    if count > 1 {
-      writeln!(generated, "  {extension:?},").unwrap();
+  generated.push_str("];\nconst SHARED_EXTENSION_OWNERS: &[(&str, &[usize])] = &[\n");
+  for (extension, owners) in extension_owners {
+    if owners.len() > 1 {
+      writeln!(generated, "  ({extension:?}, &{owners:?}),").unwrap();
     }
   }
   generated.push_str("];\n");

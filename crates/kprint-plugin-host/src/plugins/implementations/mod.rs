@@ -1,4 +1,5 @@
 mod builtin_exec;
+mod builtin_markdown;
 mod in_process;
 mod process;
 mod public;
@@ -10,6 +11,8 @@ pub use builtin_exec::create_builtin_exec_plugin;
 pub use builtin_exec::find_with_path_ext;
 pub use builtin_exec::input as exec_input;
 pub use builtin_exec::is_exec_plugin_reference;
+pub(super) use builtin_markdown::create_builtin_markdown_plugin;
+pub(super) use builtin_markdown::is_builtin_markdown_reference;
 pub use public::*;
 pub use wasm::WASM_CACHE_VERSION;
 pub use wasm::WASM_PLUGIN_THREAD_STACK_SIZE;

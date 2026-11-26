@@ -990,7 +990,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       config_path: real_file_path,
       plugin_path: plugin_file_path,
     } = selected;
-    let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.is_sandboxed());
+    let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.uses_sandboxed_config_policy());
     let (outer_path, delegation) = embedder.map_or_else(|| (real_file_path.clone(), None), |embedder| (embedder.outer_path, embedder.delegation));
     log_debug!(
       self.environment,
@@ -1023,11 +1023,12 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
           None
         };
         let plugin = scope.get_plugin(&plugin_name);
-        let request_override_config = if from_sandbox && !plugin.plugin.is_sandboxed() && plugin.info().allow_plugin_override_config != Some(true) {
-          global_config_only(&request.override_config)
-        } else {
-          request.override_config.clone()
-        };
+        let request_override_config =
+          if from_sandbox && !plugin.plugin.uses_sandboxed_config_policy() && plugin.info().allow_plugin_override_config != Some(true) {
+            global_config_only(&request.override_config)
+          } else {
+            request.override_config.clone()
+          };
         match plugin.get_or_create_checking_config_diagnostics(&scope.environment).await {
           Ok(GetPluginResult::Success(initialized_plugin)) => {
             let result = initialized_plugin
@@ -1959,7 +1960,7 @@ async fn resolve_plugins_scope_inner<TEnvironment: Environment>(
     let all_config = get_plugin_config_map(&plugin, &mut config_map)?;
     let trusted_config = get_plugin_config_map(&plugin, &mut trusted_config_map)?;
     let uses_exec_policy = plugin.info().config_key == "exec" && plugin.built_in().is_some_and(|built_in| built_in.name == "exec");
-    let trusted_only = !plugin.is_sandboxed() && !uses_exec_policy;
+    let trusted_only = !plugin.uses_sandboxed_config_policy() && !uses_exec_policy;
     let plugin_config = if trusted_only {
       if all_config != trusted_config && plugin_resolver.should_warn_untrusted_config(&plugin.info().config_key) {
         log_warn!(

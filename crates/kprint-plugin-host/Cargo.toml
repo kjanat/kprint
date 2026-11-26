@@ -21,24 +21,27 @@ kprint-process-plugin = { workspace = true }
 kprint-wasm-plugin    = { workspace = true }
 rand.workspace        = true
 
-anyhow       = { workspace = true }
-deno_semver  = { workspace = true }
-flate2       = { workspace = true }
-indexmap     = { workspace = true }
-jsonc-parser = { workspace = true, features = ["cst", "preserve_order"] }
-once_cell    = { workspace = true }
-parking_lot  = { workspace = true }
-serde        = { workspace = true }
-serde_json   = { workspace = true }
-sha2         = { workspace = true }
-sys_traits   = { workspace = true, features = ["real"] }
-sysinfo      = { workspace = true, features = ["system"] }
-tar          = { workspace = true }
-thiserror    = { workspace = true }
-tokio        = { workspace = true, features = ["io-std"] }
-tokio-util   = { workspace = true }
-url          = { workspace = true }
-wasmi        = { workspace = true, features = ["auto-dispatch", "simd", "stable", "std", "validate"] }
+anyhow             = { workspace = true }
+deno_semver        = { workspace = true }
+dprint-core        = { version = "=0.69.1", features = ["formatting"] }
+dprint-core-macros = "0.1.0"
+flate2             = { workspace = true }
+indexmap           = { workspace = true }
+jsonc-parser       = { workspace = true, features = ["cst", "preserve_order"] }
+once_cell          = { workspace = true }
+parking_lot        = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+sha2               = { workspace = true }
+sys_traits         = { workspace = true, features = ["real"] }
+sysinfo            = { workspace = true, features = ["system"] }
+tar                = { workspace = true }
+thiserror          = { workspace = true }
+tokio              = { workspace = true, features = ["io-std"] }
+tokio-util         = { workspace = true }
+unicode-width      = { workspace = true }
+url                = { workspace = true }
+wasmi              = { workspace = true, features = ["auto-dispatch", "simd", "stable", "std", "validate"] }
 
 [dev-dependencies]
 kprint-test-support         = { workspace = true, features = ["plugins"] }
