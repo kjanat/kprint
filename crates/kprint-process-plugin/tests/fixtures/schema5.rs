@@ -1,5 +1,7 @@
 // Frozen, independently implemented subset of the schema 5 process protocol.
-use std::io::{self, Read, Write};
+use std::io;
+use std::io::Read;
+use std::io::Write;
 
 fn u32_read(r: &mut impl Read) -> u32 {
   let mut b = [0; 4];

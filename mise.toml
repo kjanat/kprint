@@ -7,7 +7,6 @@ idiomatic_version_file_enable_tools = ["rust"]
 
 [tools]
 deno          = "latest"
-rust          = "latest"
 tombi         = "latest"
 runner-run    = "latest"
 cargo-nextest = "latest"

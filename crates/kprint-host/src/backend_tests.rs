@@ -240,7 +240,10 @@ fn native_embedder_routes_language_with_the_outer_and_virtual_paths() {
       })
     };
     assert_eq!(run("/docs/keep.txt_ps", "language:  RuSt :body").await.unwrap(), Some(b"body_virtual".to_vec()));
-    assert_eq!(run("/docs/keep.txt_ps", "language: Python:body").await.unwrap(), Some(b"body_formatted".to_vec()));
+    assert_eq!(
+      run("/docs/keep.txt_ps", "language: Python:body").await.unwrap(),
+      Some(b"body_formatted".to_vec())
+    );
     assert_eq!(run("/docs/skip.txt_ps", "language: Rust:body").await.unwrap(), None);
     assert_eq!(run("/docs/keep.txt_ps", "language: unregistered-language:body").await.unwrap(), None);
     assert_eq!(run("/docs/keep.txt_ps", "language: ../../escape:body").await.unwrap(), None);

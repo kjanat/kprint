@@ -3,8 +3,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use kprint_async_runtime::FutureExt;
-use kprint_plugin_types::{FormatConfigId, NullCancellationToken};
-use kprint_process_plugin::{ProcessPluginCommunicator, ProcessPluginCommunicatorFormatRequest};
+use kprint_plugin_types::FormatConfigId;
+use kprint_plugin_types::NullCancellationToken;
+use kprint_process_plugin::ProcessPluginCommunicator;
+use kprint_process_plugin::ProcessPluginCommunicatorFormatRequest;
 
 #[test]
 fn accepts_independent_schema_five_process_and_its_host_format() {
