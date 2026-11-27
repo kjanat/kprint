@@ -55,7 +55,7 @@ pub(crate) fn format_text_range_with_arena_pool(
 ) -> Result<Option<String>, FormatError> {
   let body = strip_bom(file_text);
   let bom_len = file_text.len() - body.len();
-  if bom_len > 0 && range.end <= bom_len {
+  if range.start < bom_len && range.end <= bom_len {
     return Ok(None);
   }
   let end = range.end.saturating_sub(bom_len).min(body.len());
@@ -359,6 +359,19 @@ mod test {
     let text = "\u{FEFF}a    b\n\nc    d\n";
     let output = format_c(&config, text);
     assert_eq!(output, "\u{FEFF}a    b\n\nc d\n");
+  }
+
+  #[test]
+  fn distinguishes_selection_in_the_bom_prefix_from_cursor_at_body_start() {
+    let config = ConfigurationBuilder::new().build();
+    let prefix = "\n\n\u{FEFF}";
+    let text = format!("{prefix}a    b\n\nc    d\n");
+    assert_eq!(format_text_range(&text, 0..1, &config, |_| None).unwrap(), None);
+    let start = prefix.len();
+    assert_eq!(
+      format_text_range(&text, start..start, &config, |_| None).unwrap().as_deref(),
+      Some("\n\n\u{FEFF}a b\n\nc    d\n")
+    );
   }
 
   #[test]

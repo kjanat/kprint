@@ -154,6 +154,30 @@ mod test {
   use crate::configuration::ConfigurationBuilder;
 
   #[test]
+  fn keeps_a_literal_quote_marker_in_a_multiline_link_title() {
+    use crate::parser::Node;
+
+    let source = "> [x](/url \"a\n>     > b\")\n";
+    let output = format_text(source, &Configuration::default(), |_| None).unwrap();
+    let formatted = output.as_deref().unwrap_or(source);
+    let bump = bumpalo::Bump::new();
+    let document = crate::parser::parse(formatted, &bump).unwrap();
+    assert!(
+      matches!(
+        document.children,
+        [Node::BlockQuote(quote)] if matches!(
+          quote.children,
+          [Node::Paragraph(paragraph)] if matches!(
+            paragraph.children,
+            [Node::InlineLink(link)] if link.title.is_some_and(|title| title.contains("> b"))
+          )
+        )
+      ),
+      "{formatted:?}"
+    );
+  }
+
+  #[test]
   fn preserves_significant_inline_text_and_html_whitespace() {
     let config = ConfigurationBuilder::new().ignore_directive("freeze").html_skip_format(true).build();
     let input = concat!(

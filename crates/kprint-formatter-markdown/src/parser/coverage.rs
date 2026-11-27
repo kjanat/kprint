@@ -58,6 +58,13 @@ pub fn validate_text_coverage(file: &SourceFile<'_>, source: &str) -> Result<(),
   return Ok(());
 
   fn visit(node: &Node<'_>, source: &str) -> Result<(), String> {
+    if let Node::Text(text) = node {
+      let written = text.span.text(source);
+      if text.text != written {
+        return Err(format!("Text at {:?} holds {:?} of {:?}", text.span, text.text, written));
+      }
+      return Ok(());
+    }
     compare(&format!("{:?}", node.kind()), node.span(), &content(node, source), source)?;
     for child in child_nodes(node) {
       visit(child, source)?;
@@ -179,6 +186,19 @@ pub fn validate_text_coverage(file: &SourceFile<'_>, source: &str) -> Result<(),
       .flat_map(|c| c.to_lowercase())
       .collect()
   }
+}
+
+#[test]
+fn rejects_a_text_node_that_lost_literal_punctuation() {
+  let span = Span::new(0, 3);
+  let children = [Node::Text(super::ast::Text { span, text: "Hi" })];
+  let file = SourceFile {
+    span,
+    children: &children,
+    link_labels: Default::default(),
+    footnote_labels: Default::default(),
+  };
+  assert!(validate_text_coverage(&file, "Hi!").is_err());
 }
 
 /// Every node held by the given one, including the ones its own children don't

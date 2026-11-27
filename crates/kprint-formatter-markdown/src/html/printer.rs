@@ -48,7 +48,8 @@ pub fn format_html<'a>(text: &'a str, options: &HtmlFormatOptions, bump: &'a Bum
   // a blank line closes the html block it's written in, so one that wasn't
   // there before would split the block in two and leave the rest of it to be
   // read as markdown
-  if has_blank_line(&result) && !has_blank_line(text) {
+  let blank_lines = blank_line_count(&result);
+  if blank_lines > 0 && blank_lines > blank_line_count(text) {
     return Err(ParseError::WouldSplitTheBlock);
   }
   Ok(result)
@@ -388,20 +389,26 @@ fn trailing_whitespace(text: &str) -> &str {
   &text[text.trim_end_matches(is_html_whitespace).len()..]
 }
 
-/// Whether the author wrote a tag's attributes on lines of their own, with a
-/// line break between the tag name and the first of them.
+/// Whether the author separated attributes from the tag name or one another
+/// with a line break.
 ///
 /// The whitespace within a tag isn't kept by the parser, so this reads it back
 /// off the source the element was parsed out of, which the name and the
 /// attributes borrow from.
 fn attributes_on_own_lines(element: &Element) -> bool {
-  let Some(first) = element.attributes.first() else {
-    return false;
-  };
   let source_start = element.source.as_ptr() as usize;
-  let name_end = element.name.as_ptr() as usize + element.name.len() - source_start;
-  let first_start = first.name.as_ptr() as usize - source_start;
-  element.source[name_end..first_start].contains('\n')
+  let mut previous_end = element.name.as_ptr() as usize + element.name.len() - source_start;
+  for attribute in element.attributes {
+    let start = attribute.name.as_ptr() as usize - source_start;
+    if element.source[previous_end..start].contains(['\r', '\n']) {
+      return true;
+    }
+    previous_end = match &attribute.value {
+      Some(value) => value.text.as_ptr() as usize + value.text.len() + usize::from(value.quote.is_some()) - source_start,
+      None => start + attribute.name.len(),
+    };
+  }
+  false
 }
 
 fn is_block_node(node: &Node) -> bool {
@@ -597,17 +604,16 @@ fn is_html_whitespace(ch: char) -> bool {
   matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}')
 }
 
-/// Whether any line of the text holds nothing but whitespace, which is what
+/// How many lines of the text hold nothing but whitespace, which is what
 /// closes an html block in markdown.
 ///
 /// The empty line that text ending in a newline leaves behind isn't one of
 /// them, because there is no line there at all.
-fn has_blank_line(text: &str) -> bool {
-  let mut lines: Vec<&str> = text.split('\n').collect();
-  if lines.last() == Some(&"") {
-    lines.pop();
-  }
-  lines.iter().any(|line| line.trim_matches(is_html_whitespace).is_empty())
+fn blank_line_count(text: &str) -> usize {
+  text
+    .split_terminator('\n')
+    .filter(|line| line.trim_matches(is_html_whitespace).is_empty())
+    .count()
 }
 
 #[cfg(test)]
@@ -630,6 +636,24 @@ mod test {
   fn keeps_visible_spacing_around_elements_styled_as_inline() {
     let source = r#"<div>a<div style="display:inline">b</div>c</div>"#;
     assert_format(source, source);
+  }
+
+  #[test]
+  fn distinguishes_attribute_separators_from_newlines_in_values() {
+    for (source, on_own_lines) in [("<div id=\"a\"\n class=\"b\">x</div>", true), ("<div id=\"a\n b\" class=\"c\">x</div>", false)] {
+      let bump = Bump::new();
+      let document = super::super::parser::parse(source, &bump).unwrap();
+      let Node::Element(element) = &document.children[0] else {
+        panic!("expected an element")
+      };
+      assert_eq!(attributes_on_own_lines(element), on_own_lines);
+    }
+  }
+
+  #[test]
+  fn refuses_to_add_a_blank_line_even_when_one_already_exists() {
+    let source = "<div><pre>a\n\nb</pre><span title=\"a long title that exceeds the line width of the surrounding markup\"> </span></div>";
+    assert_kept(source);
   }
 
   #[track_caller]

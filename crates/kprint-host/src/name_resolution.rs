@@ -48,6 +48,10 @@ pub(crate) fn embedded_language_extensions(language: &str) -> &'static [&'static
   }
 }
 
+pub(crate) fn is_shared_extension(extension: &str) -> bool {
+  SHARED_EXTENSIONS.binary_search(&extension).is_ok()
+}
+
 #[test]
 fn resolves_linguist_names_and_aliases_to_extensions() {
   assert_eq!(resolve_language_extension("HCL"), Some("hcl"));
@@ -151,13 +155,12 @@ impl PluginNameResolutionMaps {
 
   pub(crate) fn get_plugin_names_for_embedded_language<'a>(&'a self, path: &Path, extension: &str, language_extensions: &[&str]) -> PathPluginNames<'a> {
     let file_name = get_lowercase_file_name(path);
-    let is_shared = |extension: &str| SHARED_EXTENSIONS.binary_search(&extension).is_ok();
     let matches_extension = |index| {
       map_contains(&self.extension_to_plugin_indexes_map, extension, index)
-        && (!is_shared(extension)
+        && (!is_shared_extension(extension)
           || language_extensions
             .iter()
-            .any(|candidate| !is_shared(candidate) && map_contains(&self.extension_to_plugin_indexes_map, candidate, index)))
+            .any(|candidate| !is_shared_extension(candidate) && map_contains(&self.extension_to_plugin_indexes_map, candidate, index)))
         && self.is_not_associations_excluded(index, path)
     };
     let explicitly_claiming: Vec<_> = self

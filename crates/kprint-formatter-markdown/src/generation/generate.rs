@@ -2226,13 +2226,15 @@ fn gen_raw_text<'a>(text: &'a str, context: &Context<'a>) -> PrintItems<'a> {
     items.extend(gen_text_with_tabs(context.arena, line.trim_end_matches(SPACES)));
   }
   for line in lines {
-    // a label, a title, and an image's alt text are not prose, so a sentence
-    // within one says nothing about where its line breaks belong
-    items.extend(get_newline_wrapping_based_on_config(context, false));
-    // the printer provides the indentation and block quote markers of a
-    // continued line, so drop the ones this picked up from the file
-    let line = strip_block_quote_markers(line, context);
-    items.extend(gen_text_with_tabs(context.arena, line.trim_end_matches(SPACES)));
+    // The parser already removed the enclosing quote prefixes.
+    let line = line.trim_matches(SPACES);
+    if context.block_quote_depth() > 0 && line.starts_with('>') {
+      // At the start of a continued line this would open another block quote.
+      items.extend(space(context.arena));
+    } else {
+      items.extend(get_newline_wrapping_based_on_config(context, false));
+    }
+    items.extend(gen_text_with_tabs(context.arena, line));
   }
   items
 }

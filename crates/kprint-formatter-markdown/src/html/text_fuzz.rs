@@ -159,7 +159,8 @@ const MALFORMED: &[&str] = &[
 #[test]
 fn html_is_read_and_written_back_out_whole() {
   let first = env_count("FUZZ_FROM").unwrap_or(0);
-  let count = env_count("FUZZ_CASES").unwrap_or(50_000);
+  let selected_count = env_count("FUZZ_CASES");
+  let count = selected_count.unwrap_or(50_000);
   let mut failures = Vec::new();
   let mut laid_out = 0;
 
@@ -196,7 +197,9 @@ fn html_is_read_and_written_back_out_whole() {
   );
   // Require substantial coverage of changed output. Valid input that was
   // already formatted also passes the full round-trip checks.
-  assert!(laid_out * 5 > count * 2, "only {} of {} generated cases changed", laid_out, count,);
+  if first == 0 && selected_count.is_none() {
+    assert!(laid_out * 5 > count * 2, "only {} of {} generated cases changed", laid_out, count,);
+  }
 }
 
 /// Checks what has to hold of the html the printer writes out, giving back
@@ -252,28 +255,63 @@ fn check_printing(source: &str, document: &Document<'_>, prefer_single_line: boo
 
 /// The tags the nodes were written with, in the order they were written, which
 /// is what the formatter has to keep whatever it does to the whitespace.
-fn tags(nodes: &[Node<'_>]) -> Vec<String> {
+#[derive(Debug, PartialEq, Eq)]
+struct Tag<'a> {
+  name: String,
+  attributes: Vec<(String, Option<&'a str>)>,
+}
+
+fn tags<'a>(nodes: &[Node<'a>]) -> Vec<Tag<'a>> {
   let mut found = Vec::new();
   collect_tags(nodes, &mut found);
   found
 }
 
-fn collect_tags(nodes: &[Node<'_>], found: &mut Vec<String>) {
+fn collect_tags<'a>(nodes: &[Node<'a>], found: &mut Vec<Tag<'a>>) {
   for node in nodes {
     let Node::Element(element) = node else {
       continue;
     };
-    let attributes: String = element
+    let attributes = element
       .attributes
       .iter()
-      .map(|attribute| match &attribute.value {
-        Some(value) => format!(" {}={}", attribute.name.to_lowercase(), value.text),
-        None => format!(" {}", attribute.name.to_lowercase()),
-      })
+      .map(|attribute| (attribute.name.to_lowercase(), attribute.value.as_ref().map(|value| value.text)))
       .collect();
-    found.push(format!("{}{}", element.name.to_lowercase(), attributes));
+    found.push(Tag {
+      name: element.name.to_lowercase(),
+      attributes,
+    });
     collect_tags(element.children, found);
   }
+}
+
+fn has_trailing_markdown_paragraph(text: &str) -> bool {
+  use crate::parser::Node;
+  use crate::parser::TextDecorationKind;
+
+  let bump = Bump::new();
+  let Ok(document) = crate::parser::parse(text, &bump) else {
+    return false;
+  };
+  let Some(Node::Paragraph(paragraph)) = document.children.last() else {
+    return false;
+  };
+  matches!(
+    paragraph.children,
+    [Node::Text(prefix), Node::TextDecoration(emphasis)]
+      if prefix.text == "after" && emphasis.kind == TextDecorationKind::Emphasis
+        && matches!(emphasis.children, [Node::Text(text)] if text.text == "b")
+  )
+}
+
+#[test]
+fn html_round_trip_checks_distinguish_structure() {
+  let bump = Bump::new();
+  let one = super::parser::parse(r#"<p title="a id=b">x</p>"#, &bump).unwrap();
+  let two = super::parser::parse(r#"<p title="a" id="b">x</p>"#, &bump).unwrap();
+  assert_ne!(tags(one.children), tags(two.children));
+  assert!(has_trailing_markdown_paragraph("<div>x</div>\n\nafter *b*\n"));
+  assert!(!has_trailing_markdown_paragraph("<div>x</div>\nafter *b*\n"));
 }
 
 /// The letters and digits of the text, which say what it says however it is
@@ -436,6 +474,8 @@ fn markdown_holding_html_is_written_back_out_whole() {
         "case {}: {:?}\n  came out as {:?}, which doesn't say the same thing",
         case, source, once,
       ));
+    } else if has_trailing_markdown_paragraph(&source) && !has_trailing_markdown_paragraph(&once) {
+      failures.push(format!("case {case}: {source:?}\n  trailing Markdown paragraph was lost in {once:?}"));
     } else if twice != once {
       failures.push(format!(
         "case {}: {:?}\n  came out as {:?} and then as {:?}, so formatting it doesn't settle",

@@ -312,3 +312,45 @@ fn language_dispatch_prefers_a_claiming_formatter_and_retains_an_additive_fallba
     session.shutdown().await;
   });
 }
+
+#[test]
+fn language_dispatch_falls_back_to_shared_extensions_and_keeps_legacy_bash_editor_routing() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_plugin("npm:@dprint/markdown@0.29.0")
+        .add_remote_wasm_plugin()
+        .add_config_section("test-plugin", r#"{"file_extensions":["rs","sh"]}"#);
+    })
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let source = b"```rust\nexample\n```\n\n```bash\nexample\n```\n";
+    let token = Arc::new(kprint_plugin_types::NullCancellationToken);
+    let result = scope
+      .format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("/guide.md")),
+        file_bytes: source.to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: token.clone(),
+      })
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(result, b"```rust\nexample_formatted\n```\n\n```bash\nexample\n```\n");
+    for language in ["rust", "bash"] {
+      let selection = scope
+        .select_editor_formatter(std::path::Path::new("/untitled"), Some(language), None, b"example")
+        .unwrap();
+      let formatted = scope
+        .format_editor(selection, b"example".to_vec(), None, token.clone(), Some(language))
+        .await
+        .unwrap();
+      assert_eq!(formatted.as_deref(), Some(b"example_formatted".as_slice()));
+    }
+    session.shutdown().await;
+  });
+}

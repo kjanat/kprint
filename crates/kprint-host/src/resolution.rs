@@ -730,7 +730,12 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     }
     let route = if let Some(language) = synthetic_language {
       let language = language.trim().to_ascii_lowercase();
-      let extensions = crate::name_resolution::embedded_language_extensions(&language);
+      let extensions = if language == "bash" {
+        // Editor language IDs have historically used the Shell family's .sh.
+        &["bash", "sh"]
+      } else {
+        crate::name_resolution::embedded_language_extensions(&language)
+      };
       let eligible = |extension: &str| {
         let path = file_path.with_extension(extension);
         (extension != "ipynb" && (notebook_path.is_some() || self.matches_editor_file_patterns(&path))).then_some(path)
@@ -876,6 +881,23 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
           return Some(route);
         }
         additive_fallback.get_or_insert(route);
+      }
+    }
+    for extension in extensions
+      .iter()
+      .copied()
+      .filter(|extension| crate::name_resolution::is_shared_extension(extension))
+    {
+      let Some(path) = path_for(extension) else {
+        continue;
+      };
+      let names = self.plugin_name_maps.get_plugin_names_with_extension(&path, Some(extension));
+      if names.has_claiming_plugin() {
+        return Some(HostFormatRoute {
+          real_path: path.clone(),
+          plugin_path: path,
+          plugin_names: names.into_names().into_iter().map(ToOwned::to_owned).collect(),
+        });
       }
     }
     additive_fallback
