@@ -145,7 +145,7 @@ impl PluginNameResolutionMaps {
     }
   }
 
-  pub(crate) fn get_plugin_names_for_embedded_language<'a>(&'a self, path: &Path, extension: &str, language_extensions: &[&str]) -> Vec<&'a str> {
+  pub(crate) fn get_plugin_names_for_embedded_language<'a>(&'a self, path: &Path, extension: &str, language_extensions: &[&str]) -> PathPluginNames<'a> {
     let is_shared = |extension: &str| SHARED_EXTENSIONS.binary_search(&extension).is_ok();
     let matches_extension = |index| {
       map_contains(&self.extension_to_plugin_indexes_map, extension, index)
@@ -170,7 +170,7 @@ impl PluginNameResolutionMaps {
     } else {
       ClaimingPlugins::Many(explicitly_claiming)
     };
-    self
+    let names = self
       .plugins
       .iter()
       .enumerate()
@@ -180,7 +180,11 @@ impl PluginNameResolutionMaps {
           || self.matches_additive_associations(*index, path)
       })
       .map(|(_, plugin)| plugin.name.as_str())
-      .collect()
+      .collect();
+    PathPluginNames {
+      names,
+      has_claiming_plugin: !claiming.is_empty(),
+    }
   }
 
   /// Resolves plugins for a file, falling back to its shebang line when it's

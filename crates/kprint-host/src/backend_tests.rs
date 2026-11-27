@@ -274,3 +274,36 @@ fn wasm_and_process_plugins_delegate_by_language() {
     session.shutdown().await;
   });
 }
+
+#[test]
+fn language_dispatch_prefers_a_claiming_formatter_and_retains_an_additive_fallback() {
+  let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+    .add_remote_process_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_plugin("npm:@dprint/markdown@0.29.0")
+        .add_remote_wasm_plugin()
+        .add_remote_process_plugin()
+        .add_config_section("test-plugin", r#"{"associations":["**/*.ts"],"additive":true,"ending":"additive"}"#)
+        .add_config_section("testProcessPlugin", r#"{"associations":["**/guide.md.embedded.cts"],"ending":"claiming"}"#);
+    })
+    .initialize()
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let format = |path| {
+      scope.format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
+        file_bytes: b"```ts\nexample\n```\n".to_vec(),
+        override_config: Default::default(),
+        range: None,
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    assert_eq!(format("/guide.md").await.unwrap().unwrap(), b"```ts\nexample_claiming\n```\n");
+    assert_eq!(format("/fallback.md").await.unwrap().unwrap(), b"```ts\nexample_additive\n```\n");
+    session.shutdown().await;
+  });
+}

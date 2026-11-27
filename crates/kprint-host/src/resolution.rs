@@ -839,20 +839,27 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 
   fn match_language(&self, extensions: &[&str], path_for: impl Fn(&str) -> Option<PathBuf>) -> Option<HostFormatRoute> {
+    let mut additive_fallback = None;
     for extension in extensions {
       let Some(path) = path_for(extension) else {
         continue;
       };
       let names = self.plugin_name_maps.get_plugin_names_for_embedded_language(&path, extension, extensions);
+      let has_claiming_plugin = names.has_claiming_plugin();
+      let names = names.into_names();
       if !names.is_empty() {
-        return Some(HostFormatRoute {
+        let route = HostFormatRoute {
           real_path: path.clone(),
           plugin_path: path,
           plugin_names: names.into_iter().map(ToOwned::to_owned).collect(),
-        });
+        };
+        if has_claiming_plugin {
+          return Some(route);
+        }
+        additive_fallback.get_or_insert(route);
       }
     }
-    None
+    additive_fallback
   }
 
   fn mapped_real_path<'a>(path: &Path, embedder: Option<&'a Embedder>) -> Option<&'a Path> {

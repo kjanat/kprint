@@ -494,14 +494,17 @@ fn preserve_content(element: &Element) -> bool {
   element.kind == ElementKind::RawText
     || tags::is_preformatted(element.name)
     || element.attributes.iter().any(|attribute| {
-      attribute.name.eq_ignore_ascii_case("style")
-        && attribute.value.as_ref().is_some_and(|value| {
-          value
+      attribute.value.as_ref().is_some_and(|value| {
+        if attribute.name == "xml:space" {
+          return value.text == "preserve";
+        }
+        attribute.name.eq_ignore_ascii_case("style")
+          && value
             .text
             .split(';')
             .filter_map(|declaration| declaration.split_once(':'))
             .any(|(property, _)| property.trim().eq_ignore_ascii_case("white-space") || property.trim().eq_ignore_ascii_case("white-space-collapse"))
-        })
+      })
     })
 }
 
@@ -594,6 +597,18 @@ fn has_blank_line(text: &str) -> bool {
 #[cfg(test)]
 mod test {
   use super::*;
+
+  #[test]
+  fn svg_text_keeps_explicit_and_inherited_spacing() {
+    for svg in [
+      r#"<svg><text xml:space="preserve">a   b</text></svg>"#,
+      r#"<svg xml:space="preserve"><text>a   b</text></svg>"#,
+    ] {
+      let source = format!("<div>{svg}</div>");
+      let output = format_with_width(&source, 36);
+      assert!(output.contains("a   b"), "{output}");
+    }
+  }
 
   #[track_caller]
   fn assert_format(text: &str, expected: &str) {
