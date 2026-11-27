@@ -379,7 +379,12 @@ impl<'a, 'c> BlockParser<'a, 'c> {
     content.truncate(content.len() - (end - last_content));
     let end = last_content;
 
-    let (task_marker, content) = split_task_list_marker(content);
+    let (task_marker, mut content) = split_task_list_marker(content);
+    if task_marker.is_some()
+      && let Some(first) = content.first_mut()
+    {
+      *first = first.as_lazy();
+    }
     let mut children = self.parse_blocks(&content);
     remove_indent_beside_marker(&mut children, self.source);
     let (children, sub_lists) = split_trailing_lists(children.into_bump_slice());
@@ -603,7 +608,7 @@ impl<'a, 'c> BlockParser<'a, 'c> {
       cells: self.parse_table_cells(header_line).into_bump_slice(),
     };
 
-    let mut rows = BumpVec::with_capacity_in(lines.len() - delimiter_index - 1, self.context.bump);
+    let mut rows = BumpVec::new_in(self.context.bump);
     let mut end = delimiter_index + 1;
     while end < lines.len() {
       let line = lines[end];
@@ -615,7 +620,14 @@ impl<'a, 'c> BlockParser<'a, 'c> {
       }
       // a row holds every cell it was written with, even the ones past the
       // last column. The renderer supplies any missing cells.
-      let cells = self.parse_table_cells(line);
+      let mut cells = self.parse_table_cells(line);
+      if cells.is_empty() {
+        let end = line.trim_end().end();
+        cells.push(TableCell {
+          span: Span::new(end, end),
+          children: &[],
+        });
+      }
       rows.push(TableRow {
         span: line.trim_end().span(),
         cells: cells.into_bump_slice(),
@@ -722,9 +734,6 @@ impl<'a, 'c> BlockParser<'a, 'c> {
         end += 1;
         continue;
       }
-      if !line.is_lazy && is_definition_marker(line.rest()) {
-        break;
-      }
       if line.indent_columns() >= content_indent {
         let line = line.strip_columns(content_indent);
         paragraph.push(line);
@@ -732,6 +741,9 @@ impl<'a, 'c> BlockParser<'a, 'c> {
         end += 1;
         last_content = end;
         continue;
+      }
+      if !line.is_lazy && is_definition_marker(line.rest()) {
+        break;
       }
       if self.continues_paragraph(&paragraph, lines, end) {
         let line = line.as_lazy();
@@ -997,6 +1009,7 @@ struct OpenParagraph<'a> {
   /// The single line the open paragraph holds so far, which a delimiter row
   /// would turn into a table's header.
   header: Option<ContentLine<'a>>,
+  table: bool,
   /// The container the content ends within, whose own paragraph is the one a
   /// lazy line would reach.
   inner: Option<(Container, &'a mut OpenParagraph<'a>)>,
@@ -1013,6 +1026,7 @@ impl<'a> OpenParagraph<'a> {
       html: None,
       is_open: false,
       header: None,
+      table: false,
       inner: None,
       depth: 0,
     }
@@ -1045,6 +1059,7 @@ impl<'a> OpenParagraph<'a> {
     }
     if line.is_blank() {
       self.is_open = false;
+      self.table = false;
       self.inner = None;
       return;
     }
@@ -1066,6 +1081,12 @@ impl<'a> OpenParagraph<'a> {
       return;
     }
 
+    if self.table {
+      if line.indent_columns() < CODE_INDENT && !starts_block_in_paragraph(line.rest()) {
+        return;
+      }
+      self.table = false;
+    }
     if self.is_open {
       // a paragraph that turns out to be a table's header stops being one
       if let Some(header) = self.header.take()
@@ -1073,6 +1094,7 @@ impl<'a> OpenParagraph<'a> {
         && table_delimiter_row(line.rest(), header.rest(), self.bump).is_some()
       {
         self.is_open = false;
+        self.table = true;
         return;
       }
       // an indented line, or one that starts no block of its own, is more of
@@ -1108,6 +1130,9 @@ impl<'a> OpenParagraph<'a> {
       if !closed {
         self.html = Some(kind);
       }
+      return;
+    }
+    if rest.starts_with('[') && links::match_link_reference_definition(&InlineText::from_line(rest), 0).is_some() {
       return;
     }
     // what's open within a container is what a lazy line would continue,
@@ -1369,7 +1394,7 @@ fn find_ignore_ascii_case(text: &str, marker: &str) -> Option<usize> {
 fn starts_with_tag_name(text: &str, name: &str) -> bool {
   // compared as bytes because the name's length may land within a character
   let bytes = text.as_bytes();
-  bytes.len() >= name.len() && bytes[..name.len()].eq_ignore_ascii_case(name.as_bytes()) && followed_by_tag_end(&text[name.len()..])
+  bytes.len() >= name.len() && bytes[..name.len()].eq_ignore_ascii_case(name.as_bytes()) && matches!(bytes.get(name.len()), None | Some(b' ' | b'\t' | b'>'))
 }
 
 /// The text up to its first line break, which for an html block is the line

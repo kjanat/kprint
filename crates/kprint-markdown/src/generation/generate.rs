@@ -567,19 +567,20 @@ fn gen_nodes_within_breaks<'a>(nodes: &[Node<'a>], context: &mut Context<'a>) ->
     if let Node::Html(html) = node {
       let html_text = html.span.text(context.file_text);
       if context.is_ignore_comment(html_text) {
-        items.push_signal(Signal::NewLine);
         if let Some(node) = node_iterator.next() {
-          if context.has_leading_blankline(node.span().start) {
-            items.push_signal(Signal::NewLine);
-          }
-
-          // the node's line is written from its start, so that the indentation
-          // written before an indented code block is kept
           let node_span = node.span();
           let line_start = context.file_text[..node_span.start].rfind('\n').map(|index| index + 1).unwrap_or(0);
+          let starts_line = line_start >= html.span.end;
+          if starts_line {
+            items.push_signal(Signal::NewLine);
+            if context.has_leading_blankline(node_span.start) {
+              items.push_signal(Signal::NewLine);
+            }
+          }
+          let start = if starts_line { line_start } else { html.span.end };
           items.extend(gen_ignored_text(
-            context.file_text[line_start..node_span.end].trim_end_matches(WHITESPACE),
-            true,
+            context.file_text[start..node_span.end].trim_end_matches(WHITESPACE),
+            starts_line,
             context,
           ));
 
@@ -1234,7 +1235,7 @@ fn gen_code_str<'a>(text: &'a str, context: &mut Context<'a>) -> PrintItems<'a> 
       if !self.items.is_empty() {
         self.items.extend(self.space_items(start, word));
       }
-      self.items.push_str_runtime_width_computed(word);
+      self.items.extend(gen_text_with_tabs(self.context.arena, word));
     }
 
     /// What to write in place of the whitespace that ran up to the word.
@@ -2055,10 +2056,7 @@ fn gen_range<'a>(span: Span, ctx: &mut Context<'a>) -> PrintItems<'a> {
   }
   let mut items = PrintItems::new(ctx.arena);
   items.push_sc(sc!("")); // force first line indentation
-  let text = match strip_raw_block_quote_markers(text, ctx) {
-    Cow::Borrowed(text) => ctx.alloc_cow_str(trim_line_ends(text)),
-    Cow::Owned(text) => ctx.alloc_str(&trim_line_ends(&text)),
-  };
+  let text = ctx.alloc_cow_str(strip_raw_block_quote_markers(text, ctx));
   items.extend(ir_helpers::gen_from_raw_string(ctx.arena, text));
   items
 }
@@ -2138,10 +2136,7 @@ fn gen_inline_link<'a>(link: &InlineLink<'a>, context: &mut Context<'a>) -> Prin
     items.extend(gen_nodes(link.children, context));
     items.push_sc(sc!("]"));
     items.push_sc(sc!("("));
-    items.extend(gen_link_destination_text(
-      format_raw_link_destination(link.url.trim_matches(WHITESPACE)),
-      context,
-    ));
+    items.extend(gen_link_destination_text(inline_destination(link.url, link.title.is_some()), context));
     if let Some(title) = link.title {
       items.extend(gen_title(title, context));
     }
@@ -2246,10 +2241,9 @@ fn gen_raw_text<'a>(text: &'a str, context: &Context<'a>) -> PrintItems<'a> {
 /// block quote.
 fn strip_block_quote_markers<'a>(line: &'a str, context: &Context) -> &'a str {
   let mut line = line.trim_start_matches(SPACES);
-  if context.is_in_block_quote() {
-    while let Some(rest) = line.strip_prefix('>') {
-      line = rest.trim_start_matches(SPACES);
-    }
+  for _ in 0..context.block_quote_depth() {
+    let Some(rest) = line.strip_prefix('>') else { break };
+    line = rest.trim_start_matches(SPACES);
   }
   line
 }
@@ -2505,16 +2499,18 @@ fn gen_inline_image<'a>(image: &InlineImage<'a>, context: &mut Context<'a>) -> P
     items.extend(gen_image_alt_text(image.text, context));
     items.push_sc(sc!("("));
     // like a link reference definition, this is the raw text from the file
-    items.extend(gen_link_destination_text(
-      format_raw_link_destination(image.url.trim_matches(WHITESPACE)),
-      context,
-    ));
+    items.extend(gen_link_destination_text(inline_destination(image.url, image.title.is_some()), context));
     if let Some(title) = image.title {
       items.extend(gen_title(title, context));
     }
     items.push_sc(sc!(")"));
     ir_helpers::new_line_group(items)
   })
+}
+
+fn inline_destination(url: &str, has_title: bool) -> Cow<'_, str> {
+  let url = format_raw_link_destination(url.trim_matches(WHITESPACE));
+  if url.is_empty() && has_title { Cow::Borrowed("<>") } else { url }
 }
 
 fn gen_reference_image<'a>(image: &ReferenceImage<'a>, context: &mut Context<'a>) -> PrintItems<'a> {
@@ -3234,7 +3230,7 @@ fn get_blank_lines_above(node: &Node, minimum: u32, context: &Context) -> u32 {
   match (node, context.configuration.heading_blank_lines_above) {
     // everywhere but within a list the minimum is one, so the only heading this
     // leaves out is one drawn up against the block above it in a tight list
-    (Node::Heading(_), Some(count)) if written_or_minimum > 0 => count,
+    (Node::Heading(_), Some(count)) if written_or_minimum > 0 => count.clamp(1, u32::from(u8::MAX)),
     _ => written_or_minimum,
   }
 }

@@ -89,7 +89,8 @@ pub fn trace_file(
   format_code_block_text: impl FnMut(EmbeddedCode<'_>) -> Option<String>,
 ) -> kprint_formatting::TracingResult {
   let arena = Arena::new();
-  let (source_file, markdown_text) = match parse_source_file(file_text, config, arena.bump()).unwrap() {
+  let body = strip_bom(file_text);
+  let (source_file, markdown_text) = match parse_source_file(body, config, arena.bump()).unwrap() {
     ParseFileResult::IgnoreFile => panic!("Cannot trace file because it has an ignore file comment."),
     ParseFileResult::SourceFile(file) => file,
   };
@@ -99,10 +100,10 @@ pub fn trace_file(
     config,
     (source_file.link_labels, source_file.footnote_labels),
     format_code_block_text,
-    0,
+    file_text.len() - body.len(),
   );
   let print_items = generate(&source_file.into(), &mut context);
-  kprint_formatting::trace_printing(print_items, config_to_print_options(file_text, config))
+  kprint_formatting::trace_printing(print_items, config_to_print_options(body, config))
 }
 
 /// Removes the byte order marks a file begins with, along with any whitespace
@@ -151,6 +152,34 @@ fn config_to_print_options(file_text: &str, config: &Configuration) -> PrintOpti
 mod test {
   use super::*;
   use crate::configuration::ConfigurationBuilder;
+
+  #[test]
+  fn preserves_significant_inline_text_and_html_whitespace() {
+    let config = ConfigurationBuilder::new().ignore_directive("freeze").html_skip_format(true).build();
+    let input = concat!(
+      "Prefix <!-- freeze --> suffix\n\n",
+      "`a\tb`\n\n",
+      "[x](<> \"tip\") and ![x](<> \"tip\")\n\n",
+      "<pre>alpha  \nbeta</pre>\n",
+    );
+    assert_eq!(format_text(input, &config, |_| None).unwrap(), None);
+  }
+
+  #[test]
+  fn does_not_absorb_outside_text_after_a_quoted_table_or_link_definition() {
+    for input in ["> a | b\n> - | -\n> c | d\noutside\n", "> [ref]: /url\noutside\n"] {
+      let formatted = format_text(input, &Configuration::default(), |_| None).unwrap();
+      assert!(formatted.as_deref().unwrap_or(input).ends_with("\noutside\n"), "{formatted:?}");
+    }
+  }
+
+  #[test]
+  fn keeps_a_pipe_only_row_inside_the_table() {
+    let input = "| h |\n| --- |\n|\n| data |\n";
+    let output = format_text(input, &Configuration::default(), |_| None).unwrap().unwrap();
+    assert_eq!(output.lines().count(), 4);
+    assert!(output.lines().all(|line| line.starts_with('|')), "{output}");
+  }
 
   #[test]
   fn strips_bom() {

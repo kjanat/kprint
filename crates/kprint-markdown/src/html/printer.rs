@@ -132,7 +132,7 @@ impl Printer<'_> {
     // unless a single line is preferred. The whitespace at the edges of an
     // inline element's content is rendered, so a line break written there is
     // one the content never fits on a line with anyway.
-    let is_block = tags::is_block(element.name);
+    let is_block = is_block_element(element);
     let keeps_lines = is_block && !self.options.prefer_single_line && content_on_own_lines(element.children);
     let fits = !keeps_lines
       && content_flat_width(element.children, is_block, self.options)
@@ -406,7 +406,7 @@ fn attributes_on_own_lines(element: &Element) -> bool {
 
 fn is_block_node(node: &Node) -> bool {
   match node {
-    Node::Element(element) => tags::is_block(element.name),
+    Node::Element(element) => is_block_element(element),
     Node::Doctype(_) => true,
     _ => false,
   }
@@ -486,26 +486,42 @@ fn element_flat_width(element: &Element, options: &HtmlFormatOptions) -> Option<
   if preserve_content(element) {
     return Some(open + verbatim_width(element.content)? + close_tag_width(element));
   }
-  let content = content_flat_width(element.children, tags::is_block(element.name), options)?;
+  let content = content_flat_width(element.children, is_block_element(element), options)?;
   Some(open + content + close_tag_width(element))
 }
 
 fn preserve_content(element: &Element) -> bool {
   element.kind == ElementKind::RawText
     || tags::is_preformatted(element.name)
-    || element.attributes.iter().any(|attribute| {
-      attribute.value.as_ref().is_some_and(|value| {
-        if attribute.name == "xml:space" {
-          return value.text == "preserve";
-        }
-        attribute.name.eq_ignore_ascii_case("style")
-          && value
-            .text
-            .split(';')
-            .filter_map(|declaration| declaration.split_once(':'))
-            .any(|(property, _)| property.trim().eq_ignore_ascii_case("white-space") || property.trim().eq_ignore_ascii_case("white-space-collapse"))
-      })
+    || element
+      .attributes
+      .iter()
+      .any(|attribute| attribute.name == "xml:space" && attribute.value.as_ref().is_some_and(|value| value.text == "preserve"))
+    || style_declarations(element).any(|(property, _)| property.eq_ignore_ascii_case("white-space") || property.eq_ignore_ascii_case("white-space-collapse"))
+}
+
+fn is_block_element(element: &Element) -> bool {
+  tags::is_block(element.name)
+    && !style_declarations(element).any(|(property, value)| {
+      if !property.eq_ignore_ascii_case("display") {
+        return false;
+      }
+      let display = value.split(|ch: char| ch.is_ascii_whitespace() || ch == '!').next().unwrap_or_default();
+      ["inline", "inline-block", "inline-flex", "inline-grid", "inline-table", "contents", "none"]
+        .iter()
+        .any(|value| display.eq_ignore_ascii_case(value))
     })
+}
+
+fn style_declarations<'a>(element: &Element<'a>) -> impl Iterator<Item = (&'a str, &'a str)> + use<'a> {
+  element
+    .attributes
+    .iter()
+    .filter(|attribute| attribute.name.eq_ignore_ascii_case("style"))
+    .filter_map(|attribute| attribute.value.as_ref())
+    .flat_map(|value| value.text.split(';'))
+    .filter_map(|declaration| declaration.split_once(':'))
+    .map(|(property, value)| (property.trim(), value.trim()))
 }
 
 fn open_tag_width(element: &Element, options: &HtmlFormatOptions) -> usize {
@@ -608,6 +624,12 @@ mod test {
       let output = format_with_width(&source, 36);
       assert!(output.contains("a   b"), "{output}");
     }
+  }
+
+  #[test]
+  fn keeps_visible_spacing_around_elements_styled_as_inline() {
+    let source = r#"<div>a<div style="display:inline">b</div>c</div>"#;
+    assert_format(source, source);
   }
 
   #[track_caller]

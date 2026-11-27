@@ -136,7 +136,10 @@ impl<'a> Parser<'a> {
           attributes,
           self_closing,
         } => {
-          let foreign = stack.last().is_some_and(|frame| frame.foreign) || tags::is_foreign_root(name);
+          let foreign = stack
+            .last()
+            .is_some_and(|frame| frame.foreign && !frame.name.eq_ignore_ascii_case("foreignObject"))
+            || tags::is_foreign_root(name);
           if tags::is_void(name) {
             push_node(
               &mut stack,
@@ -455,11 +458,11 @@ fn is_attribute_name_start(byte: u8) -> bool {
 }
 
 fn is_attribute_name_byte(byte: u8) -> bool {
-  !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'' | b'=' | b'<' | b'>' | b'/' | b'`')
+  !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'"' | b'\'' | b'=' | b'<' | b'>' | b'/' | b'`')
 }
 
 fn is_unquoted_value_byte(byte: u8) -> bool {
-  !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'' | b'=' | b'<' | b'>' | b'`')
+  !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'"' | b'\'' | b'=' | b'<' | b'>' | b'`')
 }
 
 #[cfg(test)]

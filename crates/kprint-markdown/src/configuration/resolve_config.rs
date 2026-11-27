@@ -99,39 +99,6 @@ pub fn resolve_config(config: ConfigKeyMap, global_config: &GlobalConfiguration)
 /// Reads a property, falling back to the deprecated name the property used to
 /// go by. Both names are taken from the map so that a deprecated one isn't
 /// reported as unknown.
-/// A key written under a name the plugin has since renamed, which is what
-/// `dprint config update` moves over.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConfigKeyRename {
-  pub old_key: &'static str,
-  pub new_key: &'static str,
-  /// The value to write under the new key, or `None` when the new key was
-  /// already set and the old one is only to be dropped.
-  pub value: Option<ConfigKeyValue>,
-}
-
-/// Finds the keys of a configuration that are written under a deprecated name.
-pub fn get_config_key_renames(config: &ConfigKeyMap) -> Vec<ConfigKeyRename> {
-  RENAMED_KEYS
-    .iter()
-    .filter_map(|(old_key, new_key)| {
-      let value = config.get(*old_key)?;
-      Some(ConfigKeyRename {
-        old_key,
-        new_key,
-        value: (!config.contains_key(*new_key)).then(|| value.clone()),
-      })
-    })
-    .collect()
-}
-
-/// Each key that was renamed, as the old name then the new one.
-const RENAMED_KEYS: &[(&str, &str)] = &[
-  ("headingKind", "heading.kind"),
-  ("unorderedListKind", "list.unorderedMarker"),
-  ("listIndentKind", "list.indentKind"),
-];
-
 fn get_renamed_value<T>(config: &mut ConfigKeyMap, key: &str, deprecated_key: &str, default_value: T, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> T
 where
   T: std::str::FromStr,
@@ -238,60 +205,6 @@ fn fill_deno_config(config: &mut ConfigKeyMap) {
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn renames_deprecated_keys() {
-    let mut config = ConfigKeyMap::new();
-    config.insert("headingKind".into(), "setext".into());
-    config.insert("unorderedListKind".into(), "asterisks".into());
-    config.insert("listIndentKind".into(), "pythonMarkdown".into());
-    config.insert("textWrap".into(), "always".into());
-
-    assert_eq!(
-      get_config_key_renames(&config),
-      vec![
-        ConfigKeyRename {
-          old_key: "headingKind",
-          new_key: "heading.kind",
-          value: Some("setext".into()),
-        },
-        ConfigKeyRename {
-          old_key: "unorderedListKind",
-          new_key: "list.unorderedMarker",
-          value: Some("asterisks".into()),
-        },
-        ConfigKeyRename {
-          old_key: "listIndentKind",
-          new_key: "list.indentKind",
-          value: Some("pythonMarkdown".into()),
-        },
-      ]
-    );
-  }
-
-  #[test]
-  fn rename_keeps_the_new_key_when_both_are_set() {
-    let mut config = ConfigKeyMap::new();
-    config.insert("headingKind".into(), "setext".into());
-    config.insert("heading.kind".into(), "atx".into());
-
-    assert_eq!(
-      get_config_key_renames(&config),
-      vec![ConfigKeyRename {
-        old_key: "headingKind",
-        new_key: "heading.kind",
-        value: None,
-      }]
-    );
-  }
-
-  #[test]
-  fn no_renames_for_a_current_config() {
-    let mut config = ConfigKeyMap::new();
-    config.insert("heading.kind".into(), "setext".into());
-    assert!(get_config_key_renames(&config).is_empty());
-    assert!(get_config_key_renames(&ConfigKeyMap::new()).is_empty());
-  }
 
   #[test]
   fn deprecated_key_is_used_when_the_new_one_is_not_set() {

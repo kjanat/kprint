@@ -279,15 +279,15 @@ generate_str_to_from![ListUnorderedMarker, [Dashes, "dashes"], [Asterisks, "aste
 /// The style of indentation to use for list items.
 ///
 /// CommonMark aligns continuation lines to the content column after the marker
-/// (e.g. 3 spaces for `1. `, 4 spaces for `10. `). PythonMarkdown uses a fixed
-/// 4-space indent regardless of marker width, which is required by tools like
+/// (e.g. 3 spaces for `1. `, 4 spaces for `10. `). PythonMarkdown uses at least
+/// four spaces, which is required by tools like
 /// mkdocs-material.
 #[derive(Clone, PartialEq, Copy, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ListIndentKind {
   /// Indents continuation lines to align with the content after the list marker (default).
   CommonMark,
-  /// Always indents by 4 spaces, regardless of marker width.
+  /// Indents continuation lines by at least four spaces.
   PythonMarkdown,
 }
 

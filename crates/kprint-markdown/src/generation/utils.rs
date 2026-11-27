@@ -210,7 +210,7 @@ pub fn leading_block_words_end(text: &str) -> Option<usize> {
 /// the check looks past them.
 pub fn ends_sentence(text: &str) -> bool {
   let text = text.trim_end();
-  let word = text.rsplit([' ', '\n', '\t']).next().unwrap_or(text);
+  let word = text.rsplit([' ', '\n', '\t']).next().unwrap_or(text).trim_end_matches(SENTENCE_TRAILING);
   // a script written without spaces between its words holds none for the word
   // to begin after, and the line may be broken between any two of its
   // characters, so the word that ends the text begins after the last of them.
@@ -220,7 +220,6 @@ pub fn ends_sentence(text: &str) -> bool {
     Some((index, character)) if index + character.len_utf8() < word.len() => &word[index + character.len_utf8()..],
     _ => word,
   };
-  let word = word.trim_end_matches(SENTENCE_TRAILING);
   let Some(last_char) = word.chars().next_back() else {
     return false;
   };

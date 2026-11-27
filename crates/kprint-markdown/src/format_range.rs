@@ -55,6 +55,9 @@ pub(crate) fn format_text_range_with_arena_pool(
 ) -> Result<Option<String>, FormatError> {
   let body = strip_bom(file_text);
   let bom_len = file_text.len() - body.len();
+  if bom_len > 0 && range.end <= bom_len {
+    return Ok(None);
+  }
   let end = range.end.saturating_sub(bom_len).min(body.len());
   let range = range.start.saturating_sub(bom_len).min(end)..end;
   let bump = Bump::new();

@@ -298,6 +298,7 @@ pub fn match_autolink(text: &InlineText<'_>, start: usize) -> Option<usize> {
         return (index > start + 1 && is_autolink).then_some(index + 1);
       }
       b' ' | b'\t' | b'\n' | b'<' => return None,
+      byte if byte.is_ascii_control() => return None,
       b':' if !has_scheme && !has_at => {
         // a scheme is 2 to 32 characters of letters, digits, `+`, `.` or `-`
         // that start with a letter
@@ -346,15 +347,15 @@ pub fn match_html_tag(text: &InlineText<'_>, start: usize) -> Option<usize> {
         } else if text.starts_with_at(start + 4, "->") {
           Some(start + 6)
         } else {
-          find_after(text, start + 4, "-->")
+          text.find_terminator(start + 4, "-->")
         }
       }
-      Some(b'[') if text.starts_with_at(start, "<![CDATA[") => find_after(text, start + 9, "]]>"),
+      Some(b'[') if text.starts_with_at(start, "<![CDATA[") => text.find_terminator(start + 9, "]]>"),
       // a declaration is `<!` followed by an ascii letter
-      Some(byte) if byte.is_ascii_alphabetic() => find_after(text, start + 2, ">"),
+      Some(byte) if byte.is_ascii_alphabetic() => text.find_terminator(start + 2, ">"),
       _ => None,
     },
-    b'?' => find_after(text, start + 2, "?>"),
+    b'?' => text.find_terminator(start + 2, "?>"),
     b'/' => match_closing_tag(text, start),
     byte if byte.is_ascii_alphabetic() => match_open_tag(text, start),
     _ => None,
@@ -435,17 +436,6 @@ fn is_attribute_name_start(byte: u8) -> bool {
 
 fn is_attribute_name_byte(byte: u8) -> bool {
   byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'.' | b'-')
-}
-
-fn find_after(text: &InlineText<'_>, start: usize, close: &str) -> Option<usize> {
-  let mut index = start;
-  while index < text.len() {
-    if text.starts_with_at(index, close) {
-      return Some(index + close.len());
-    }
-    index += 1;
-  }
-  None
 }
 
 pub fn skip_spaces(text: &InlineText<'_>, start: usize) -> usize {

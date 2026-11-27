@@ -79,6 +79,7 @@ pub fn parse_inlines<'a>(lines: &[ContentLine<'a>], context: &InlineContext<'a>)
     context,
     pos: 0,
     pending_text_start: 0,
+    exhausted_math_searches: [false; 2],
     nodes: &mut scratch.nodes,
     delimiters: &mut scratch.delimiters,
   };
@@ -100,6 +101,7 @@ pub struct InlineText<'a> {
   /// The absolute position of every byte of `text` plus its end, when the
   /// content had to be built up rather than borrowed.
   offsets: Option<&'a [u32]>,
+  failed_terminator_searches: std::cell::RefCell<std::collections::HashMap<&'static str, usize>>,
 }
 
 impl<'a> InlineText<'a> {
@@ -111,6 +113,7 @@ impl<'a> InlineText<'a> {
         text,
         base: lines[0].start,
         offsets: None,
+        failed_terminator_searches: Default::default(),
       };
     }
 
@@ -140,6 +143,7 @@ impl<'a> InlineText<'a> {
       text: text.into_bump_str(),
       base: lines[0].start,
       offsets: Some(offsets.into_bump_slice()),
+      failed_terminator_searches: Default::default(),
     }
   }
 
@@ -151,6 +155,7 @@ impl<'a> InlineText<'a> {
       text,
       base: 0,
       offsets: None,
+      failed_terminator_searches: Default::default(),
     }
   }
 
@@ -206,6 +211,22 @@ impl<'a> InlineText<'a> {
 
   pub fn str_between(&self, start: usize, end: usize) -> &str {
     &self.text[start..end]
+  }
+
+  pub fn find_terminator(&self, start: usize, terminator: &'static str) -> Option<usize> {
+    if self
+      .failed_terminator_searches
+      .borrow()
+      .get(terminator)
+      .is_some_and(|&previous| previous <= start)
+    {
+      return None;
+    }
+    if let Some(offset) = self.text.get(start..)?.find(terminator) {
+      return Some(start + offset + terminator.len());
+    }
+    self.failed_terminator_searches.borrow_mut().insert(terminator, start);
+    None
   }
 
   pub fn char_before(&self, index: usize) -> Option<char> {
@@ -271,6 +292,7 @@ struct InlineParser<'a, 'b> {
   pos: usize,
   /// Where the text that hasn't been turned into a node yet begins.
   pending_text_start: usize,
+  exhausted_math_searches: [bool; 2],
   /// The nodes parsed so far. Emphasis leaves holes behind when it wraps the
   /// nodes it spans, so a slot may be empty.
   nodes: &'b mut Vec<Option<Node<'a>>>,
@@ -488,10 +510,15 @@ impl<'a, 'b> InlineParser<'a, 'b> {
     let start = self.pos;
     let is_display = self.text.byte(start + 1) == Some(b'$');
     let delimiter = if is_display { "$$" } else { "$" };
+    let search_kind = usize::from(is_display);
     let content_start = start + delimiter.len();
     // an opening `$` must not be followed by whitespace
     if !is_display && matches!(self.text.byte(content_start), None | Some(b' ') | Some(b'\t') | Some(b'\n')) {
       self.pos += 1;
+      return;
+    }
+    if self.exhausted_math_searches[search_kind] {
+      self.pos += delimiter.len();
       return;
     }
 
@@ -530,6 +557,7 @@ impl<'a, 'b> InlineParser<'a, 'b> {
       }
       search += 1;
     }
+    self.exhausted_math_searches[search_kind] = true;
     self.pos += delimiter.len();
   }
 
@@ -586,6 +614,11 @@ impl<'a, 'b> InlineParser<'a, 'b> {
     let opener = &self.delimiters[opener_index];
     let (kind, node_index, open_start, content_start) = (opener.kind, opener.node_index, opener.start, opener.end);
     let is_image = kind == DelimiterKind::Image;
+    if !is_image && self.nodes[node_index + 1..].iter().any(|node| matches!(node, Some(Node::AutoLink(_)))) {
+      self.delimiters.remove(opener_index);
+      self.pos += 1;
+      return;
+    }
 
     let Some(reference) = links::match_reference(self.text, close_start, content_start, self.context.link_labels, self.context.bump) else {
       // not a link after all, so the `[` stays as text
@@ -721,8 +754,14 @@ impl<'a, 'b> InlineParser<'a, 'b> {
   fn flanking(&self, start: usize, end: usize, byte: u8) -> (bool, bool) {
     let before = self.text.char_before(start);
     let after = self.text.char_at(end);
-    let before_whitespace = before.is_none_or(char::is_whitespace);
-    let after_whitespace = after.is_none_or(char::is_whitespace);
+    let is_whitespace = |c| {
+      matches!(
+        c,
+        ' ' | '\t' | '\n' | '\r' | '\u{000c}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
+      )
+    };
+    let before_whitespace = before.is_none_or(is_whitespace);
+    let after_whitespace = after.is_none_or(is_whitespace);
     let before_punctuation = before.is_some_and(is_markdown_punctuation);
     let after_punctuation = after.is_some_and(is_markdown_punctuation);
 
@@ -807,6 +846,9 @@ impl<'a, 'b> InlineParser<'a, 'b> {
         DelimiterKind::Link | DelimiterKind::Image => continue,
         DelimiterKind::Emphasis(opener_byte) => {
           if opener_byte != byte || !opener.can_open {
+            continue;
+          }
+          if byte == b'~' && opener.end - opener.start != closer.end - closer.start {
             continue;
           }
           let opener_len = opener.original_len;

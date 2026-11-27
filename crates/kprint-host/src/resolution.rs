@@ -805,15 +805,19 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   fn embedded_extension_route(&self, embedder: &Embedder, extension: &str) -> Option<HostFormatRoute> {
     let extension = extension.to_ascii_lowercase();
     let path = embedded_path(&embedder.outer_path, &extension)?;
-    let plugin_names = self.embedded_plugin_names(embedder, &path).unwrap_or_else(|| {
-      self
-        .plugin_name_maps
-        .get_plugin_names_from_file_path(&path)
-        .into_names()
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect()
-    });
+    let plugin_names = embedder
+      .plugin
+      .get_embedded_plugins(&embedder.outer_path, &extension)
+      .map(|keys| self.plugin_names_for_config_keys(keys))
+      .unwrap_or_else(|| {
+        self
+          .plugin_name_maps
+          .get_plugin_names_with_extension(&path, Some(&extension))
+          .into_names()
+          .into_iter()
+          .map(ToOwned::to_owned)
+          .collect()
+      });
     Some(HostFormatRoute {
       real_path: path.clone(),
       plugin_path: path,
