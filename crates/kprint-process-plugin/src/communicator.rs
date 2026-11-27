@@ -568,9 +568,8 @@ fn handle_stdout_message(message: ProcessPluginMessage, context: &Rc<Context>) -
       if let Some(token) = context.format_request_tokens.take(message_id) {
         token.cancel();
       }
-      context.host_format_callbacks.take(message_id);
-      context.host_language_callbacks.take(message_id);
-      // do not clear from context.messages here because the cancellation will do that
+      // The plugin owns nested request IDs; they can collide with the host's
+      // parent IDs. Parent callback guards clean up their own entries.
     }
     MessageBody::HostFormat(body) => {
       // spawn a task to do the host formatting, then send a message back to the
@@ -686,4 +685,34 @@ async fn host_format_language(context: Rc<Context>, message_id: u32, body: HostF
   .await;
   drop(guard);
   result
+}
+
+#[tokio::test]
+async fn cancelling_a_nested_request_keeps_callbacks_with_the_same_parent_id() {
+  let context = Rc::new(Context {
+    schema_version: PLUGIN_SCHEMA_VERSION,
+    stdin_writer: SingleThreadMessageWriter::for_stdin(MessageWriter::new(std::io::sink())),
+    shutdown_flag: Default::default(),
+    id_generator: Default::default(),
+    messages: Default::default(),
+    format_request_tokens: Default::default(),
+    host_format_callbacks: Default::default(),
+    host_language_callbacks: Default::default(),
+  });
+  let id = 1;
+  let nested_token = Arc::new(CancellationToken::new());
+  let _nested_guard = context.format_request_tokens.store_with_guard(id, nested_token.clone());
+  let _path_guard = context.host_format_callbacks.store_with_guard(id, Rc::new(|_| Box::pin(async { Ok(None) })));
+  let _language_guard = context.host_language_callbacks.store_with_guard(id, Rc::new(|_| Box::pin(async { Ok(None) })));
+  handle_stdout_message(
+    ProcessPluginMessage {
+      id: 2,
+      body: MessageBody::CancelFormat(id),
+    },
+    &context,
+  )
+  .unwrap();
+  assert!(nested_token.is_cancelled());
+  assert!(context.host_format_callbacks.get_cloned(id).is_some());
+  assert!(context.host_language_callbacks.get_cloned(id).is_some());
 }

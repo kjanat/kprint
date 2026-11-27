@@ -583,7 +583,7 @@ fn gen_nodes_within_breaks(nodes: &[Node], context: &mut Context) -> PrintItems 
     // check for ignore comment
     if let Node::Html(html) = node {
       let html_text = html.span.text(context.file_text);
-      if context.is_ignore_comment(html_text) {
+      if html.is_block && context.is_ignore_comment(html_text) {
         items.push_signal(Signal::NewLine);
         if let Some(node) = node_iterator.next() {
           if context.has_leading_blankline(node.span().start) {
@@ -1080,13 +1080,13 @@ fn gen_code_block(code_block: &CodeBlock, position: NodePosition, context: &mut 
     if !context.configuration.code_block_skip_format {
       if let Some(tag) = code_block.tag() {
         // allow situations like ```rust,ignore
-        let tag = tag.chars().take_while(|&c| c != ' ' && c != ',').collect::<String>();
+        let tag = tag.split([',', ' ', '\t']).next().unwrap_or_default();
         let leading_lines = if context.configuration.code_block_preserve_blank_lines {
           0
         } else {
           utils::count_new_lines(&original_code[..get_code_block_start_pos(original_code)]) as usize
         };
-        match context.format_text(&tag, code, code_block.span.start, leading_lines) {
+        match context.format_text(tag, code, code_block.span.start, leading_lines) {
           Ok(Some(text)) => {
             // Formatters produce a string with a trailing newline, which must be removed.
             let text = text.strip_suffix("\n").unwrap_or(&text);
@@ -3228,12 +3228,16 @@ fn gen_metadata_block(node: &MetadataBlock, context: &mut Context) -> PrintItems
   items.push_signal(Signal::NewLine);
   match node.kind {
     MetadataBlockKind::YamlStyle => {
-      let text = context
-        .format_text("yaml", node.text, node.span.start, 0)
-        .ok()
-        .flatten()
-        .map(Cow::from)
-        .unwrap_or_else(|| Cow::from(node.text));
+      let text = match context.format_text("yaml", node.text, node.span.start, 0) {
+        Ok(Some(text)) => Cow::Owned(text),
+        Ok(None) => Cow::Borrowed(node.text),
+        Err(err) => {
+          if context.configuration.code_block_raise_syntax_errors {
+            context.mark_code_block_error(node.span.start, err);
+          }
+          Cow::Borrowed(node.text)
+        }
+      };
       items.extend(ir_helpers::gen_from_string(&trim_line_ends(
         text.trim_end_matches(WHITESPACE),
       )));

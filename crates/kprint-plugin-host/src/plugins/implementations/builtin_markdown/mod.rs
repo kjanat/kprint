@@ -35,11 +35,10 @@ const NPM_PACKAGE: &str = "@dprint/markdown";
 const WASM_URL: &str = "https://plugins.dprint.dev/markdown-0.24.0.wasm";
 const WASM_SHA256: &str = "cf7e65674b7eb5d91f85152ae9020dc8b3e73bd7944efcbfb05df71081217764";
 const NPM_SHA256: &str = "7a1c8dc47c9d37ed7bd8736b629250013e082c4288fa4fc071dde64d83369fcc";
-const MAX_NESTED_MARKDOWN: usize = 32;
 const CONFIG_SCHEMA: &str = include_str!("vendor/schema.json");
 const BUILT_IN: BuiltInFormatter = BuiltInFormatter {
   name: "markdown",
-  cache_revision: 1,
+  cache_revision: 2,
   serves_plugin: "dprint-plugin-markdown",
   refers_to_served_plugin: is_builtin_markdown_reference,
 };
@@ -143,7 +142,7 @@ impl<TEnvironment: PluginEnvironment> InProcessHandler for MarkdownHandler<TEnvi
       token: request.token,
     };
     let formatted = format
-      .document(text, 0, 0)
+      .document(text)
       .await
       .map_err(|error| FormatError::new(format!("{}: {error}", real_file_path.display())))?;
     if format.token.is_cancelled() {
@@ -175,7 +174,7 @@ struct MarkdownResult {
 }
 
 impl MarkdownFormat<'_> {
-  async fn document(&self, text: &str, line_offset: u32, depth: usize) -> Result<MarkdownResult, vendor::FormatError> {
+  async fn document(&self, text: &str) -> Result<MarkdownResult, vendor::FormatError> {
     if self.token.is_cancelled() {
       return Ok(MarkdownResult::default());
     }
@@ -183,7 +182,7 @@ impl MarkdownFormat<'_> {
       return Ok(MarkdownResult::default());
     };
     let requests = document.collect()?;
-    let outcomes = future::join_all(requests.iter().map(|request| self.format_block(request, line_offset, depth))).await;
+    let outcomes = future::join_all(requests.iter().map(|request| self.format_block(request))).await;
     if self.token.is_cancelled() {
       return Ok(MarkdownResult::default());
     }
@@ -193,12 +192,9 @@ impl MarkdownFormat<'_> {
       .iter()
       .zip(outcomes)
       .map(|(request, outcome)| match outcome {
-        Ok(mut formatted) => {
-          errors.append(&mut formatted.errors);
-          Ok(formatted.text)
-        }
+        Ok(formatted) => Ok(formatted),
         Err(error) if !self.config.code_block_raise_syntax_errors => {
-          errors.push((line_offset + request.line, error));
+          errors.push((request.line, error));
           Ok(None)
         }
         Err(error) => Err(error),
@@ -208,15 +204,9 @@ impl MarkdownFormat<'_> {
     Ok(MarkdownResult { text, errors })
   }
 
-  async fn format_block(&self, block: &vendor::CodeBlockRequest, line_offset: u32, depth: usize) -> Result<MarkdownResult, vendor::FormatError> {
-    if block.tag.eq_ignore_ascii_case("markdown") || block.tag.eq_ignore_ascii_case("md") {
-      // Nested Markdown uses the same vendored formatter, so it bypasses the
-      // host's delegation depth check.
-      if depth == MAX_NESTED_MARKDOWN {
-        return Err(vendor::FormatError::CodeBlock("nested Markdown formatting depth exceeded".into()));
-      }
-      return Box::pin(self.document(&block.text, line_offset + block.content_line - 1, depth + 1)).await;
-    }
+  async fn format_block(&self, block: &vendor::CodeBlockRequest) -> Result<Option<String>, vendor::FormatError> {
+    // All fences, including Markdown, go through the host. A no-op from
+    // the host may be an explicit opt-out; never format locally afterward.
     let mut override_config = ConfigKeyMap::new();
     override_config.insert("lineWidth".into(), (block.line_width as i32).into());
     if let Some(use_tabs) = self.config.code_block_use_tabs {
@@ -252,7 +242,7 @@ impl MarkdownFormat<'_> {
       .map_err(|error| vendor::FormatError::CodeBlock(error.into()))?
       .map(String::from_utf8)
       .transpose()?;
-    Ok(MarkdownResult { text, errors: Vec::new() })
+    Ok(text)
   }
 }
 
@@ -358,7 +348,7 @@ mod tests {
       },
     };
     let text = "```csharp\nsame body\n```\n\n> - ```csharp\n>   same body\n>   ```\n";
-    let result = tokio::time::timeout(Duration::from_secs(5), format.document(text, 0, 0))
+    let result = tokio::time::timeout(Duration::from_secs(5), format.document(text))
       .await
       .expect("the first formatter waits for the second to start")
       .unwrap();
@@ -372,26 +362,93 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn limits_nested_markdown_without_losing_the_unformatted_content() {
+  async fn markdown_fences_obey_host_opt_out_and_tag_mappings() {
+    let mut config = vendor::configuration::ConfigurationBuilder::new().build();
+    config.tags.insert("md".into(), "txt".into());
+    let format = MarkdownFormat {
+      config: &config,
+      token: Arc::new(NullCancellationToken),
+      callbacks: InProcessFormatCallbacks {
+        path: Rc::new(|request| {
+          assert_eq!(request.file_path, PathBuf::from("file.txt"));
+          assert_eq!(request.file_bytes, b"#   mapped");
+          Box::pin(async { Ok(Some(b"mapped by host".to_vec())) })
+        }),
+        language: Rc::new(|request| {
+          assert_eq!(request.language, "markdown");
+          assert_eq!(request.file_bytes, b"#   untouched");
+          Box::pin(async { Ok(None) })
+        }),
+      },
+    };
+    let text = "```md\n#   mapped\n```\n\n```markdown\n#   untouched\n```\n";
+    let output = format.document(text).await.unwrap().text.unwrap();
+    assert!(output.contains("mapped by host"), "{output}");
+    assert!(output.contains("#   untouched"), "{output}");
+  }
+
+  #[tokio::test]
+  async fn yaml_front_matter_preserves_unformatted_text_or_propagates_a_strict_error() {
+    let input = "---\nthing: yes\n---\n\n#   Heading\n";
+    for strict in [false, true] {
+      let config = vendor::configuration::ConfigurationBuilder::new()
+        .code_block_raise_syntax_errors(strict)
+        .build();
+      let format = MarkdownFormat {
+        config: &config,
+        token: Arc::new(NullCancellationToken),
+        callbacks: InProcessFormatCallbacks {
+          path: Rc::new(|_| panic!("YAML uses the language callback")),
+          language: Rc::new(|request| {
+            assert_eq!(request.language, "yaml");
+            Box::pin(async { Err(FormatError::from("invalid front matter")) })
+          }),
+        },
+      };
+      let result = format.document(input).await;
+      if strict {
+        let error = result.err().expect("strict front matter must fail").to_string();
+        assert!(error.contains("line 1") && error.contains("invalid front matter"), "{error}");
+      } else {
+        let result = result.unwrap();
+        assert!(result.text.unwrap().contains("thing: yes"));
+        assert_eq!(result.errors[0].0, 1);
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn inline_ignore_comment_does_not_replay_the_already_printed_line() {
     let config = vendor::configuration::ConfigurationBuilder::new().build();
     let format = MarkdownFormat {
       config: &config,
       token: Arc::new(NullCancellationToken),
       callbacks: InProcessFormatCallbacks {
-        path: Rc::new(|_| panic!("nested Markdown formats in process")),
-        language: Rc::new(|_| panic!("nested Markdown formats in process")),
+        path: Rc::new(|_| panic!("not a code block")),
+        language: Rc::new(|_| panic!("not a code block")),
       },
     };
-    let mut text = "#   unchanged\n".to_string();
-    for ticks in 3..=3 + MAX_NESTED_MARKDOWN {
-      let fence = "`".repeat(ticks);
-      text = format!("{fence}md\n{text}{fence}\n");
-    }
-    let result = format.document(&text, 0, 0).await.unwrap();
-    assert!(result.text.unwrap_or(text).contains("#   unchanged"));
-    assert_eq!(result.errors.len(), 1);
-    assert_eq!(result.errors[0].0 as usize, MAX_NESTED_MARKDOWN + 1);
-    assert!(result.errors[0].1.to_string().contains("nested Markdown formatting depth exceeded"));
+    let text = "before <!-- dprint-ignore --> after\n";
+    let output = format.document(text).await.unwrap().text.unwrap_or_else(|| text.to_string());
+    assert_eq!(output, text);
+  }
+
+  #[tokio::test]
+  async fn fence_info_after_a_tab_is_not_part_of_the_language_label() {
+    let config = vendor::configuration::ConfigurationBuilder::new().build();
+    let format = MarkdownFormat {
+      config: &config,
+      token: Arc::new(NullCancellationToken),
+      callbacks: InProcessFormatCallbacks {
+        path: Rc::new(|_| panic!("raw labels use the language callback")),
+        language: Rc::new(|request| {
+          assert_eq!(request.language, "python");
+          Box::pin(async { Ok(Some(b"formatted".to_vec())) })
+        }),
+      },
+    };
+    let output = format.document("```python\tlabel\nbody\n```\n").await.unwrap().text.unwrap();
+    assert!(output.contains("formatted"), "{output}");
   }
 
   #[tokio::test]
@@ -401,7 +458,7 @@ mod tests {
       environment: environment.clone(),
     };
     let source_path = PathBuf::from("docs").join("sample.md");
-    let text = "\u{feff}#  Title\n\n```bad\nsame\n```\n\n> ````markdown\n> \n> ```bad\n> same\n> ```\n> ````\n\n```custom\ndata\n```\n";
+    let text = "\u{feff}#  Title\n\n```bad\nsame\n```\n\n> ```bad\n> same\n> ```\n\n```custom\ndata\n```\n";
     for strict in [false, true] {
       let mut config = vendor::configuration::ConfigurationBuilder::new()
         .code_block_raise_syntax_errors(strict)
@@ -444,7 +501,7 @@ mod tests {
         assert_eq!(output.matches("same").count(), 2);
         assert!(output.contains("formatted data"));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
-        for (warning, line) in warnings.into_iter().zip([3, 9]) {
+        for (warning, line) in warnings.into_iter().zip([3, 7]) {
           assert!(warning.contains(&format!("{}:{line}:", source_path.display())), "{warning}");
           assert!(warning.contains("test formatter failed"), "{warning}");
         }

@@ -159,7 +159,7 @@ pub(crate) fn hash_language_routing(hasher: &mut impl std::hash::Hasher) {
   use std::hash::Hash;
   // The format result can change when an installed plugin starts matching an
   // alias following a Linguist update. Keep that state in the incremental key.
-  const ROUTING_VERSION: u8 = 2;
+  const ROUTING_VERSION: u8 = 3;
   ROUTING_VERSION.hash(hasher);
   LINGUIST_CATALOG_HASH.hash(hasher);
 }

@@ -9,7 +9,10 @@ pub type LineRangesByPath = std::collections::HashMap<std::path::PathBuf, Vec<Li
 use anyhow::Result;
 use anyhow::bail;
 use kprint_async_runtime::FutureExt;
+use kprint_async_runtime::LocalBoxFuture;
 use kprint_async_runtime::future;
+use kprint_plugin_types::EmbeddedLanguageFormatCallback;
+use kprint_plugin_types::FormatResult;
 use kprint_plugin_types::HostFormatCallback;
 use kprint_plugin_types::HostFormatRequest;
 use kprint_plugin_types::NullCancellationToken;
@@ -63,13 +66,7 @@ enum FormatStage {
   Formatting {
     plugin: usize,
     pass: usize,
-  },
-  /// Like `Formatting`, while the plugin waits for the host to format code it
-  /// embeds (ex. a code block in markdown).
-  FormattingEmbedded {
-    plugin: usize,
-    pass: usize,
-    embedded: EmbeddedFormat,
+    pending: PendingEmbedded,
   },
   /// Doing what the command does with the formatted text, ex. writing it.
   Finishing,
@@ -97,29 +94,49 @@ impl FormatStage {
         plugins.iter().map(|plugin| describe_plugin(plugin)).collect::<Vec<_>>().join(", ")
       ),
       FormatStage::Reading => "it's being read".to_string(),
-      FormatStage::Formatting { plugin, pass } => format!("{} is formatting it{}", describe_index(*plugin), pass_text(*pass)),
-      FormatStage::FormattingEmbedded { plugin, pass, embedded } => format!(
-        "{} is formatting it{}, waiting for {} to format its embedded {}",
-        describe_index(*plugin),
-        pass_text(*pass),
-        if embedded.plugin_names.is_empty() {
+      FormatStage::Formatting { plugin, pass, pending } => {
+        let description = format!("{} is formatting it{}", describe_index(*plugin), pass_text(*pass));
+        let pending = pending.borrow();
+        let Some(embedded) = pending.first() else {
+          return description;
+        };
+        let formatter = if embedded.plugin_names.is_empty() {
           "the host".to_string()
         } else {
           embedded.plugin_names.join(", ")
-        },
-        embedded.file_path.display()
-      ),
+        };
+        format!("{description}, waiting for {formatter} to format its embedded {}", embedded.target)
+      }
       FormatStage::Finishing => "the formatted text is being handled (ex. written)".to_string(),
     }
   }
 }
 
 /// Code a plugin asks the host to format, ex. a markdown code block.
-#[derive(Clone)]
 struct EmbeddedFormat {
-  /// The made-up path that gives the code's language, ex. `file.toml`.
-  file_path: PathBuf,
+  target: String,
   plugin_names: Vec<String>,
+}
+
+type PendingEmbedded = Rc<RefCell<Vec<Rc<EmbeddedFormat>>>>;
+
+struct PendingEmbeddedGuard {
+  pending: PendingEmbedded,
+  format: Rc<EmbeddedFormat>,
+}
+
+impl PendingEmbeddedGuard {
+  fn new(pending: PendingEmbedded, format: EmbeddedFormat) -> Self {
+    let format = Rc::new(format);
+    pending.borrow_mut().push(format.clone());
+    Self { pending, format }
+  }
+}
+
+impl Drop for PendingEmbeddedGuard {
+  fn drop(&mut self) {
+    self.pending.borrow_mut().retain(|format| !Rc::ptr_eq(format, &self.format));
+  }
 }
 
 /// Ex. "dprint-plugin-typescript 0.95.0 (interpreted Wasm)": an interpreted
@@ -700,7 +717,12 @@ where
     let mut changed_by = Vec::new();
     let plugins_len = plugins.len();
     for (i, (plugin, initialized_plugin)) in plugins.iter().enumerate() {
-      stage.replace(FormatStage::Formatting { plugin: i, pass });
+      let pending = PendingEmbedded::default();
+      stage.replace(FormatStage::Formatting {
+        plugin: i,
+        pass,
+        pending: pending.clone(),
+      });
       let start_instant = Instant::now();
       let format_text_result = initialized_plugin
         .format_text_with_language(
@@ -715,11 +737,11 @@ where
               &scope,
               plugin,
               &file_path,
-              stage,
+              &pending,
             ),
             token: Arc::new(NullCancellationToken),
           },
-          scope.create_host_language_format_callback(plugin.clone(), file_path.clone()),
+          observe_language_format(scope.create_host_language_format_callback(plugin.clone(), file_path.clone()), pending),
         )
         .await;
       log_debug!(
@@ -767,38 +789,77 @@ where
   }
 }
 
-/// Notes in `stage` which code `plugin` embeds in the file at `file_path` the
-/// host is formatting, and with which plugins, while it does. Only the code
-/// the file's own plugins embed is noted, not code embedded in that code.
+/// Track only requests made directly by the file's formatter. Separate guards
+/// keep sibling requests visible until each one finishes or is dropped.
 fn observe_host_format<TEnvironment: Environment>(
   on_host_format: HostFormatCallback,
   scope: &Rc<PluginsScope<TEnvironment>>,
   plugin: &Rc<PluginWithConfig>,
   file_path: &Path,
-  stage: &Rc<RefCell<FormatStage>>,
+  pending: &PendingEmbedded,
 ) -> HostFormatCallback {
   let scope = scope.clone();
   let plugin = plugin.clone();
   let file_path = file_path.to_path_buf();
-  let stage = stage.clone();
+  let pending = pending.clone();
   Rc::new(move |request: HostFormatRequest| {
     let embedded = EmbeddedFormat {
-      file_path: request.file_path.clone(),
+      target: request.file_path.display().to_string(),
       plugin_names: scope.embedded_format_plugin_names(&plugin, &file_path, &request),
     };
-    let outer = stage.borrow().clone();
-    if let FormatStage::Formatting { plugin, pass } = outer {
-      stage.replace(FormatStage::FormattingEmbedded { plugin, pass, embedded });
-    }
-    let formatted = on_host_format(request);
-    let stage = stage.clone();
-    async move {
-      let result = formatted.await;
-      stage.replace(outer);
-      result
-    }
-    .boxed_local()
+    observe_embedded(pending.clone(), embedded, on_host_format(request))
   })
+}
+
+fn observe_language_format(on_format: EmbeddedLanguageFormatCallback, pending: PendingEmbedded) -> EmbeddedLanguageFormatCallback {
+  Rc::new(move |request| {
+    let embedded = EmbeddedFormat {
+      target: format!("language {:?}", request.language),
+      plugin_names: Vec::new(),
+    };
+    observe_embedded(pending.clone(), embedded, on_format(request))
+  })
+}
+
+fn observe_embedded(
+  pending: PendingEmbedded,
+  embedded: EmbeddedFormat,
+  formatted: LocalBoxFuture<'static, FormatResult>,
+) -> LocalBoxFuture<'static, FormatResult> {
+  async move {
+    let _guard = PendingEmbeddedGuard::new(pending, embedded);
+    formatted.await
+  }
+  .boxed_local()
+}
+
+#[test]
+fn slow_format_keeps_other_embedded_requests_visible_after_one_finishes() {
+  let pending = PendingEmbedded::default();
+  let stage = FormatStage::Formatting {
+    plugin: 0,
+    pass: 1,
+    pending: pending.clone(),
+  };
+  let first = PendingEmbeddedGuard::new(
+    pending.clone(),
+    EmbeddedFormat {
+      target: "language python".into(),
+      plugin_names: Vec::new(),
+    },
+  );
+  let second = PendingEmbeddedGuard::new(
+    pending,
+    EmbeddedFormat {
+      target: "language yaml".into(),
+      plugin_names: Vec::new(),
+    },
+  );
+  assert!(stage.describe(&[]).contains("python"));
+  drop(first);
+  assert!(stage.describe(&[]).contains("yaml"));
+  drop(second);
+  assert!(!stage.describe(&[]).contains("waiting"));
 }
 
 fn unstable_reason(changed_by: &[String]) -> String {

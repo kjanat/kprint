@@ -100,11 +100,13 @@ struct ActiveDelegation {
   plugin_name: String,
   path: PathBuf,
   input_hash: u64,
+  range: FormatRange,
+  config: ConfigKeyMap,
   parent: Option<Rc<Self>>,
 }
 
 impl ActiveDelegation {
-  fn enter(parent: Option<Rc<Self>>, plugin_name: &str, path: &Path, input: &[u8]) -> Option<Rc<Self>> {
+  fn enter(parent: Option<Rc<Self>>, plugin_name: &str, path: &Path, input: &[u8], range: &FormatRange, config: &ConfigKeyMap) -> Option<Rc<Self>> {
     let input_hash = crate::utils::get_bytes_hash(input);
     // Repeated work is a cycle. Also cap the depth if a plugin keeps changing
     // its input or delegates to a different target on every call.
@@ -115,16 +117,30 @@ impl ActiveDelegation {
           plugin_name: plugin_name.to_string(),
           path: path.to_path_buf(),
           input_hash,
+          range: range.clone(),
+          config: config.clone(),
           parent,
         }));
       };
-      if active.plugin_name == plugin_name && active.path == path && active.input_hash == input_hash {
+      if active.plugin_name == plugin_name && active.path == path && active.input_hash == input_hash && &active.range == range && &active.config == config {
         break;
       }
       ancestor = active.parent.as_deref();
     }
     None
   }
+}
+
+#[test]
+fn delegation_guard_distinguishes_configuration_and_range() {
+  let path = Path::new("snippet.md");
+  let bytes = b"same input";
+  let config = |width: i32| ConfigKeyMap::from([("lineWidth".into(), width.into())]);
+  let root = ActiveDelegation::enter(None, "markdown", path, bytes, &None, &config(80)).unwrap();
+  assert!(ActiveDelegation::enter(Some(root.clone()), "markdown", path, bytes, &None, &config(80)).is_none());
+  let narrower = ActiveDelegation::enter(Some(root.clone()), "markdown", path, bytes, &None, &config(60)).unwrap();
+  assert!(ActiveDelegation::enter(Some(narrower), "markdown", path, bytes, &None, &config(80)).is_none());
+  assert!(ActiveDelegation::enter(Some(root), "markdown", path, bytes, &Some(0..4), &config(80)).is_some());
 }
 
 struct SelectedFormat {
@@ -824,7 +840,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       override_config: request.override_config,
       token: request.token,
     };
-    self.format_selected(selected, request, Some(embedder), Some(&language), true)
+    self.format_selected(selected, request, Some(embedder), Some(&language))
   }
 
   pub fn select_editor_format(&self, target: EditorFormatTarget<'_>, bytes: &[u8]) -> Option<EditorFormatSelection> {
@@ -871,7 +887,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     request: HostFormatRequest,
     editor_language: Option<&str>,
   ) -> LocalBoxFuture<'static, FormatResult> {
-    self.format_selected(selection.format, request, None, selection.language.as_deref().or(editor_language), false)
+    self.format_selected(selection.format, request, None, selection.language.as_deref().or(editor_language))
   }
 
   fn select_language_path(
@@ -885,16 +901,10 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       .extensions()
       .map(|extension| base.with_extension(extension))
       .chain(candidates.filenames().map(|name| base.with_file_name(name)));
+    let mut additive_fallback = None;
     for path in paths.filter(|path| eligible(path)) {
       let extension = get_lowercase_file_extension(&path);
       if is_notebook_cell && extension.as_deref() == Some("ipynb") {
-        continue;
-      }
-      if candidates.is_unregistered_extension()
-        && !extension
-          .as_deref()
-          .is_some_and(|extension| self.plugin_name_maps.has_file_extension(extension))
-      {
         continue;
       }
       let names = self.plugin_name_maps.get_plugin_names_for_target(&path, |name| {
@@ -903,15 +913,24 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
           .as_deref()
           .is_none_or(|extension| candidates.allows_formatter(extension, &plugin.info().config_key, &plugin.file_matching.file_extensions))
       });
-      if names.has_claiming_plugin() {
-        return Some(SelectedFormat {
-          plugin_names: names.into_names().into_iter().map(ToOwned::to_owned).collect(),
-          config_path: path.clone(),
-          plugin_path: path,
-        });
+      let claimed = names.has_claiming_plugin();
+      let plugin_names = names.into_names();
+      if plugin_names.is_empty() {
+        continue;
       }
+      let selection = SelectedFormat {
+        plugin_names: plugin_names.into_iter().map(ToOwned::to_owned).collect(),
+        config_path: path.clone(),
+        plugin_path: path,
+      };
+      if claimed {
+        return Some(selection);
+      }
+      // Prefer a real formatter on a later candidate, but don't discard a
+      // configured additive formatter when no candidate claims the language.
+      additive_fallback.get_or_insert(selection);
     }
-    None
+    additive_fallback
   }
 
   /// Whether every selected plugin supports ranges, with legacy plugins left unspecified.
@@ -974,7 +993,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
 
   fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>, language_id: Option<&str>) -> LocalBoxFuture<'static, FormatResult> {
     let selection = self.select_path(&request.file_path, &request.file_bytes, embedder.as_ref());
-    self.format_selected(selection, request, embedder, language_id, false)
+    self.format_selected(selection, request, embedder, language_id)
   }
 
   fn format_selected(
@@ -983,13 +1002,13 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     request: HostFormatRequest,
     embedder: Option<Embedder>,
     language_id: Option<&str>,
-    language_delegation: bool,
   ) -> LocalBoxFuture<'static, FormatResult> {
     let SelectedFormat {
       plugin_names,
       config_path: real_file_path,
       plugin_path: plugin_file_path,
     } = selected;
+    let is_delegated = embedder.is_some();
     let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.uses_sandboxed_config_policy());
     let (outer_path, delegation) = embedder.map_or_else(|| (real_file_path.clone(), None), |embedder| (embedder.outer_path, embedder.delegation));
     log_debug!(
@@ -1008,8 +1027,16 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       let mut had_change = false;
       let plugins_len = plugin_names.len();
       for (index, plugin_name) in plugin_names.into_iter().enumerate() {
-        let active = if language_delegation || delegation.is_some() {
-          let Some(active) = ActiveDelegation::enter(delegation.clone(), &plugin_name, &plugin_file_path, &file_text) else {
+        let plugin = scope.get_plugin(&plugin_name);
+        let request_override_config =
+          if from_sandbox && !plugin.plugin.uses_sandboxed_config_policy() && plugin.info().allow_plugin_override_config != Some(true) {
+            global_config_only(&request.override_config)
+          } else {
+            request.override_config.clone()
+          };
+        let effective_config = plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config);
+        let active = if is_delegated {
+          let Some(active) = ActiveDelegation::enter(delegation.clone(), &plugin_name, &plugin_file_path, &file_text, &range, &effective_config) else {
             log_debug!(
               scope.environment,
               "Skipping recursive embedded format for {} with {}",
@@ -1022,13 +1049,6 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         } else {
           None
         };
-        let plugin = scope.get_plugin(&plugin_name);
-        let request_override_config =
-          if from_sandbox && !plugin.plugin.uses_sandboxed_config_policy() && plugin.info().allow_plugin_override_config != Some(true) {
-            global_config_only(&request.override_config)
-          } else {
-            request.override_config.clone()
-          };
         match plugin.get_or_create_checking_config_diagnostics(&scope.environment).await {
           Ok(GetPluginResult::Success(initialized_plugin)) => {
             let result = initialized_plugin
@@ -1038,7 +1058,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
                   real_file_path: real_file_path.clone(),
                   file_bytes: file_text.clone(),
                   range: range.clone(),
-                  override_config: plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config),
+                  override_config: effective_config,
                   on_host_format: scope.create_host_format_callback_with_delegation(
                     plugin.clone(),
                     outer_path.clone(),

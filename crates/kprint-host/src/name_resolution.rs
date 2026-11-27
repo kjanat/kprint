@@ -105,10 +105,6 @@ impl PluginNameResolutionMaps {
     }
   }
 
-  pub(crate) fn has_file_extension(&self, extension: &str) -> bool {
-    self.extension_to_plugin_indexes_map.contains_key(extension)
-  }
-
   /// Resolves plugins for a file, falling back to its shebang line when it's
   /// extensionless and no plugin claimed it by path. `file_bytes_start` only
   /// needs to contain the start of the file.
@@ -258,7 +254,7 @@ impl PluginNameResolutionMaps {
       .association_indexes
       .iter()
       .copied()
-      .filter(|&index| allow_default(&self.plugins[index].name) && self.matches_associations(index, file_path))
+      .filter(|&index| self.matches_associations(index, file_path))
       .collect::<Vec<_>>();
     if !association_indexes.is_empty() {
       return ClaimingPlugins::Many(association_indexes);

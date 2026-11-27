@@ -286,3 +286,80 @@ fn language_routing_invalidates_entries_from_the_legacy_incremental_hash() {
     environment.clear_logs();
   });
 }
+
+#[test]
+fn editor_language_routes_association_only_and_additive_formatters() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+    .with_default_config(|config| {
+      config
+        .add_remote_wasm_plugin()
+        .add_remote_process_plugin()
+        .add_config_section("test-plugin", r#"{"associations":["**/*.teamfmt","**/*.m"],"ending":"associated"}"#)
+        .add_config_section("testProcessPlugin", r#"{"file_extensions":["py"],"additive":true,"ending":"additive"}"#);
+    })
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    for (language, expected) in [
+      ("teamfmt", &b"body_associated"[..]),
+      ("objc", &b"body_associated"[..]),
+      ("python", &b"body_additive"[..]),
+    ] {
+      let selection = scope
+        .select_editor_format(
+          crate::resolution::EditorFormatTarget::Untitled {
+            directory: std::path::Path::new("/"),
+            language,
+          },
+          b"body",
+        )
+        .unwrap_or_else(|| panic!("no editor formatter for {language}"));
+      let request = HostFormatRequest {
+        file_path: selection.file_path().to_path_buf(),
+        file_bytes: b"body".to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      };
+      assert_eq!(
+        scope.format_editor_selection(selection, request, None).await.unwrap().unwrap(),
+        expected,
+        "{language}"
+      );
+    }
+    session.shutdown().await;
+  });
+}
+
+#[test]
+fn nested_markdown_uses_the_host_and_honors_an_empty_route() {
+  let environment = TestEnvironmentBuilder::new()
+    .with_default_config(|config| {
+      config
+        .add_plugin("https://plugins.dprint.dev/markdown-0.24.0.wasm")
+        .add_config_section("markdown", r#"{"overrides":{"files":"**/skip.md","embedded":{"md":[]}}}"#);
+    })
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let input = b"#   outer\n\n```md\n#   inner\n```\n";
+    let run = |path: &str| {
+      scope.format(HostFormatRequest {
+        file_path: PathBuf::from(path),
+        file_bytes: input.to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    let formatted = run("/docs/format.md").await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&formatted).contains("\n# inner\n"));
+    let skipped = run("/docs/skip.md").await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&skipped).contains("\n#   inner\n"));
+    session.shutdown().await;
+  });
+}

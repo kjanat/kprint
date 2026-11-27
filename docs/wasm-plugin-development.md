@@ -1,4 +1,4 @@
-# Creating a Wasm Plugin (Schema Version 4)
+# Creating a Wasm Plugin (Schema Version 5)
 
 Wasm plugins are the preferred way of developing plugins (as opposed to process plugins) because they are portable and run sandboxed in a Wasm runtime. A plugin must implement kprint's core-module exports, imports and byte-buffer protocol.
 A language's ability to emit a `.wasm` file or WASI module is not sufficient. These
@@ -170,7 +170,7 @@ enabled, create an arena with `let arena = request.arena_pool.create_arena();` i
 `format`, then pass `&arena` to `PrintItems::new` and IR helpers. See the
 [formatting overview](overview.md) for the API and borrowing model.
 
-## Schema Version 4 Overview
+## Schema Version 5 Overview
 
 If you are not using `Rust`, then you must implement a lot of low level functionality.
 
@@ -298,6 +298,7 @@ High level functions:
   - Returns `0` for no change (do nothing else, no transfer needed)
   - `1` for change (use `host_get_formatted_text()`)
   - `2` for error (use `host_get_error_text()`)
+- `host_format_language(language_ptr: u32, language_len: u32, range_kind: u32, range_start: u32, range_end: u32, override_cfg_ptr: u32, override_cfg_len: u32, file_bytes_ptr: u32, file_bytes_len: u32) -> u32` (schema 5) - Delegate by raw UTF-8 language label instead of a synthetic filename. The host selects a configured formatter in the context of the outer file. Set `range_kind` to `0` for no range or `1` for an explicit byte range, including a range that covers the whole input. Return codes and result retrieval are the same as for `host_format`.
 - `host_get_formatted_text() -> u32` - Tell the host to store the formatted text in its local byte array and return back the byte length of that text.
 - `host_get_error_text() -> u32` - Tell the host to store the error text in its local byte array and return back the byte length of that error message.
 - `host_has_cancelled() -> u32` - Check if the host has cancelled the formatting request (`1`) or not (`0`).
