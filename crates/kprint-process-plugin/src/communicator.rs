@@ -1,5 +1,6 @@
 use serde::de::DeserializeOwned;
 use std::cell::RefCell;
+use std::future::Future;
 use std::io::BufRead;
 use std::io::ErrorKind;
 use std::io::Read;
@@ -565,54 +566,20 @@ fn handle_stdout_message(message: ProcessPluginMessage, context: &Rc<Context>) -
       None => {}
     },
     MessageBody::CancelFormat(message_id) => {
-      if let Some(token) = context.format_request_tokens.take(message_id) {
+      if let Some(token) = context.format_request_tokens.get_cloned(message_id) {
         token.cancel();
       }
       // The plugin owns nested request IDs; they can collide with the host's
       // parent IDs. Parent callback guards clean up their own entries.
     }
     MessageBody::HostFormat(body) => {
-      // spawn a task to do the host formatting, then send a message back to the
-      // plugin with the result
-      let context = context.clone();
-      kprint_async_runtime::spawn(async move {
-        let result = host_format(context.clone(), message.id, body).await;
-
-        // ignore failure, as this means that the process shut down
-        // at which point handling would have occurred elsewhere
-        let _ignore = context.stdin_writer.send(ProcessPluginMessage {
-          id: context.id_generator.next(),
-          body: match result {
-            Ok(result) => MessageBody::FormatResponse(ResponseBody {
-              message_id: message.id,
-              data: result,
-            }),
-            Err(err) => MessageBody::Error(ResponseBody {
-              message_id: message.id,
-              data: error_to_string(&err).into_bytes(),
-            }),
-          },
-        });
-      });
+      spawn_nested_format(context, message.id, |context, token| host_format(context, token, body));
     }
     MessageBody::HostFormatLanguage(body) => {
       if context.schema_version < 6 {
         return Err(CommunicatorError::UnknownMessageKind(17).into());
       }
-      let context = context.clone();
-      kprint_async_runtime::spawn(async move {
-        let result = host_format_language(context.clone(), message.id, body).await;
-        let _ignore = context.stdin_writer.send(ProcessPluginMessage {
-          id: context.id_generator.next(),
-          body: match result {
-            Ok(data) => MessageBody::FormatResponse(ResponseBody { message_id: message.id, data }),
-            Err(err) => MessageBody::Error(ResponseBody {
-              message_id: message.id,
-              data: error_to_string(&err).into_bytes(),
-            }),
-          },
-        });
-      });
+      spawn_nested_format(context, message.id, |context, token| host_format_language(context, token, body));
     }
     MessageBody::IsAlive => {
       // the CLI is not documented as supporting this, but we might as well respond
@@ -649,46 +616,69 @@ fn handle_stdout_message(message: ProcessPluginMessage, context: &Rc<Context>) -
   Ok(())
 }
 
-async fn host_format(context: Rc<Context>, message_id: u32, body: HostFormatMessageBody) -> FormatResult {
+fn spawn_nested_format<F>(context: &Rc<Context>, message_id: u32, format: impl FnOnce(Rc<Context>, Arc<CancellationToken>) -> F + 'static)
+where
+  F: Future<Output = FormatResult>,
+{
+  // The reader may dispatch CancelFormat before this task is first polled.
+  // Register synchronously and keep the guard with the task, not the reader.
+  let token = Arc::new(CancellationToken::new());
+  let guard = context.format_request_tokens.store_with_owned_guard(message_id, token.clone());
+  let context = context.clone();
+  kprint_async_runtime::spawn(async move {
+    let _guard = guard;
+    let result = if token.is_cancelled() {
+      Ok(None)
+    } else {
+      format(context.clone(), token).await
+    };
+    // A send failure only means the process has shut down.
+    let _ = context.stdin_writer.send(ProcessPluginMessage {
+      id: context.id_generator.next(),
+      body: match result {
+        Ok(data) => MessageBody::FormatResponse(ResponseBody { message_id, data }),
+        Err(err) => MessageBody::Error(ResponseBody {
+          message_id,
+          data: error_to_string(&err).into_bytes(),
+        }),
+      },
+    });
+  });
+}
+
+async fn host_format(context: Rc<Context>, token: Arc<CancellationToken>, body: HostFormatMessageBody) -> FormatResult {
   let Some(callback) = context.host_format_callbacks.get_cloned(body.original_message_id) else {
-    return FormatResult::Err(CommunicatorError::HostFormatCallbackNotFound(body.original_message_id).into());
+    return Err(CommunicatorError::HostFormatCallbackNotFound(body.original_message_id).into());
   };
 
-  let token = Arc::new(CancellationToken::new());
-  let store_guard = context.format_request_tokens.store_with_guard(message_id, token.clone());
-  let result = callback(HostFormatRequest {
+  callback(HostFormatRequest {
     file_path: body.file_path,
     file_bytes: body.file_text,
     range: body.range,
-    override_config: serde_json::from_slice(&body.override_config).unwrap(),
+    override_config: serde_json::from_slice(&body.override_config).map_err(FormatError::new)?,
     token,
   })
-  .await;
-  drop(store_guard); // explicit for clarity
-  result
+  .await
 }
 
-async fn host_format_language(context: Rc<Context>, message_id: u32, body: HostFormatLanguageMessageBody) -> FormatResult {
+async fn host_format_language(context: Rc<Context>, token: Arc<CancellationToken>, body: HostFormatLanguageMessageBody) -> FormatResult {
   let Some(callback) = context.host_language_callbacks.get_cloned(body.original_message_id) else {
     return Err(CommunicatorError::HostFormatCallbackNotFound(body.original_message_id).into());
   };
-  let token = Arc::new(CancellationToken::new());
-  let guard = context.format_request_tokens.store_with_guard(message_id, token.clone());
-  let override_config = serde_json::from_slice(&body.override_config).map_err(FormatError::new)?;
-  let result = callback(EmbeddedLanguageFormatRequest {
+  callback(EmbeddedLanguageFormatRequest {
     language: body.language,
     file_bytes: body.file_text,
     range: body.range,
-    override_config,
+    override_config: serde_json::from_slice(&body.override_config).map_err(FormatError::new)?,
     token,
   })
-  .await;
-  drop(guard);
-  result
+  .await
 }
 
 #[tokio::test]
-async fn cancelling_a_nested_request_keeps_callbacks_with_the_same_parent_id() {
+async fn early_nested_cancel_skips_both_callbacks_without_removing_parent_callbacks() {
+  use std::cell::Cell;
+
   let context = Rc::new(Context {
     schema_version: PLUGIN_SCHEMA_VERSION,
     stdin_writer: SingleThreadMessageWriter::for_stdin(MessageWriter::new(std::io::sink())),
@@ -699,20 +689,65 @@ async fn cancelling_a_nested_request_keeps_callbacks_with_the_same_parent_id() {
     host_format_callbacks: Default::default(),
     host_language_callbacks: Default::default(),
   });
-  let id = 1;
-  let nested_token = Arc::new(CancellationToken::new());
-  let _nested_guard = context.format_request_tokens.store_with_guard(id, nested_token.clone());
-  let _path_guard = context.host_format_callbacks.store_with_guard(id, Rc::new(|_| Box::pin(async { Ok(None) })));
-  let _language_guard = context.host_language_callbacks.store_with_guard(id, Rc::new(|_| Box::pin(async { Ok(None) })));
-  handle_stdout_message(
-    ProcessPluginMessage {
-      id: 2,
-      body: MessageBody::CancelFormat(id),
-    },
-    &context,
-  )
-  .unwrap();
-  assert!(nested_token.is_cancelled());
-  assert!(context.host_format_callbacks.get_cloned(id).is_some());
-  assert!(context.host_language_callbacks.get_cloned(id).is_some());
+  let called = Rc::new(Cell::new(false));
+  let id = 1; // Can also be an active parent ID, in the opposite direction.
+  let _path_guard = context.host_format_callbacks.store_with_guard(
+    id,
+    Rc::new({
+      let called = called.clone();
+      move |_| {
+        called.set(true);
+        Box::pin(async { Ok(None) })
+      }
+    }),
+  );
+  let _language_guard = context.host_language_callbacks.store_with_guard(
+    id,
+    Rc::new({
+      let called = called.clone();
+      move |_| {
+        called.set(true);
+        Box::pin(async { Ok(None) })
+      }
+    }),
+  );
+  let cases = [
+    MessageBody::HostFormat(HostFormatMessageBody {
+      original_message_id: id,
+      file_path: PathBuf::from("snippet.txt"),
+      range: None,
+      override_config: b"{}".to_vec(),
+      file_text: b"snippet".to_vec(),
+    }),
+    MessageBody::HostFormatLanguage(HostFormatLanguageMessageBody {
+      original_message_id: id,
+      language: "text".into(),
+      range: None,
+      override_config: b"{}".to_vec(),
+      file_text: b"snippet".to_vec(),
+    }),
+  ];
+  for body in cases {
+    handle_stdout_message(ProcessPluginMessage { id, body }, &context).unwrap();
+    // No yield here: the spawned handler can't have started.
+    handle_stdout_message(
+      ProcessPluginMessage {
+        id: 2,
+        body: MessageBody::CancelFormat(id),
+      },
+      &context,
+    )
+    .unwrap();
+    assert!(context.format_request_tokens.get_cloned(id).unwrap().is_cancelled());
+    tokio::time::timeout(Duration::from_secs(1), async {
+      while context.format_request_tokens.get_cloned(id).is_some() {
+        tokio::task::yield_now().await;
+      }
+    })
+    .await
+    .expect("nested request did not finish");
+    assert!(!called.get());
+    assert!(context.host_format_callbacks.get_cloned(id).is_some());
+    assert!(context.host_language_callbacks.get_cloned(id).is_some());
+  }
 }
