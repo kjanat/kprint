@@ -15,6 +15,7 @@ use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatRequest;
 use kprint_plugin_types::FormatResult;
+use kprint_plugin_types::HostFormatCallback;
 use kprint_plugin_types::PluginInfo;
 use kprint_plugin_types::PluginResolveConfigurationResult;
 use serde::Serialize;
@@ -30,6 +31,7 @@ use crate::plugins::Plugin;
 #[async_trait(?Send)]
 pub trait InProcessHandler: 'static {
   type Configuration: Serialize + Clone + Send + Sync;
+  const ACCEPTS_UNTRUSTED_CONFIGURATION: bool = false;
 
   fn plugin_info(&self) -> PluginInfo;
   fn license_text(&self) -> String;
@@ -40,7 +42,7 @@ pub trait InProcessHandler: 'static {
     global_config: GlobalConfiguration,
     base_dir: &CanonicalizedPathBuf,
   ) -> PluginResolveConfigurationResult<Self::Configuration>;
-  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf) -> FormatResult;
+  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf, host: HostFormatCallback) -> FormatResult;
 }
 
 /// Runs an [`InProcessHandler`] inside the dprint process.
@@ -48,16 +50,16 @@ pub struct InProcessPlugin<THandler: InProcessHandler> {
   info: PluginInfo,
   // a constructor rather than the handler itself because a plugin must be
   // `Send + Sync`, which handlers needn't be
-  create_handler: fn() -> THandler,
+  create_handler: Box<dyn Fn() -> THandler + Send + Sync>,
   config_schema: &'static str,
   built_in: &'static BuiltInFormatter,
 }
 
 impl<THandler: InProcessHandler> InProcessPlugin<THandler> {
-  pub fn new(create_handler: fn() -> THandler, config_schema: &'static str, built_in: &'static BuiltInFormatter) -> Self {
+  pub fn new(create_handler: impl Fn() -> THandler + Send + Sync + 'static, config_schema: &'static str, built_in: &'static BuiltInFormatter) -> Self {
     Self {
       info: create_handler().plugin_info(),
-      create_handler,
+      create_handler: Box::new(create_handler),
       config_schema,
       built_in,
     }
@@ -83,6 +85,10 @@ impl<THandler: InProcessHandler> Plugin for InProcessPlugin<THandler> {
 
   fn is_sandboxed(&self) -> bool {
     false
+  }
+
+  fn accepts_untrusted_configuration(&self) -> bool {
+    THandler::ACCEPTS_UNTRUSTED_CONFIGURATION
   }
 
   fn config_schema(&self) -> Option<&'static str> {
@@ -174,6 +180,7 @@ impl<THandler: InProcessHandler> InitializedPlugin for InitializedInProcessPlugi
           token: request.token,
         },
         request.real_file_path,
+        request.on_host_format,
       )
       .await
   }

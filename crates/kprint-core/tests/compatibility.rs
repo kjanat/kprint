@@ -43,7 +43,7 @@ fn facade_and_direct_plugin_types_preserve_configuration_and_errors() {
 #[test]
 fn asynchronous_requests_preserve_identity_across_transports_and_facade() {
   let request = kprint_plugin_types::HostFormatRequest {
-    file_path: "test.txt".into(),
+    target: kprint_plugin_types::HostFormatTarget::Path("test.txt".into()),
     file_bytes: b"text".to_vec(),
     range: None,
     override_config: Default::default(),

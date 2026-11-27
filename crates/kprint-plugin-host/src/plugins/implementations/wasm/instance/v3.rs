@@ -161,7 +161,7 @@ pub fn host_format(state: &mut ImportObjectEnvironmentV3) -> Result<u32, String>
     return Err("Expected to have file path.".to_string());
   };
   let request = HostFormatRequest {
-    file_path,
+    target: kprint_plugin_types::HostFormatTarget::Path(file_path),
     file_bytes: state.take_shared_bytes(),
     range: None,
     override_config,

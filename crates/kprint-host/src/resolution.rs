@@ -27,6 +27,7 @@ use kprint_plugin_types::FormatRange;
 use kprint_plugin_types::FormatResult;
 use kprint_plugin_types::HostFormatCallback;
 use kprint_plugin_types::HostFormatRequest;
+use kprint_plugin_types::HostFormatTarget;
 use kprint_plugin_types::PluginInfo;
 use sys_traits::FsMetadata;
 use sys_traits::FsMetadataValue;
@@ -89,6 +90,28 @@ struct Embedder {
   plugin: Rc<PluginWithConfig>,
   outer_path: PathBuf,
   file_path_mapping: Option<(PathBuf, PathBuf)>,
+  depth: usize,
+}
+
+const MAX_EMBEDDED_FORMAT_DEPTH: usize = 16;
+
+struct HostFormatRoute {
+  real_path: PathBuf,
+  plugin_path: PathBuf,
+  plugin_names: Vec<String>,
+}
+
+/// Formatter selection for one editor document. Range support and dispatch
+/// both use this selection, including when the source has no filesystem path.
+pub struct EditorFormatSelection {
+  route: HostFormatRoute,
+  range_support: Option<bool>,
+}
+
+impl EditorFormatSelection {
+  pub fn range_support(&self) -> Option<bool> {
+    self.range_support
+  }
 }
 
 pub enum GetPluginResult {
@@ -218,14 +241,18 @@ impl PluginWithConfig {
   }
 
   pub fn get_embedded_plugins(&self, outer_path: &Path, extension: &str) -> Option<&[String]> {
+    self.embedded_override(outer_path, &[extension]).map(|(_, plugins)| plugins)
+  }
+
+  fn embedded_override<'a, 'key>(&'a self, outer_path: &Path, keys: &[&'key str]) -> Option<(&'key str, &'a [String])> {
     self
       .overrides
       .iter()
       .rev()
       .filter(|override_config| override_config.matcher.matches(outer_path))
-      .find_map(|override_config| override_config.embedded.as_ref()?.get(extension))
-      .or_else(|| self.embedded.as_ref()?.get(extension))
-      .map(Vec::as_slice)
+      .filter_map(|override_config| override_config.embedded.as_ref())
+      .chain(self.embedded.iter())
+      .find_map(|embedded| keys.iter().find_map(|&key| Some((key, embedded.get(key)?.as_slice()))))
   }
 
   fn embedded_plugin_keys(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -557,13 +584,28 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     real_path: PathBuf,
     plugin_path: PathBuf,
   ) -> HostFormatCallback {
+    self.host_format_callback(plugin, outer_path, real_path, plugin_path, 1)
+  }
+
+  fn host_format_callback(
+    self: &Rc<Self>,
+    plugin: Rc<PluginWithConfig>,
+    outer_path: PathBuf,
+    real_path: PathBuf,
+    plugin_path: PathBuf,
+    depth: usize,
+  ) -> HostFormatCallback {
     let scope = self.clone();
     let file_path_mapping = (real_path != plugin_path).then_some((plugin_path, real_path));
     Rc::new(move |host_request| {
+      if depth > MAX_EMBEDDED_FORMAT_DEPTH {
+        return std::future::ready(Err(FormatError::new("Embedded formatting exceeded its nesting limit."))).boxed_local();
+      }
       let embedder = Embedder {
         plugin: plugin.clone(),
         outer_path: outer_path.clone(),
         file_path_mapping: file_path_mapping.clone(),
+        depth,
       };
       scope.format_from(host_request, Some(embedder), None)
     })
@@ -572,13 +614,15 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   fn embedded_plugin_names(&self, embedder: &Embedder, file_path: &Path) -> Option<Vec<String>> {
     let extension = get_lowercase_file_extension(file_path)?;
     let keys = embedder.plugin.get_embedded_plugins(&embedder.outer_path, &extension)?;
-    Some(
-      keys
-        .iter()
-        .filter_map(|key| self.plugins.values().find(|plugin| plugin.info().config_key == *key))
-        .map(|plugin| plugin.name().to_string())
-        .collect(),
-    )
+    Some(self.plugin_names_for_config_keys(keys))
+  }
+
+  fn plugin_names_for_config_keys(&self, keys: &[String]) -> Vec<String> {
+    keys
+      .iter()
+      .filter_map(|key| self.plugins.values().find(|plugin| plugin.info().config_key == *key))
+      .map(|plugin| plugin.name().to_string())
+      .collect()
   }
 
   /// Whether the editor should ask this scope to format the file.
@@ -645,10 +689,9 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     self.format_from(request, None, language_id)
   }
 
-  /// Whether every selected plugin supports ranges, with legacy plugins left unspecified.
-  pub fn supports_range_formatting(&self, file_path: &Path, bytes: &[u8]) -> Option<bool> {
+  fn range_support(&self, plugin_names: &[String]) -> Option<bool> {
     let mut result = Some(true);
-    for name in self.plugin_name_maps.get_plugin_names_from_file_path_and_bytes(file_path, bytes) {
+    for name in plugin_names {
       match self.plugins.get(name).and_then(|plugin| plugin.info().supports_range_formatting) {
         Some(false) => return Some(false),
         None => result = None,
@@ -658,6 +701,63 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     result
   }
 
+  pub fn select_editor_formatter(
+    &self,
+    file_path: &Path,
+    synthetic_language: Option<&str>,
+    notebook_path: Option<&Path>,
+    file_bytes: &[u8],
+  ) -> Option<EditorFormatSelection> {
+    if let Some(notebook_path) = notebook_path
+      && (!self.can_format_for_editor(notebook_path, None) || self.plugin_name_maps.get_plugin_names_from_file_path(notebook_path).into_names().is_empty())
+    {
+      return None;
+    }
+    let route = if let Some(language) = synthetic_language {
+      let language = language.trim().to_ascii_lowercase();
+      let extensions = crate::name_resolution::embedded_language_extensions(&language);
+      let eligible = |extension: &str| {
+        let path = file_path.with_extension(extension);
+        (extension != "ipynb" && (notebook_path.is_some() || self.matches_editor_file_patterns(&path))).then_some(path)
+      };
+      if extensions.is_empty() && !language.is_empty() && language.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        // Editors may use a literal extension as the ID of a custom language.
+        let route = self.path_format_route(&eligible(&language)?, file_bytes, None);
+        (!route.plugin_names.is_empty()).then_some(route)?
+      } else {
+        self.match_language(extensions, eligible)?
+      }
+    } else {
+      if !self.can_format_for_editor(file_path, Some(file_bytes)) {
+        return None;
+      }
+      self.path_format_route(file_path, file_bytes, None)
+    };
+    let range_support = self.range_support(&route.plugin_names);
+    Some(EditorFormatSelection { route, range_support })
+  }
+
+  pub fn format_editor(
+    self: &Rc<Self>,
+    selection: EditorFormatSelection,
+    file_bytes: Vec<u8>,
+    range: FormatRange,
+    token: Arc<dyn CancellationToken>,
+    language_id: Option<&str>,
+  ) -> LocalBoxFuture<'static, FormatResult> {
+    self.run_format(
+      HostFormatInput {
+        file_bytes,
+        range,
+        override_config: Default::default(),
+        token,
+      },
+      selection.route,
+      None,
+      language_id,
+    )
+  }
+
   /// The names of the plugins that format the code `plugin` embeds in the
   /// file at `outer_path`, when it asks the host to format it with `request`.
   pub fn embedded_format_plugin_names(&self, plugin: &Rc<PluginWithConfig>, outer_path: &Path, request: &HostFormatRequest) -> Vec<String> {
@@ -665,26 +765,94 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       plugin: plugin.clone(),
       outer_path: outer_path.to_path_buf(),
       file_path_mapping: None,
+      depth: 1,
     };
-    self.host_format_plugin_names(request, Some(&embedder))
+    self
+      .host_format_route(request, Some(&embedder))
+      .map_or_else(Vec::new, |route| route.plugin_names)
   }
 
-  /// The names of the plugins that format what `request` asks the host to.
-  fn host_format_plugin_names(&self, request: &HostFormatRequest, embedder: Option<&Embedder>) -> Vec<String> {
-    match embedder.and_then(|embedder| self.embedded_plugin_names(embedder, &request.file_path)) {
+  fn host_format_route(&self, request: &HostFormatRequest, embedder: Option<&Embedder>) -> Option<HostFormatRoute> {
+    let file_path = match &request.target {
+      HostFormatTarget::Path(file_path) => file_path,
+      HostFormatTarget::Language(language) => return self.embedded_language_route(embedder?, language),
+      HostFormatTarget::Extension(extension) => return self.embedded_extension_route(embedder?, extension),
+    };
+    Some(self.path_format_route(file_path, &request.file_bytes, embedder))
+  }
+
+  fn path_format_route(&self, file_path: &Path, bytes: &[u8], embedder: Option<&Embedder>) -> HostFormatRoute {
+    let mapped_path = Self::mapped_real_path(file_path, embedder);
+    let plugin_names = match embedder.and_then(|embedder| self.embedded_plugin_names(embedder, file_path)) {
       Some(plugin_names) => plugin_names,
       None => {
-        let names = match Self::mapped_real_path(&request.file_path, embedder) {
+        let names = match mapped_path {
           Some(real_path) => self
             .plugin_name_maps
-            .get_plugin_names_with_added_extension(real_path, &get_lowercase_file_extension(&request.file_path).unwrap_or_default()),
-          None => self
-            .plugin_name_maps
-            .get_plugin_names_from_file_path_and_bytes(&request.file_path, &request.file_bytes),
+            .get_plugin_names_with_added_extension(real_path, &get_lowercase_file_extension(file_path).unwrap_or_default()),
+          None => self.plugin_name_maps.get_plugin_names_from_file_path_and_bytes(file_path, bytes),
         };
         names.into_iter().map(ToOwned::to_owned).collect()
       }
+    };
+    HostFormatRoute {
+      real_path: mapped_path.unwrap_or(file_path).to_path_buf(),
+      plugin_path: self.plugin_name_maps.get_plugin_file_path(file_path, bytes).into_owned(),
+      plugin_names,
     }
+  }
+
+  fn embedded_extension_route(&self, embedder: &Embedder, extension: &str) -> Option<HostFormatRoute> {
+    let extension = extension.to_ascii_lowercase();
+    let path = embedded_path(&embedder.outer_path, &extension)?;
+    let plugin_names = self.embedded_plugin_names(embedder, &path).unwrap_or_else(|| {
+      self
+        .plugin_name_maps
+        .get_plugin_names_from_file_path(&path)
+        .into_names()
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect()
+    });
+    Some(HostFormatRoute {
+      real_path: path.clone(),
+      plugin_path: path,
+      plugin_names,
+    })
+  }
+
+  fn embedded_language_route(&self, embedder: &Embedder, language: &str) -> Option<HostFormatRoute> {
+    let label = language.trim().to_ascii_lowercase();
+    let extensions = crate::name_resolution::embedded_language_extensions(&label);
+    let keys: Vec<_> = std::iter::once(label.as_str()).chain(extensions.iter().copied()).collect();
+    if let Some((key, plugins)) = embedder.plugin.embedded_override(&embedder.outer_path, &keys) {
+      // A label key selects the plugin. Keep its normal input extension when known.
+      let extension = if key == label { extensions.first().copied().unwrap_or(key) } else { key };
+      let path = embedded_path(&embedder.outer_path, extension)?;
+      return Some(HostFormatRoute {
+        real_path: path.clone(),
+        plugin_path: path,
+        plugin_names: self.plugin_names_for_config_keys(plugins),
+      });
+    }
+    self.match_language(extensions, |extension| embedded_path(&embedder.outer_path, extension))
+  }
+
+  fn match_language(&self, extensions: &[&str], path_for: impl Fn(&str) -> Option<PathBuf>) -> Option<HostFormatRoute> {
+    for extension in extensions {
+      let Some(path) = path_for(extension) else {
+        continue;
+      };
+      let names = self.plugin_name_maps.get_plugin_names_for_embedded_language(&path, extension, extensions);
+      if !names.is_empty() {
+        return Some(HostFormatRoute {
+          real_path: path.clone(),
+          plugin_path: path,
+          plugin_names: names.into_iter().map(ToOwned::to_owned).collect(),
+        });
+      }
+    }
+    None
   }
 
   fn mapped_real_path<'a>(path: &Path, embedder: Option<&'a Embedder>) -> Option<&'a Path> {
@@ -693,21 +861,43 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 
   fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>, language_id: Option<&str>) -> LocalBoxFuture<'static, FormatResult> {
-    // owned because they outlive this scope by moving into the future below
-    let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
-    let real_file_path = Self::mapped_real_path(&request.file_path, embedder.as_ref())
-      .unwrap_or(&request.file_path)
-      .to_path_buf();
-    let plugin_file_path = self.plugin_name_maps.get_plugin_file_path(&request.file_path, &request.file_bytes).into_owned();
-    let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.is_sandboxed());
+    let Some(route) = self.host_format_route(&request, embedder.as_ref()) else {
+      return std::future::ready(Ok(None)).boxed_local();
+    };
+    let legacy_path = matches!(&request.target, HostFormatTarget::Path(_));
+    let input = HostFormatInput {
+      file_bytes: request.file_bytes,
+      range: request.range,
+      override_config: request.override_config,
+      token: request.token,
+    };
+    self.run_format(input, route, embedder.map(|embedder| (embedder, legacy_path)), language_id)
+  }
+
+  fn run_format(
+    self: &Rc<Self>,
+    request: HostFormatInput,
+    route: HostFormatRoute,
+    embedder: Option<(Embedder, bool)>,
+    language_id: Option<&str>,
+  ) -> LocalBoxFuture<'static, FormatResult> {
+    let HostFormatRoute {
+      real_path: real_file_path,
+      plugin_path: plugin_file_path,
+      plugin_names,
+    } = route;
+    let from_untrusted_formatter = embedder
+      .as_ref()
+      .is_some_and(|(embedder, _)| embedder.plugin.plugin.accepts_untrusted_configuration());
+    let next_depth = embedder.as_ref().map_or(1, |(embedder, _)| embedder.depth + 1);
     let outer_path = match embedder {
-      Some(embedder) => embedder.outer_path,
-      None => real_file_path.clone(),
+      Some((embedder, true)) => embedder.outer_path,
+      _ => real_file_path.clone(),
     };
     log_debug!(
       self.environment,
       "Host formatting {}{} - File length: {} - Plugins: [{}] - Range: {:?}",
-      request.file_path.display(),
+      plugin_file_path.display(),
       language_id.map(|id| format!(" - Language ID: {id:?}")).unwrap_or_default(),
       request.file_bytes.len(),
       plugin_names.join(", "),
@@ -720,12 +910,16 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       let mut had_change = false;
       let plugins_len = plugin_names.len();
       for (index, plugin_name) in plugin_names.into_iter().enumerate() {
+        if request.token.is_cancelled() {
+          return Ok(None);
+        }
         let plugin = scope.get_plugin(&plugin_name);
-        let request_override_config = if from_sandbox && !plugin.plugin.is_sandboxed() && plugin.info().allow_plugin_override_config != Some(true) {
-          global_config_only(&request.override_config)
-        } else {
-          request.override_config.clone()
-        };
+        let request_override_config =
+          if from_untrusted_formatter && !plugin.plugin.accepts_untrusted_configuration() && plugin.info().allow_plugin_override_config != Some(true) {
+            global_config_only(&request.override_config)
+          } else {
+            request.override_config.clone()
+          };
         match plugin.get_or_create_checking_config_diagnostics(&scope.environment).await {
           Ok(GetPluginResult::Success(initialized_plugin)) => {
             let result = initialized_plugin
@@ -735,12 +929,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
                 file_bytes: file_text.clone(),
                 range: range.clone(),
                 override_config: plugin.get_merged_overrides_for_path(&real_file_path, &request_override_config),
-                on_host_format: scope.create_host_format_callback_for_path(
-                  plugin.clone(),
-                  outer_path.clone(),
-                  real_file_path.clone(),
-                  plugin_file_path.clone(),
-                ),
+                on_host_format: scope.host_format_callback(plugin.clone(), outer_path.clone(), real_file_path.clone(), plugin_file_path.clone(), next_depth),
                 token: request.token.clone(),
               })
               .await;
@@ -765,8 +954,29 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 }
 
-/// The global configuration in what a sandboxed plugin asks the host to
-/// format with, which is all of it a plugin outside the sandbox gets.
+struct HostFormatInput {
+  file_bytes: Vec<u8>,
+  range: FormatRange,
+  override_config: ConfigKeyMap,
+  token: Arc<dyn CancellationToken>,
+}
+
+fn embedded_path(outer_path: &Path, extension: &str) -> Option<PathBuf> {
+  if extension.is_empty()
+    || !extension
+      .bytes()
+      .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
+  {
+    return None;
+  }
+  let mut name = outer_path.file_name()?.to_os_string();
+  name.push(".embedded.");
+  name.push(extension);
+  Some(outer_path.with_file_name(name))
+}
+
+/// The global configuration in what an untrusted formatter asks the host to
+/// format with, which is all of it a formatter that requires trusted configuration gets.
 fn global_config_only(override_config: &ConfigKeyMap) -> ConfigKeyMap {
   override_config
     .iter()
@@ -1653,7 +1863,7 @@ async fn resolve_plugins_scope_inner<TEnvironment: Environment>(
     let all_config = get_plugin_config_map(&plugin, &mut config_map)?;
     let trusted_config = get_plugin_config_map(&plugin, &mut trusted_config_map)?;
     let uses_exec_policy = plugin.info().config_key == "exec" && plugin.built_in().is_some_and(|built_in| built_in.name == "exec");
-    let trusted_only = !plugin.is_sandboxed() && !uses_exec_policy;
+    let trusted_only = !plugin.accepts_untrusted_configuration() && !uses_exec_policy;
     let plugin_config = if trusted_only {
       if all_config != trusted_config && plugin_resolver.should_warn_untrusted_config(&plugin.info().config_key) {
         log_warn!(

@@ -19,9 +19,11 @@ use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatRange;
 use kprint_plugin_types::FormatResult;
 use kprint_plugin_types::HostFormatRequest;
+use kprint_plugin_types::HostFormatTarget;
 use kprint_plugin_types::NullCancellationToken;
 use kprint_plugin_types::PluginInfo;
 use kprint_wasm_plugin::JsonResponse;
+use kprint_wasm_plugin::host_target_kind;
 
 use crate::plugins::FormatConfig;
 use crate::plugins::implementations::wasm::WasmHostFormatSender;
@@ -82,7 +84,7 @@ impl ImportObjectEnvironmentV4 {
   }
 }
 
-pub fn add_identity_imports(linker: &mut Linker) -> Result<()> {
+pub fn add_identity_imports(linker: &mut Linker, supports_targets: bool) -> Result<()> {
   linker.func_wrap("env", "fd_write", |_: u32, _: u32, _: u32, _: u32| -> u32 { 0 })?; // ignore
   linker.func_wrap("dprint", "host_write_buffer", |_: u32| {})?;
   linker.func_wrap(
@@ -90,6 +92,13 @@ pub fn add_identity_imports(linker: &mut Linker) -> Result<()> {
     "host_format",
     |_: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32| -> u32 { 0 },
   )?; // no change
+  if supports_targets {
+    linker.func_wrap(
+      "dprint",
+      "host_format_target",
+      |_: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32| -> u32 { 0 },
+    )?;
+  }
   linker.func_wrap("dprint", "host_get_formatted_text", || -> u32 { 0 })?; // zero length
   linker.func_wrap("dprint", "host_get_error_text", || -> u32 { 0 })?; // zero length
   linker.func_wrap("dprint", "host_has_cancelled", || -> i32 { 0 })?; // false
@@ -130,8 +139,9 @@ pub fn host_write_buffer(memory: &mut [u8], state: &mut ImportObjectEnvironmentV
 pub fn host_format(
   memory: &[u8],
   state: &mut ImportObjectEnvironmentV4,
-  file_path_ptr: u32,
-  file_path_len: u32,
+  target_kind: u32,
+  target_ptr: u32,
+  target_len: u32,
   range_start: u32,
   range_end: u32,
   override_cfg_ptr: u32,
@@ -145,9 +155,15 @@ pub fn host_format(
     let bytes = &memory[checked_range(memory, override_cfg_ptr, override_cfg_len as usize)?];
     serde_json::from_slice::<ConfigKeyMap>(bytes).map_err(|err| format!("Invalid override configuration: {err}"))?
   };
-  let file_path = {
-    let bytes = &memory[checked_range(memory, file_path_ptr, file_path_len as usize)?];
-    PathBuf::from(String::from_utf8(bytes.to_vec()).map_err(|err| format!("Invalid file path: {err}"))?)
+  let target = {
+    let bytes = &memory[checked_range(memory, target_ptr, target_len as usize)?];
+    let target = std::str::from_utf8(bytes).map_err(|err| format!("Invalid format target: {err}"))?;
+    match target_kind {
+      host_target_kind::PATH => HostFormatTarget::Path(PathBuf::from(target)),
+      host_target_kind::LANGUAGE => HostFormatTarget::Language(target.to_string()),
+      host_target_kind::EXTENSION => HostFormatTarget::Extension(target.to_string()),
+      _ => return Err(format!("Unknown host format target kind: {target_kind}")),
+    }
   };
   let file_bytes = memory[checked_range(memory, file_bytes_ptr, file_bytes_len as usize)?].to_vec();
   let range = if range_start == 0 && range_end == file_bytes_len {
@@ -156,7 +172,7 @@ pub fn host_format(
     Some(range_start as usize..range_end as usize)
   };
   let request = HostFormatRequest {
-    file_path,
+    target,
     file_bytes,
     range,
     override_config,

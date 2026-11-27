@@ -16,4 +16,6 @@ pub use kprint_wasm_plugin::SyncFormatRequest;
 #[cfg(feature = "wasm")]
 pub use kprint_wasm_plugin::SyncHostFormatRequest;
 #[cfg(feature = "wasm")]
+pub use kprint_wasm_plugin::SyncHostFormatTarget;
+#[cfg(feature = "wasm")]
 pub use kprint_wasm_plugin::SyncPluginHandler;

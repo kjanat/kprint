@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- The native Markdown formatter uses the formatting engine from upstream 0.29.0. Exact Markdown 0.29.0 plugin references select it, and it formats multiple fences concurrently and reports embedded formatter errors with their line numbers.
+- Wasm schema 5 and process schema 6 let plugins delegate embedded code by language name. kprint selects a formatter in the enclosing file's configuration scope. Path-based delegation remains available to plugins on the supported older schemas.
+
+### Fixed
+
+- Notebook cells and untitled documents use the same formatter selection for eligibility, range support and formatting.
+
 ## [0.65.0] (2026-11-26)
 
 ### Added

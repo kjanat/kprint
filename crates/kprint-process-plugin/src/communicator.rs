@@ -24,6 +24,7 @@ use super::messages::MessageBody;
 use super::messages::ProcessPluginMessage;
 use super::messages::RegisterConfigMessageBody;
 use super::messages::ResponseBody;
+use super::shared_types::MIN_PLUGIN_SCHEMA_VERSION;
 use crate::HostFormatRequest;
 use kprint_async_runtime::DropGuardAction;
 use kprint_communication::AtomicFlag;
@@ -202,13 +203,13 @@ impl ProcessPluginCommunicator {
     })
     .await??;
 
-    if schema_version != PLUGIN_SCHEMA_VERSION {
+    if !(MIN_PLUGIN_SCHEMA_VERSION..=PLUGIN_SCHEMA_VERSION).contains(&schema_version) {
       // kill the child to prevent it from ouputting to stderr
       let _ = child.kill();
-      let err = if schema_version < PLUGIN_SCHEMA_VERSION {
+      let err = if schema_version < MIN_PLUGIN_SCHEMA_VERSION {
         CommunicatorError::PluginTooOld {
           actual: schema_version,
-          expected: PLUGIN_SCHEMA_VERSION,
+          expected: MIN_PLUGIN_SCHEMA_VERSION,
         }
       } else {
         CommunicatorError::CliTooOld {
@@ -552,18 +553,23 @@ fn handle_stdout_message(message: ProcessPluginMessage, context: &Rc<Context>) -
       None => {}
     },
     MessageBody::CancelFormat(message_id) => {
-      if let Some(token) = context.format_request_tokens.take(message_id) {
+      if let Some(token) = context.format_request_tokens.get_cloned(message_id) {
         token.cancel();
       }
-      context.host_format_callbacks.take(message_id);
-      // do not clear from context.messages here because the cancellation will do that
     }
     MessageBody::HostFormat(body) => {
       // spawn a task to do the host formatting, then send a message back to the
       // plugin with the result
       let context = context.clone();
+      let token = Arc::new(CancellationToken::new());
+      let guard = context.format_request_tokens.store_with_owned_guard(message.id, token.clone());
       kprint_async_runtime::spawn(async move {
-        let result = host_format(context.clone(), message.id, body).await;
+        let _registration = guard;
+        let result = tokio::select! {
+          biased;
+          _ = token.cancelled() => Ok(None),
+          result = host_format(&context, body, token.clone()) => result,
+        };
 
         // ignore failure, as this means that the process shut down
         // at which point handling would have occurred elsewhere
@@ -617,21 +623,17 @@ fn handle_stdout_message(message: ProcessPluginMessage, context: &Rc<Context>) -
   Ok(())
 }
 
-async fn host_format(context: Rc<Context>, message_id: u32, body: HostFormatMessageBody) -> FormatResult {
+async fn host_format(context: &Context, body: HostFormatMessageBody, token: Arc<CancellationToken>) -> FormatResult {
   let Some(callback) = context.host_format_callbacks.get_cloned(body.original_message_id) else {
     return FormatResult::Err(CommunicatorError::HostFormatCallbackNotFound(body.original_message_id).into());
   };
 
-  let token = Arc::new(CancellationToken::new());
-  let store_guard = context.format_request_tokens.store_with_guard(message_id, token.clone());
-  let result = callback(HostFormatRequest {
-    file_path: body.file_path,
+  callback(HostFormatRequest {
+    target: body.target,
     file_bytes: body.file_text,
     range: body.range,
-    override_config: serde_json::from_slice(&body.override_config).unwrap(),
+    override_config: serde_json::from_slice(&body.override_config).map_err(FormatError::new)?,
     token,
   })
-  .await;
-  drop(store_guard); // explicit for clarity
-  result
+  .await
 }

@@ -186,7 +186,7 @@ impl SyncPluginHandler<Configuration> for TestWasmPlugin {
           "plugin-range: {}",
           handle_host_response(
             format_with_host(SyncHostFormatRequest {
-              file_path: &PathBuf::from("./test.txt_ps"),
+              target: kprint_core::plugins::SyncHostFormatTarget::Path(&PathBuf::from("./test.txt_ps")),
               file_bytes: new_text.as_bytes(),
               range: Some(range),
               override_config: &Default::default(),
@@ -197,12 +197,20 @@ impl SyncPluginHandler<Configuration> for TestWasmPlugin {
       } else {
         format!("{}_{}_{}", &file_text[0..range.start], request.config.ending, &file_text[range.end..])
       }
+    } else if let Some((language, text)) = file_text.strip_prefix("plugin-language: ").and_then(|text| text.split_once(' ')) {
+      let result = format_with_host(SyncHostFormatRequest {
+        target: kprint_core::plugins::SyncHostFormatTarget::Language(language),
+        file_bytes: text.as_bytes(),
+        range: None,
+        override_config: &ConfigKeyMap::new(),
+      });
+      format!("plugin-language: {language} {}", handle_host_response(result, text)?)
     } else if let Some(new_text) = file_text.strip_prefix("plugin: ") {
       format!(
         "plugin: {}",
         handle_host_response(
           format_with_host(SyncHostFormatRequest {
-            file_path: &PathBuf::from("./test.txt_ps"),
+            target: kprint_core::plugins::SyncHostFormatTarget::Path(&PathBuf::from("./test.txt_ps")),
             file_bytes: new_text.as_bytes(),
             range: None,
             override_config: &ConfigKeyMap::new(),
@@ -217,7 +225,7 @@ impl SyncPluginHandler<Configuration> for TestWasmPlugin {
         "plugin-config: {}",
         handle_host_response(
           format_with_host(SyncHostFormatRequest {
-            file_path: &PathBuf::from("./test.txt_ps"),
+            target: kprint_core::plugins::SyncHostFormatTarget::Path(&PathBuf::from("./test.txt_ps")),
             file_bytes: new_text.as_bytes(),
             range: None,
             override_config: &config_map,

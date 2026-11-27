@@ -3052,7 +3052,7 @@ mod test {
       expected_messages.push(concat!(
         "You are using an old version of kprint so the latest plugins may not be suggested. ",
         "Consider upgrading to support new plugins. ",
-        "Plugin system schema version is 4, latest is 999."
+        "Plugin system schema version is 5, latest is 999."
       ));
       assert_eq!(environment.take_stderr_messages(), expected_messages);
     });

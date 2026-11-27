@@ -185,7 +185,7 @@ This flag is more useful for one-off commands. It is recommended to use the defa
 
 `--config` also accepts the configuration itself rather than somewhere to read it from, which saves writing a temporary file for a one-off command:
 
-```sh
+```bash
 # inline
 kprint fmt --config '{ "excludes": ["dist"], "plugins": ["https://plugins.dprint.dev/json-0.19.4.wasm"] }'
 # from a pipe (ex. a shell process substitution, or a fifo from mkfifo)
@@ -270,7 +270,7 @@ kprint completions zsh >~/.zfunc/_kprint
 
 Then in `~/.zshrc`:
 
-```sh
+```zsh
 fpath=(~/.zfunc $fpath)
 autoload -Uz compinit && compinit
 ```

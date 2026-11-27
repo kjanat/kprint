@@ -101,7 +101,7 @@ async fn output_stdin_format<TEnvironment: Environment>(
   } else {
     plugins_scope
       .format(HostFormatRequest {
-        file_path,
+        target: kprint_plugin_types::HostFormatTarget::Path(file_path),
         file_bytes: file_bytes.to_vec(),
         range: None,
         override_config: Default::default(),
@@ -586,7 +586,7 @@ async fn format_line_ranges<TEnvironment: Environment>(
     };
     let result = plugins_scope
       .format(HostFormatRequest {
-        file_path: file_path.to_path_buf(),
+        target: kprint_plugin_types::HostFormatTarget::Path(file_path.to_path_buf()),
         file_bytes: current_bytes.to_vec(),
         range: Some(range),
         override_config: Default::default(),

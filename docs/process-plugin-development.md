@@ -1,8 +1,8 @@
-# Creating a Process Plugin (Schema Version 5)
+# Creating a Process Plugin (Schema Version 6)
 
 Process plugins are created (as opposed to the recommended Wasm plugins), when the language does not have good support for compiling to a single _.wasm_ file.
 
-dprint version: 0.40+
+The kprint SDK uses process schema 6. kprint also runs existing schema 5 plugins.
 
 See [the crate layout](crate-layout.md) to use the process API directly through `kprint-process-plugin`. The examples below use the compatible `kprint-core` facade.
 
@@ -116,7 +116,7 @@ Implementing a Process plugin is easy if you're using Rust as there are several 
        //
        // - make sure to check the range of the request!! If you can't handle
        //   range formatting, then return `Ok(None)` to signify no change.
-       // - use `host.format` to format with another plugin
+       // - use `format_with_host` to format with another plugin
        // - if you are doing a lot of synchronous work, you should format with
        //   a blocking task like so or else you will block the main thread:
        //

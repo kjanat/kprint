@@ -7,7 +7,7 @@ use kprint_configuration::GlobalConfiguration;
 
 #[derive(Debug)]
 pub struct HostFormatRequest {
-  pub file_path: std::path::PathBuf,
+  pub target: HostFormatTarget,
   pub file_bytes: Vec<u8>,
   /// Range to format.
   pub range: FormatRange,

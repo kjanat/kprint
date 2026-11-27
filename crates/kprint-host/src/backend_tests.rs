@@ -68,7 +68,7 @@ fn should_support_host_format_cancellation() {
       });
       let result = scope
         .format(HostFormatRequest {
-          file_path: PathBuf::from("file.txt_ps"),
+          target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("file.txt_ps")),
           // This should cause the process plugin to format with the
           // Wasm plugin which will then try to format with the process plugin
           // and finally it will wait for cancellation to occur
@@ -133,7 +133,7 @@ fn should_support_shutdown_during_indefinite_host_formatting() {
       kprint_async_runtime::spawn(async move {
         scope
           .format(HostFormatRequest {
-            file_path: PathBuf::from("file.txt_ps"),
+            target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("file.txt_ps")),
             // This should cause the process plugin to format with the
             // Wasm plugin which will then try to format with the process plugin
             // and then will hang forever
@@ -170,7 +170,7 @@ fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
     let real = PathBuf::from("/build");
     let synthetic = PathBuf::from("/build.dprint-ext-added.txt");
     let request = || HostFormatRequest {
-      file_path: synthetic.clone(),
+      target: kprint_plugin_types::HostFormatTarget::Path(synthetic.clone()),
       file_bytes: b"text".to_vec(),
       range: None,
       override_config: Default::default(),
@@ -197,5 +197,80 @@ fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
     );
     assert_eq!(format_messages, [&without_id, &without_id, &with_id]);
     environment.clear_logs();
+  });
+}
+
+#[test]
+fn markdown_fences_use_the_enclosing_scope_and_child_path() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_plugin("npm:@dprint/markdown@0.29.0")
+        .add_remote_wasm_plugin()
+        .add_config_section("markdown", r#"{"overrides":{"files":"**/skip.md","embedded":{"cs":[],"md":[]}}}"#)
+        .add_config_section(
+          "test-plugin",
+          r#"{"associations":["**/*.cs"],"overrides":{"files":"**/guide.md.embedded.cs","ending":"child"}}"#,
+        );
+    })
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let source = b"```csharp\nexample\n```\n\n```md\n#  Example\n```\n";
+    let format = |path| {
+      scope.format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
+        file_bytes: source.to_vec(),
+        override_config: Default::default(),
+        range: None,
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    assert_eq!(
+      format("/guide.md").await.unwrap().unwrap(),
+      b"```csharp\nexample_child\n```\n\n```md\n# Example\n```\n"
+    );
+    assert_eq!(format("/skip.md").await.unwrap(), None);
+    session.shutdown().await;
+  });
+}
+
+#[test]
+fn wasm_and_process_plugins_delegate_by_language() {
+  let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+    .add_remote_process_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_remote_wasm_plugin()
+        .add_remote_process_plugin()
+        .add_config_section("test-plugin", r#"{"associations":["**/*.cs"],"ending":"wasm"}"#)
+        .add_config_section("testProcessPlugin", r#"{"associations":["**/*.py"],"ending":"process"}"#);
+    })
+    .initialize()
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let format = |path, text: &str| {
+      scope.format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
+        file_bytes: text.as_bytes().to_vec(),
+        override_config: Default::default(),
+        range: None,
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    assert_eq!(
+      format("/outer.txt", "plugin-language: python example").await.unwrap().unwrap(),
+      b"plugin-language: python example_process_wasm"
+    );
+    assert_eq!(
+      format("/outer.txt_ps", "plugin-language: csharp example").await.unwrap().unwrap(),
+      b"plugin-language: csharp example_wasm_process"
+    );
+    session.shutdown().await;
   });
 }
