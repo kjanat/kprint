@@ -434,6 +434,7 @@ impl InitializedPluginWithConfig {
 pub struct PluginsScope<TEnvironment: Environment> {
   environment: TEnvironment,
   editor_policy: Option<EditorPolicy>,
+  embedded_formats: tokio::sync::Semaphore,
   pub config: Option<Rc<ResolvedConfig>>,
   pub plugins: IndexMap<String, Rc<PluginWithConfig>>,
   pub plugin_name_maps: PluginNameResolutionMaps,
@@ -455,6 +456,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       PluginNameResolutionMaps::from_plugins(plugins.iter().map(|p| p.as_ref()), &config.origin.base_path, config.routing.shebangs.as_ref())?;
 
     Ok(PluginsScope {
+      embedded_formats: tokio::sync::Semaphore::new(environment.max_threads().max(1)),
       environment,
       editor_policy: EditorPolicy::current(),
       config: Some(config),
@@ -607,7 +609,20 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         file_path_mapping: file_path_mapping.clone(),
         depth,
       };
-      scope.format_from(host_request, Some(embedder), None)
+      if depth > 1 {
+        // A nested request may be needed to finish a request holding a permit.
+        return scope.format_from(host_request, Some(embedder), None);
+      }
+      let scope = scope.clone();
+      async move {
+        let _permit = tokio::select! {
+          biased;
+          _ = host_request.token.wait_cancellation() => return Ok(None),
+          permit = scope.embedded_formats.acquire() => permit.expect("embedded formatting semaphore is never closed"),
+        };
+        scope.format_from(host_request, Some(embedder), None).await
+      }
+      .boxed_local()
     })
   }
 
@@ -1817,6 +1832,7 @@ pub async fn get_plugins_scope_from_args<TEnvironment: Environment>(
     Err(_) => Ok(PluginsScope {
       environment: environment.clone(),
       editor_policy: EditorPolicy::current(),
+      embedded_formats: tokio::sync::Semaphore::new(environment.max_threads().max(1)),
       config: None,
       plugin_name_maps: Default::default(),
       plugins: Default::default(),

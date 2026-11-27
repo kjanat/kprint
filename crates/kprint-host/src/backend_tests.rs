@@ -214,11 +214,12 @@ fn markdown_fences_use_the_enclosing_scope_and_child_path() {
         );
     })
     .build();
+  environment.set_max_threads(1);
   environment.clone().run_in_runtime(async move {
     let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
     let session = crate::HostSession::new(environment, resolver, None);
     let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
-    let source = b"```csharp\nexample\n```\n\n```md\n#  Example\n```\n";
+    let source = b"```csharp\nexample\n```\n\n````md\n#  Example\n\n```csharp\ndeeper\n```\n````\n";
     let format = |path| {
       scope.format(HostFormatRequest {
         target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
@@ -229,8 +230,12 @@ fn markdown_fences_use_the_enclosing_scope_and_child_path() {
       })
     };
     assert_eq!(
-      format("/guide.md").await.unwrap().unwrap(),
-      b"```csharp\nexample_child\n```\n\n```md\n# Example\n```\n"
+      tokio::time::timeout(Duration::from_secs(5), format("/guide.md"))
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap(),
+      b"```csharp\nexample_child\n```\n\n````md\n# Example\n\n```csharp\ndeeper_formatted\n```\n````\n"
     );
     assert_eq!(format("/skip.md").await.unwrap(), None);
     session.shutdown().await;
