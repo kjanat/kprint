@@ -11,6 +11,7 @@ use kprint_communication::Message;
 use kprint_plugin_types::ConfigChange;
 use kprint_plugin_types::FormatConfigId;
 use kprint_plugin_types::FormatRange;
+use kprint_plugin_types::HostFormatTarget;
 
 use kprint_communication::MessageReader;
 use kprint_communication::MessageWriter;
@@ -37,6 +38,8 @@ mod message_ids {
   pub const FORMAT_RESPONSE_ID: MessageId = 14;
   pub const CANCEL_FORMAT_ID: MessageId = 15;
   pub const HOST_FORMAT_ID: MessageId = 16;
+  pub const HOST_FORMAT_LANGUAGE_ID: MessageId = 17;
+  pub const HOST_FORMAT_EXTENSION_ID: MessageId = 18;
 }
 
 #[derive(Debug)]
@@ -121,16 +124,27 @@ impl ProcessPluginMessage {
         MessageBody::FormatResponse(ResponseBody { message_id, data })
       }
       message_ids::CANCEL_FORMAT_ID => MessageBody::CancelFormat(reader.read_u32()?),
-      message_ids::HOST_FORMAT_ID => {
+      message_ids::HOST_FORMAT_ID | message_ids::HOST_FORMAT_LANGUAGE_ID | message_ids::HOST_FORMAT_EXTENSION_ID => {
         let original_message_id = reader.read_u32()?;
-        let file_path = reader.read_sized_bytes()?;
+        let target_bytes = reader.read_sized_bytes()?;
+        let target = match message_kind {
+          message_ids::HOST_FORMAT_ID => HostFormatTarget::Path(PathBuf::from(String::from_utf8_lossy(&target_bytes).into_owned())),
+          _ => {
+            let label = String::from_utf8(target_bytes).map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
+            if message_kind == message_ids::HOST_FORMAT_LANGUAGE_ID {
+              HostFormatTarget::Language(label)
+            } else {
+              HostFormatTarget::Extension(label)
+            }
+          }
+        };
         let start_byte_index = reader.read_u32()?;
         let end_byte_index = reader.read_u32()?;
         let override_config = reader.read_sized_bytes()?;
         let file_text = reader.read_sized_bytes()?;
         MessageBody::HostFormat(HostFormatMessageBody {
           original_message_id,
-          file_path: PathBuf::from(String::from_utf8_lossy(&file_path).to_string()),
+          target,
           range: if start_byte_index == 0 && end_byte_index == file_text.len() as u32 {
             None
           } else {
@@ -241,9 +255,14 @@ impl Message for ProcessPluginMessage {
         writer.send_u32(*message_id)?;
       }
       MessageBody::HostFormat(body) => {
-        writer.send_u32(message_ids::HOST_FORMAT_ID)?;
+        let (kind, target) = match &body.target {
+          HostFormatTarget::Path(path) => (message_ids::HOST_FORMAT_ID, path.to_string_lossy()),
+          HostFormatTarget::Language(language) => (message_ids::HOST_FORMAT_LANGUAGE_ID, std::borrow::Cow::Borrowed(language.as_str())),
+          HostFormatTarget::Extension(extension) => (message_ids::HOST_FORMAT_EXTENSION_ID, std::borrow::Cow::Borrowed(extension.as_str())),
+        };
+        writer.send_u32(kind)?;
         writer.send_u32(body.original_message_id)?;
-        writer.send_sized_bytes(body.file_path.to_string_lossy().as_bytes())?;
+        writer.send_sized_bytes(target.as_bytes())?;
         writer.send_u32(body.range.as_ref().map(|r| r.start).unwrap_or(0) as u32)?;
         writer.send_u32(body.range.as_ref().map(|r| r.end).unwrap_or(body.file_text.len()) as u32)?;
         writer.send_sized_bytes(&body.override_config)?;
@@ -313,7 +332,7 @@ pub struct FormatMessageBody {
 #[derive(Debug)]
 pub struct HostFormatMessageBody {
   pub original_message_id: MessageId,
-  pub file_path: PathBuf,
+  pub target: HostFormatTarget,
   pub range: FormatRange,
   pub override_config: Vec<u8>,
   pub file_text: Vec<u8>,

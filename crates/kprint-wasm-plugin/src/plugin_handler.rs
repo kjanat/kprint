@@ -3,8 +3,15 @@ use kprint_configuration::GlobalConfiguration;
 use kprint_plugin_types::*;
 
 #[derive(Debug)]
+pub enum SyncHostFormatTarget<'a> {
+  Path(&'a std::path::Path),
+  Language(&'a str),
+  Extension(&'a str),
+}
+
+#[derive(Debug)]
 pub struct SyncHostFormatRequest<'a> {
-  pub file_path: &'a std::path::Path,
+  pub target: SyncHostFormatTarget<'a>,
   pub file_bytes: &'a [u8],
   /// Range to format.
   pub range: FormatRange,

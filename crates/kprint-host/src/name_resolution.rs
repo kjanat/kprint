@@ -21,10 +21,35 @@ include!(concat!(env!("OUT_DIR"), "/language_extensions.rs"));
 
 /// Looks up Linguist's preferred extension for a language name or alias.
 pub fn resolve_language_extension(language_id: &str) -> Option<&'static str> {
-  let index = LINGUIST_EXTENSIONS
-    .binary_search_by(|(id, _)| id.bytes().cmp(language_id.bytes().map(|byte| byte.to_ascii_lowercase())))
-    .ok()?;
-  Some(LINGUIST_EXTENSIONS[index].1)
+  resolve_language_extensions(language_id).first().copied()
+}
+
+/// Looks up extensions in Linguist's preference order for a language name or alias.
+pub(crate) fn resolve_language_extensions(language_id: &str) -> &'static [&'static str] {
+  let index = LINGUIST_EXTENSIONS.binary_search_by(|(id, _)| id.bytes().cmp(language_id.bytes().map(|byte| byte.to_ascii_lowercase())));
+  index.map_or(&[], |index| LINGUIST_EXTENSIONS[index].1)
+}
+
+/// Shell aliases in Linguist describe a family. A formatter's input path also
+/// carries the dialect, so use the dialect's extension when one is specified.
+pub(crate) fn embedded_language_extensions(language: &str) -> &'static [&'static str] {
+  match language {
+    "handlebars" => &["hbs"],
+    "javascriptreact" => &["jsx"],
+    "proto3" => &["proto"],
+    "typescriptreact" => &["tsx"],
+    "sh" | "posix" | "posix-sh" => &["sh"],
+    "bash" => &["bash"],
+    "zsh" => &["zsh"],
+    "ksh" => &["ksh"],
+    "bats" => &["bats"],
+    "shell" | "shell-script" | "shellscript" => &["sh"],
+    _ => resolve_language_extensions(language),
+  }
+}
+
+pub(crate) fn is_shared_extension(extension: &str) -> bool {
+  SHARED_EXTENSIONS.binary_search(&extension).is_ok()
 }
 
 #[test]
@@ -34,6 +59,10 @@ fn resolves_linguist_names_and_aliases_to_extensions() {
   assert_eq!(resolve_language_extension("objc"), Some("m"));
   assert_eq!(resolve_language_extension("Jupyter Notebook"), Some("ipynb"));
   assert_eq!(resolve_language_extension("unknown-language"), None);
+  let typescript = resolve_language_extensions("TYPESCRIPT");
+  assert_eq!(typescript.first(), Some(&"ts"));
+  assert!(typescript.contains(&"tsx") || typescript.contains(&"mts"));
+  assert!(resolve_language_extensions("unknown-language").is_empty());
 }
 
 #[derive(Default)]
@@ -111,12 +140,65 @@ impl PluginNameResolutionMaps {
   }
 
   pub fn get_plugin_names_from_file_path<'a>(&'a self, file_path: &Path) -> PathPluginNames<'a> {
-    let file_name = get_lowercase_file_name(file_path);
     let extension = get_lowercase_file_extension(file_path);
-    let claiming_plugins = self.claiming_plugins(file_path, file_name.as_deref(), extension.as_deref());
+    self.get_plugin_names_with_extension(file_path, extension.as_deref())
+  }
+
+  pub(crate) fn get_plugin_names_with_extension<'a>(&'a self, file_path: &Path, extension: Option<&str>) -> PathPluginNames<'a> {
+    let file_name = get_lowercase_file_name(file_path);
+    let claiming_plugins = self.claiming_plugins(file_path, file_name.as_deref(), extension);
     PathPluginNames {
       has_claiming_plugin: !claiming_plugins.is_empty(),
-      names: self.get_plugin_names(&claiming_plugins, file_path, file_name.as_deref(), extension.as_deref()),
+      names: self.get_plugin_names(&claiming_plugins, file_path, file_name.as_deref(), extension),
+    }
+  }
+
+  pub(crate) fn get_plugin_names_for_embedded_language<'a>(&'a self, path: &Path, extension: &str, language_extensions: &[&str]) -> PathPluginNames<'a> {
+    let file_name = get_lowercase_file_name(path);
+    let matches_extension = |index| {
+      map_contains(&self.extension_to_plugin_indexes_map, extension, index)
+        && (!is_shared_extension(extension)
+          || language_extensions
+            .iter()
+            .any(|candidate| !is_shared_extension(candidate) && map_contains(&self.extension_to_plugin_indexes_map, candidate, index)))
+        && self.is_not_associations_excluded(index, path)
+    };
+    let explicitly_claiming: Vec<_> = self
+      .association_indexes
+      .iter()
+      .copied()
+      .filter(|&index| self.matches_associations(index, path))
+      .collect();
+    let claiming = if explicitly_claiming.is_empty() {
+      file_name
+        .as_deref()
+        .and_then(|name| self.first_claiming_index(&self.file_name_to_plugin_indexes_map, name, path))
+        .or_else(|| {
+          self
+            .extension_to_plugin_indexes_map
+            .get(extension)?
+            .iter()
+            .copied()
+            .find(|&index| !self.plugins[index].additive && matches_extension(index))
+        })
+        .map_or(ClaimingPlugins::None, ClaimingPlugins::One)
+    } else {
+      ClaimingPlugins::Many(explicitly_claiming)
+    };
+    let names = self
+      .plugins
+      .iter()
+      .enumerate()
+      .filter(|(index, plugin)| {
+        claiming.contains(*index)
+          || (plugin.additive && (self.matches_file(*index, path, file_name.as_deref(), None) || matches_extension(*index)))
+          || self.matches_additive_associations(*index, path)
+      })
+      .map(|(_, plugin)| plugin.name.as_str())
+      .collect();
+    PathPluginNames {
+      names,
+      has_claiming_plugin: !claiming.is_empty(),
     }
   }
 

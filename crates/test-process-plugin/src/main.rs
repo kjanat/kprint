@@ -191,7 +191,7 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
     let inner_format_text = if let Some(range) = request.range {
       if let Some(new_text) = file_text.strip_prefix("plugin-range: ") {
         let result = (format_with_host)(HostFormatRequest {
-          file_path: PathBuf::from("./test.txt"),
+          target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("./test.txt")),
           file_bytes: new_text.to_string().into_bytes(),
           range: Some(range),
           override_config: Default::default(),
@@ -208,9 +208,20 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
     } else if file_text.starts_with("wait_cancellation") {
       request.token.wait_cancellation().await;
       return Ok(None);
+    } else if let Some((language, text)) = file_text.strip_prefix("plugin-language: ").and_then(|text| text.split_once(' ')) {
+      let result = (format_with_host)(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Language(language.to_string()),
+        file_bytes: text.as_bytes().to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: request.token.clone(),
+      })
+      .await?;
+      let formatted = result.map(String::from_utf8).transpose()?;
+      format!("plugin-language: {language} {}", formatted.as_deref().unwrap_or(text))
     } else if let Some(new_text) = file_text.strip_prefix("plugin: ") {
       let result = (format_with_host)(HostFormatRequest {
-        file_path: PathBuf::from("./test.txt"),
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("./test.txt")),
         file_bytes: new_text.to_string().into_bytes(),
         range: None,
         override_config: Default::default(),
@@ -225,7 +236,7 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
       let mut config_map = ConfigKeyMap::new();
       config_map.insert("ending".to_string(), "custom_config".into());
       let result = (format_with_host)(HostFormatRequest {
-        file_path: PathBuf::from("./test.txt"),
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("./test.txt")),
         file_bytes: new_text.to_string().into_bytes(),
         range: None,
         override_config: config_map,

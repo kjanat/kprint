@@ -9,7 +9,6 @@ use anyhow::Result;
 use kprint_async_runtime::JoinHandle;
 use kprint_host_api::editor_policy::EditorPolicy;
 use kprint_plugin_types::FormatRange;
-use kprint_plugin_types::HostFormatRequest;
 use kprint_process_plugin::start_parent_process_checker_task;
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
@@ -77,7 +76,6 @@ use kprint_host::HostSession;
 pub(crate) mod client;
 mod config_completion;
 mod documents;
-mod language;
 mod notebook;
 mod text;
 mod untitled;
@@ -157,6 +155,7 @@ struct EditorFormatRequest {
   pub file_path: PathBuf,
   pub notebook_path: Option<PathBuf>,
   pub language_id: Option<String>,
+  pub synthetic: bool,
   pub file_text: String,
   pub maybe_line_index: Option<LineIndex>,
   pub range: FormatRange,
@@ -209,22 +208,13 @@ async fn handle_format_request<TEnvironment: Environment>(
     .as_ref()
     .and_then(|path| environment.canonicalize_maybe_not_exists(path).ok());
   let notebook_path = canonical_notebook_path.as_ref().map(AsRef::as_ref).or(request.notebook_path.as_deref());
-  let (can_format, checked_path) = match notebook_path {
-    Some(path) => (
-      !scope.plugin_name_maps.get_plugin_names_from_file_path(path).into_names().is_empty() && scope.can_format_for_editor(path, None),
-      path,
-    ),
-    None => (
-      scope.can_format_for_editor(&request.file_path, Some(request.file_text.as_bytes())),
-      request.file_path.as_path(),
-    ),
-  };
-  if !can_format {
-    log_debug!(environment, "Excluded file: {}", checked_path.display());
+  let synthetic_language = if request.synthetic { request.language_id.as_deref() } else { None };
+  let Some(selection) = scope.select_editor_formatter(&request.file_path, synthetic_language, notebook_path, request.file_text.as_bytes()) else {
+    log_debug!(environment, "Excluded file: {}", notebook_path.unwrap_or(&request.file_path).display());
     return Ok(None);
-  }
+  };
 
-  let supports_range = scope.supports_range_formatting(&request.file_path, request.file_text.as_bytes());
+  let supports_range = selection.range_support();
   if request.range.is_some() && supports_range == Some(false) {
     log_debug!(environment, "A plugin does not support formatting a range: {}", request.file_path.display());
     return Ok(None);
@@ -232,14 +222,11 @@ async fn handle_format_request<TEnvironment: Environment>(
   let notebook_range = request.notebook_path.as_ref().map(|_| request.range.clone());
   let range = RangeFormat::new(&request.file_text, request.range, supports_range == Some(true));
   let Some(result) = scope
-    .format_with_language_id(
-      HostFormatRequest {
-        file_path: request.file_path,
-        file_bytes: request.file_text.as_bytes().to_vec(),
-        range: range.plugin_range,
-        override_config: Default::default(),
-        token: request.token,
-      },
+    .format_editor(
+      selection,
+      request.file_text.as_bytes().to_vec(),
+      range.plugin_range,
+      request.token,
       request.language_id.as_deref(),
     )
     .await?
@@ -398,12 +385,12 @@ impl<TEnvironment: Environment> Backend<TEnvironment> {
       let home = self.environment.get_home_dir();
       let folder = state.workspace_folders.first().map(PathBuf::as_path).or(home.as_ref().map(AsRef::as_ref))?;
       let language_id = state.documents.language_id(uri)?;
-      let path = untitled::get_untitled_file_path(folder, language_id)?;
+      let path = folder.join("Untitled");
       return Some((path, None, Some(language_id.to_owned())));
     }
     if let Some((notebook_uri, language_id)) = state.documents.notebook_cell(uri) {
       let notebook_path = uri_to_file_path(notebook_uri)?;
-      let cell_path = notebook::get_notebook_cell_file_path(&notebook_path, language_id)?;
+      let cell_path = notebook_path.parent()?.join("code_block");
       return Some((cell_path, Some(notebook_path), Some(language_id.to_owned())));
     }
     Some((uri_to_file_path(uri)?, None, state.documents.language_id(uri).map(str::to_owned)))
@@ -591,6 +578,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
       .send_format_request(
         &params.text_document.uri,
         EditorFormatRequest {
+          synthetic: notebook_path.is_some() || untitled::is_untitled_uri(&params.text_document.uri),
           file_path,
           notebook_path,
           language_id,
@@ -614,6 +602,7 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
       .send_format_request(
         &params.text_document.uri,
         EditorFormatRequest {
+          synthetic: notebook_path.is_some() || untitled::is_untitled_uri(&params.text_document.uri),
           file_path,
           notebook_path,
           language_id,
@@ -1704,7 +1693,7 @@ mod test {
         .iter()
         .filter_map(|message| message.strip_prefix("[DEBUG] Excluded file: "))
         .collect::<Vec<_>>();
-      assert_eq!(excludes, ["/first/Untitled.txt"]);
+      assert_eq!(excludes, ["/first/Untitled"]);
     });
   }
 

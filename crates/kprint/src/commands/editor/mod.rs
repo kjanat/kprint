@@ -267,11 +267,13 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
     }
     let request = HostFormatRequest {
       // canonicalize so that it matches the canonicalized config paths (ex. for overrides)
-      file_path: self
-        .environment
-        .canonicalize_maybe_not_exists(&body.file_path)
-        .map(|p| p.into_path_buf())
-        .unwrap_or(body.file_path),
+      target: kprint_plugin_types::HostFormatTarget::Path(
+        self
+          .environment
+          .canonicalize_maybe_not_exists(&body.file_path)
+          .map(|p| p.into_path_buf())
+          .unwrap_or(body.file_path),
+      ),
       range: body.range,
       override_config: if body.override_config.is_empty() {
         Default::default()

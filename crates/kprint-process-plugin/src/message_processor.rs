@@ -307,7 +307,7 @@ fn host_format<TConfiguration: Serialize + Clone + Send + Sync>(
       id,
       body: MessageBody::HostFormat(HostFormatMessageBody {
         original_message_id,
-        file_path: request.file_path,
+        target: request.target,
         file_text: request.file_bytes,
         range: request.range,
         override_config: serde_json::to_vec(&request.override_config).unwrap(),

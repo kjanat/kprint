@@ -1,10 +1,11 @@
-# dprint Wasm plugin ABI, as WIT
+# kprint Wasm plugin ABI, as WIT
 
-Each directory describes one plugin system schema version of dprint's Wasm plugin ABI in [WIT](https://component-model.bytecodealliance.org/design/wit.html), the interface definition language of the Wasm component model: what a plugin exports, what the host provides as imports, the byte-passing protocol between them, and the JSON payloads they exchange.
+Each directory describes one plugin system schema version of the Wasm plugin ABI in [WIT](https://component-model.bytecodealliance.org/design/wit.html), the interface definition language of the Wasm component model: what a plugin exports, what the host provides as imports, the byte-passing protocol between them, and the JSON payloads they exchange.
 
 | Schema | Package               | dprint                      | dprint-core             | Status                                      |
 | ------ | --------------------- | --------------------------- | ----------------------- | ------------------------------------------- |
-| 4      | `dprint:plugin@4.0.0` | 0.47.0 (2024-07-01) onwards | 0.67.0 onwards          | current: what `generate_plugin_code!` emits |
+| 5      | `kprint:plugin@5.0.0` | —                           | —                       | current: what `generate_plugin_code!` emits |
+| 4      | `dprint:plugin@4.0.0` | 0.47.0 (2024-07-01) onwards | 0.67.0 onwards          | still run by the current host               |
 | 3      | `dprint:plugin@3.0.0` | 0.8.0 (2020-08-05) onwards  | 0.27.0 to 0.66.x        | still run by the current host               |
 | 2      | `dprint:plugin@2.0.0` | 0.7.0 to 0.7.4              | 0.26.x                  | historical                                  |
 | 1      | `dprint:plugin@1.0.0` | 0.4.0 to 0.6.x              | 0.20.0-alpha3 to 0.25.x | historical                                  |
@@ -30,6 +31,7 @@ A component that implements the `plugin` world of a version would need an adapte
 - **1 to 2**: the same functions; `set_plugin_config`'s values went from strings only to a string, a number or a boolean.
 - **2 to 3**: `set_override_config` (plugin) and `host_take_override_config` (host) for per-file overrides. Within 3, without a bump: `fileNames` in the plugin info (dprint 0.15.0), `updateUrl` (0.22.0), `reset_config` (0.24.2), array, object and null configuration values (0.28.0), formatted output as arbitrary bytes (0.43.2).
 - **3 to 4**: configurations are registered by id (`register_config`, `release_config`) instead of set one at a time (`set_global_config`, `set_plugin_config`); the file matching moved out of the plugin info into `get_config_file_matching`; `format_range` and `check_config_updates` were added; the chunked transfer buffer was replaced by direct access to the shared bytes (`get_shared_bytes_ptr`, `clear_shared_bytes` returning the pointer); the host's buffer protocol (`host_clear_bytes`, `host_read_buffer`, `host_take_*`) was replaced by pointer/length arguments to `host_format` and a one-call `host_write_buffer`; `host_has_cancelled` and `env.fd_write` were added.
+- **4 to 5**: `host_format_target` accepts paths, language labels and explicit extensions. The existing host imports and shared buffer are still available.
 - **Version detection**: up to dprint 0.46.1 the host called `get_plugin_schema_version()` and required its own version exactly. Since 0.46.2 it looks at export names only: `dprint_plugin_version_<n>` means n, and `get_plugin_schema_version` is taken to mean 3 (so a version 1 or 2 plugin would be mistaken for a version 3 one).
 
 ## Sources

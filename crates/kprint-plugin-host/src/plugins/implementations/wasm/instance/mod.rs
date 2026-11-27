@@ -77,7 +77,7 @@ impl WasmHostState {
 pub fn create_host_state(version: PluginSchemaVersion, log: LogFn, host_format_sender: WasmHostFormatSender) -> WasmHostState {
   match version {
     PluginSchemaVersion::V3 => WasmHostState::V3(v3::ImportObjectEnvironmentV3::new(host_format_sender)),
-    PluginSchemaVersion::V4 => WasmHostState::V4(v4::ImportObjectEnvironmentV4::new(log, host_format_sender)),
+    PluginSchemaVersion::V4 | PluginSchemaVersion::V5 => WasmHostState::V4(v4::ImportObjectEnvironmentV4::new(log, host_format_sender)),
   }
 }
 
@@ -188,7 +188,7 @@ macro_rules! define_add_host_functions {
             Ok(v3::host_get_error_text(v3_state(caller.data_mut())?))
           })?;
         }
-        PluginSchemaVersion::V4 => {
+        PluginSchemaVersion::V4 | PluginSchemaVersion::V5 => {
           linker.func_wrap(
             "env",
             "fd_write",
@@ -222,6 +222,7 @@ macro_rules! define_add_host_functions {
               v4::host_format(
                 memory,
                 v4_state(state)?,
+                kprint_wasm_plugin::host_target_kind::PATH,
                 file_path_ptr,
                 file_path_len,
                 range_start,
@@ -234,6 +235,39 @@ macro_rules! define_add_host_functions {
               .map_err(trap)
             },
           )?;
+          if version == PluginSchemaVersion::V5 {
+            linker.func_wrap(
+              "dprint",
+              "host_format_target",
+              |mut caller: Caller<'_, WasmHostState>,
+               kind: u32,
+               ptr: u32,
+               len: u32,
+               start: u32,
+               end: u32,
+               config_ptr: u32,
+               config_len: u32,
+               bytes_ptr: u32,
+               bytes_len: u32|
+               -> HostResult<u32> {
+                let (memory, state) = memory_and_state(&mut caller)?;
+                v4::host_format(
+                  memory,
+                  v4_state(state)?,
+                  kind,
+                  ptr,
+                  len,
+                  start,
+                  end,
+                  config_ptr,
+                  config_len,
+                  bytes_ptr,
+                  bytes_len,
+                )
+                .map_err(trap)
+              },
+            )?;
+          }
           linker.func_wrap(
             "dprint",
             "host_get_formatted_text",
@@ -262,6 +296,7 @@ pub type Linker = wasmtime::Linker<WasmHostState>;
 pub enum PluginSchemaVersion {
   V3,
   V4,
+  V5,
 }
 
 pub trait InitializedWasmPluginInstance {
@@ -313,7 +348,7 @@ pub fn create_plugin_instance<TExports: PluginExports + Send + 'static>(
 ) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> {
   match version {
     PluginSchemaVersion::V3 => Ok(Box::new(v3::InitializedWasmPluginInstanceV3::new(exports)?)),
-    PluginSchemaVersion::V4 => Ok(Box::new(v4::InitializedWasmPluginInstanceV4::new(exports))),
+    PluginSchemaVersion::V4 | PluginSchemaVersion::V5 => Ok(Box::new(v4::InitializedWasmPluginInstanceV4::new(exports))),
   }
 }
 
@@ -394,7 +429,7 @@ pub fn create_identity_import_object(version: PluginSchemaVersion, engine: &Engi
   let mut linker = Linker::new(engine);
   match version {
     PluginSchemaVersion::V3 => v3::add_identity_imports(&mut linker)?,
-    PluginSchemaVersion::V4 => v4::add_identity_imports(&mut linker)?,
+    PluginSchemaVersion::V4 | PluginSchemaVersion::V5 => v4::add_identity_imports(&mut linker, version == PluginSchemaVersion::V5)?,
   }
   wasi::native::add_wasi_imports(&mut linker)?;
   Ok(linker)
@@ -442,7 +477,8 @@ pub fn plugin_schema_version_from_exports<'a>(export_names: impl Iterator<Item =
   match plugin_schema_version {
     3 => Ok(PluginSchemaVersion::V3),
     4 => Ok(PluginSchemaVersion::V4),
-    version if version > 4 => {
+    5 => Ok(PluginSchemaVersion::V5),
+    version if version > PLUGIN_SYSTEM_SCHEMA_VERSION => {
       bail!(
         "Invalid schema version: {} -- Expected: {}. Upgrade your kprint CLI ({}).",
         plugin_schema_version,

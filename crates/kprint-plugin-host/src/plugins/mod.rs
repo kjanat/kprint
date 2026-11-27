@@ -1,6 +1,7 @@
 mod cache;
 mod cache_fs_locks;
 mod cache_meta;
+mod embedded_format;
 mod helpers;
 mod implementations;
 mod npm_resolution;

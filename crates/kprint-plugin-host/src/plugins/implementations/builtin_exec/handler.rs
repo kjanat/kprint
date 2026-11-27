@@ -129,7 +129,7 @@ impl InProcessHandler for ExecHandler {
     }
   }
 
-  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf) -> FormatResult {
+  async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf, _host: kprint_plugin_types::HostFormatCallback) -> FormatResult {
     if request.range.is_some() {
       // we don't support range formatting for this plugin
       return Ok(None);

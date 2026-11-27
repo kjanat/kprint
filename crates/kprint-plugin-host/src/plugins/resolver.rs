@@ -17,6 +17,7 @@ use super::InitializedPlugin;
 use super::implementations::ExecFormatter;
 use super::implementations::WasmModuleCreator;
 use super::implementations::create_builtin_exec_plugin;
+use super::implementations::create_builtin_markdown_plugin;
 use super::implementations::create_plugin;
 use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::BuiltInFormatter;
@@ -74,6 +75,10 @@ impl PluginWrapper {
   /// Whether the plugin runs in a sandbox (see [`Plugin::is_sandboxed`]).
   pub fn is_sandboxed(&self) -> bool {
     self.plugin.is_sandboxed()
+  }
+
+  pub fn accepts_untrusted_configuration(&self) -> bool {
+    self.plugin.accepts_untrusted_configuration()
   }
 
   /// Set when the plugin is a formatter built into dprint.
@@ -325,6 +330,9 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
     let plugin = cell
       .get_or_try_init(|| async {
         if let Some(plugin) = create_builtin_exec_plugin(&self.environment, &plugin_reference) {
+          return Ok(Rc::new(PluginWrapper::new(plugin)));
+        }
+        if let Some(plugin) = create_builtin_markdown_plugin(&self.environment, &plugin_reference) {
           return Ok(Rc::new(PluginWrapper::new(plugin)));
         }
         if self.reload_plugins.get()

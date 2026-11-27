@@ -43,8 +43,7 @@ pub enum FormattingIdentity {
 
 /// A formatter that ships inside dprint instead of being loaded as a plugin.
 ///
-/// It's released with dprint, so it has no version, update URL or schema URL
-/// of its own.
+/// Its incremental identity follows the built-in implementation.
 pub struct BuiltInFormatter {
   /// Its name, ex. "exec".
   pub name: &'static str,
@@ -57,7 +56,7 @@ pub struct BuiltInFormatter {
   /// "dprint-plugin-exec". Configuration tooling uses this name for it, since
   /// that's the plugin a configuration file refers to.
   pub serves_plugin: &'static str,
-  /// Whether a reference is to the external plugin it serves, in any version.
+  /// Whether a reference is served by this implementation.
   pub refers_to_served_plugin: fn(&PluginSourceReference) -> bool,
 }
 
@@ -93,11 +92,14 @@ pub trait Plugin {
   /// Gets if this is a process plugin.
   fn is_process_plugin(&self) -> bool;
 
-  /// Whether the plugin runs in a sandbox, which only a Wasm plugin does.
-  /// What it asks the host to format can't configure a plugin that doesn't,
-  /// beyond the global configuration, as that could run any program (ex.
-  /// the exec plugin's `commands`).
   fn is_sandboxed(&self) -> bool;
+
+  /// Whether untrusted settings can safely configure this formatter.
+  /// Its nested requests can pass only global settings to formatters that
+  /// require trusted configuration, unless the receiving formatter opts in.
+  fn accepts_untrusted_configuration(&self) -> bool {
+    self.is_sandboxed()
+  }
 
   /// The schema of the plugin's configuration when it's built into dprint, so
   /// it isn't downloaded from the plugin info's `config_schema_url`.

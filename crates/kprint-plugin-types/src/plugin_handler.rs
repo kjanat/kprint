@@ -313,3 +313,13 @@ where
   /// that can be used to format a file.
   pub config: T,
 }
+/// The input a plugin asks the host to format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostFormatTarget {
+  /// A path, matched using the host's normal path rules.
+  Path(std::path::PathBuf),
+  /// An embedded language name or alias, matched in the calling plugin's scope.
+  Language(String),
+  /// Embedded content whose filename extension was explicitly configured.
+  Extension(String),
+}

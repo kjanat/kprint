@@ -321,7 +321,7 @@ mod tests {
   async fn format_process(scope: &Rc<PluginsScope<TestEnvironment>>, ending: &str) {
     let result = scope
       .format(kprint_plugin_types::HostFormatRequest {
-        file_path: PathBuf::from("/file.txt_ps"),
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("/file.txt_ps")),
         file_bytes: b"text".to_vec(),
         range: None,
         override_config: Default::default(),

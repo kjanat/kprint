@@ -1,6 +1,6 @@
 /// dprint Wasm plugin ABI, plugin system schema version 4.
 ///
-/// Current. Introduced in dprint 0.47.0 (dprint-core 0.67.0, 2024-06-30);
+/// Introduced in dprint 0.47.0 (dprint-core 0.67.0, 2024-06-30) and
 /// extended here with optional kprint metadata. The v1-v3 descriptions
 /// remain historical upstream interfaces.
 ///

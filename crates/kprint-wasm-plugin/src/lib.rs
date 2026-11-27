@@ -15,7 +15,14 @@ pub mod __private {
 
 /// The plugin system schema version that is incremented
 /// when there are any breaking changes.
-pub const PLUGIN_SYSTEM_SCHEMA_VERSION: u32 = 4;
+pub const PLUGIN_SYSTEM_SCHEMA_VERSION: u32 = 5;
+
+#[doc(hidden)]
+pub mod host_target_kind {
+  pub const PATH: u32 = 0;
+  pub const LANGUAGE: u32 = 1;
+  pub const EXTENSION: u32 = 2;
+}
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 unsafe extern "C" {
@@ -144,9 +151,10 @@ pub mod macros {
         #[link(wasm_import_module = "dprint")]
         unsafe extern "C" {
           fn host_write_buffer(pointer: *const u8);
-          fn host_format(
-            file_path_ptr: *const u8,
-            file_path_len: u32,
+          fn host_format_target(
+            target_kind: u32,
+            target_ptr: *const u8,
+            target_len: u32,
             start_range: u32,
             end_range: u32,
             override_config_ptr: *const u8,
@@ -158,7 +166,11 @@ pub mod macros {
           fn host_get_error_text() -> u32;
         }
 
-        let file_path = request.file_path.to_string_lossy();
+        let (target_kind, target) = match request.target {
+          $crate::SyncHostFormatTarget::Path(path) => ($crate::host_target_kind::PATH, path.to_string_lossy()),
+          $crate::SyncHostFormatTarget::Language(language) => ($crate::host_target_kind::LANGUAGE, Cow::Borrowed(language)),
+          $crate::SyncHostFormatTarget::Extension(extension) => ($crate::host_target_kind::EXTENSION, Cow::Borrowed(extension)),
+        };
         let override_config = if !request.override_config.is_empty() {
           Cow::Owned($crate::__private::serde_json::to_string(request.override_config).unwrap())
         } else {
@@ -167,9 +179,10 @@ pub mod macros {
         let range = request.range.unwrap_or(0..request.file_bytes.len());
 
         return match unsafe {
-          host_format(
-            file_path.as_ptr(),
-            file_path.len() as u32,
+          host_format_target(
+            target_kind,
+            target.as_ptr(),
+            target.len() as u32,
             range.start as u32,
             range.end as u32,
             override_config.as_ptr(),
@@ -412,7 +425,7 @@ pub mod macros {
       static SHARED_BYTES: StaticCell<Vec<u8>> = StaticCell::new(Vec::new());
 
       #[unsafe(no_mangle)]
-      pub fn dprint_plugin_version_4() -> u32 {
+      pub fn dprint_plugin_version_5() -> u32 {
         $crate::PLUGIN_SYSTEM_SCHEMA_VERSION
       }
 

@@ -98,7 +98,7 @@ impl InterpretedModule {
     let mut linker = Linker::new(engine());
     match self.version {
       PluginSchemaVersion::V3 => add_v3_imports(&mut linker)?,
-      PluginSchemaVersion::V4 => add_v4_imports(&mut linker)?,
+      PluginSchemaVersion::V4 | PluginSchemaVersion::V5 => add_v4_imports(&mut linker, self.version == PluginSchemaVersion::V5)?,
     }
     super::instance::wasi::interpreted::add_wasi_imports(&mut linker)?;
     super::instance::wasi::interpreted::add_unsupported_wasi_imports(&mut linker, &mut store, &self.module)?;
@@ -286,7 +286,7 @@ fn add_v3_imports(linker: &mut Linker<LogFn>) -> Result<()> {
   Ok(())
 }
 
-fn add_v4_imports(linker: &mut Linker<LogFn>) -> Result<()> {
+fn add_v4_imports(linker: &mut Linker<LogFn>, supports_targets: bool) -> Result<()> {
   linker.func_wrap(
     "env",
     "fd_write",
@@ -304,6 +304,13 @@ fn add_v4_imports(linker: &mut Linker<LogFn>) -> Result<()> {
     "host_format",
     |_: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32| -> u32 { 0 },
   )?; // no change
+  if supports_targets {
+    linker.func_wrap(
+      "dprint",
+      "host_format_target",
+      |_: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32| -> u32 { 0 },
+    )?;
+  }
   linker.func_wrap("dprint", "host_get_formatted_text", || -> u32 { 0 })?; // zero length
   linker.func_wrap("dprint", "host_get_error_text", || -> u32 { 0 })?; // zero length
   linker.func_wrap("dprint", "host_has_cancelled", || -> i32 { 0 })?; // false

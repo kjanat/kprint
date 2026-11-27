@@ -142,14 +142,30 @@ async function bench(corpus: string, results: string, builds: string, pull: numb
         2,
       ) + "\n",
     );
-    const command = (name: Name, subcommand: string) =>
-      `env DPRINT_CACHE_DIR=${quote(join(work, `cache-${name}`))} ${quote(binary(name))} ${subcommand} --config ${quote(config)}`;
+    // The corpus ships a nested kprint.toml that upstream dprint cannot read.
+    const configArgs = ["--config", config, "--config-discovery=ignore-descendants"];
+    const cacheEnv = (name: Name) => `DPRINT_CACHE_DIR=${join(work, `cache-${name}`)}`;
+    const command = (name: Name, subcommand: string) => ["env", cacheEnv(name), binary(name), subcommand, ...configArgs].map(quote).join(" ");
 
-    run(binary("official"), ["fmt", "--config", config], corpus);
+    run("env", [cacheEnv("official"), binary("official"), "fmt", ...configArgs], corpus);
     run("git", ["config", "core.untrackedCache", "true"], corpus);
     run("git", ["config", "core.fsmonitor", "true"], corpus);
     run("git", ["status", "--porcelain"], corpus);
     run("git", ["status", "--porcelain"], corpus);
+
+    const filePaths = (name: Name) => {
+      const result = capture("env", [cacheEnv(name), binary(name), "output-file-paths", ...configArgs], corpus);
+      if (result.status !== 0) throw new Error(`${name} output-file-paths failed: ${result.stderr}`);
+      return result.stdout.split("\n").filter(Boolean).sort();
+    };
+    const officialFiles = filePaths("official");
+    if (officialFiles.length === 0) throw new Error("The benchmark corpus has no files to format");
+    for (const name of ["master", "pr"] satisfies Build[]) {
+      const files = filePaths(name);
+      if (files.length !== officialFiles.length || files.some((file, index) => file !== officialFiles[index])) {
+        throw new Error(`${name} selected a different file set from upstream (${files.length} vs ${officialFiles.length} files)`);
+      }
+    }
 
     for (const scenario of SCENARIOS) {
       for (let round = 0; round < scenario.rounds; round++) {
@@ -168,10 +184,9 @@ async function bench(corpus: string, results: string, builds: string, pull: numb
     const version = (name: Name) => capture(binary(name), ["--version"]).stdout.trim();
     const sha = async (name: Build) => (await readFile(join(builds, `dprint-${name}`, "sha"), "utf8").catch(() => "")).trim();
     const discovery = (name: Build) => {
-      const { stdout, stderr } = capture(binary(name), ["check", "--config", config, "--log-level=debug"], corpus);
+      const { stdout, stderr } = capture("env", [cacheEnv(name), binary(name), "check", ...configArgs, "--log-level=debug"], corpus);
       return (stdout + stderr).match(/Read \d+ files from the git index|Not (?:using|reading) the git index.*/)?.[0] ?? "no git index message";
     };
-    const files = capture(binary("official"), ["output-file-paths", "--config", config], corpus).stdout.split("\n").filter(Boolean).length;
 
     const meta: Meta = {
       repository: process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` : "",
@@ -179,7 +194,7 @@ async function bench(corpus: string, results: string, builds: string, pull: numb
       versions: { official: version("official"), master: version("master"), pr: version("pr") },
       shas: { master: await sha("master"), pr: await sha("pr") },
       discovery: { master: discovery("master"), pr: discovery("pr") },
-      files,
+      files: officialFiles.length,
       git: capture("git", ["--version"]).stdout.trim(),
       plugins: PLUGINS.map(([plugin]) => plugin),
     };

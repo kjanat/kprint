@@ -1,4 +1,4 @@
-# Creating a Wasm Plugin (Schema Version 4)
+# Creating a Wasm Plugin (Schema Version 5)
 
 Wasm plugins are the preferred way of developing plugins (as opposed to process plugins) because they are portable and run sandboxed in a Wasm runtime. A plugin must implement kprint's core-module exports, imports and byte-buffer protocol.
 A language's ability to emit a `.wasm` file or WASI module is not sufficient. These
@@ -163,7 +163,7 @@ enabled, create an arena with `let arena = request.arena_pool.create_arena();` i
 `format`, then pass `&arena` to `PrintItems::new` and IR helpers. See the
 [formatting overview](overview.md) for the API and borrowing model.
 
-## Schema Version 4 Overview
+## Schema Version 5 Overview
 
 If you are not using `Rust`, then you must implement a lot of low level functionality.
 
@@ -176,7 +176,7 @@ Low level communication:
 
 Initialization functions:
 
-- `dprint_plugin_version_4() -> u32` - Return `4`, but the CLI never calls this function (it only checks for it in the exports)
+- `dprint_plugin_version_5() -> u32` - Return `5`. kprint detects the schema version from the export name.
 - `register_config(config_id: u32)` - Called when the plugin and global configuration is done transferring over. Store it somewhere.
 - `release_config(config_id: u32)` - Release a config registered in this instance. The host forwards release only once for a registered ID and can register it again later. Older plugins without this export remain supported.
 - `get_config_diagnostics(config_id: u32) -> u32` - Called by the CLI to get the configuration diagnostics. Serialize the diagnostics as a JSON string, store it in the local bytes, and return the byte length.
@@ -193,7 +193,7 @@ Initialization functions:
 
 ### Optional kprint configuration metadata
 
-These additions use the existing schema-4 marker. Plugins built with upstream
+These additions work with schema 4 and 5. Plugins built with upstream
 dprint crates may implement the discovery exports directly. Plugins built with
 kprint can return the fields in `get_plugin_info` JSON. All discovery exports
 have the core signature `() -> i32`: put UTF-8 JSON in the plugin-owned shared
@@ -287,6 +287,7 @@ Low level communication:
 
 High level functions:
 
+- `host_format_target(kind: u32, target_ptr: u32, target_len: u32, range_start: u32, range_end: u32, override_cfg_ptr: u32, override_cfg_len: u32, file_bytes_ptr: u32, file_bytes_len: u32) -> u32` delegates using a UTF-8 target. Use kind `0` for a path, `1` for a language label such as `csharp`, or `2` for an explicit extension such as `cs`. kprint resolves embedded targets in the enclosing file's configuration scope. The range and result use the same conventions as `host_format`.
 - `host_format(file_path_ptr: u32, file_path_len: u32, range_start: u32, range_end: u32, override_cfg_ptr: u32, override_cfg_len: u32, file_bytes_ptr: u32, file_bytes_len: u32) -> u32` - Tell the host to format using the file text in its local byte array. Provide `0` and `file_bytes_len` for no range formatting.
   - Returns `0` for no change (do nothing else, no transfer needed)
   - `1` for change (use `host_get_formatted_text()`)

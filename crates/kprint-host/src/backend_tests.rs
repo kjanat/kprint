@@ -68,7 +68,7 @@ fn should_support_host_format_cancellation() {
       });
       let result = scope
         .format(HostFormatRequest {
-          file_path: PathBuf::from("file.txt_ps"),
+          target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("file.txt_ps")),
           // This should cause the process plugin to format with the
           // Wasm plugin which will then try to format with the process plugin
           // and finally it will wait for cancellation to occur
@@ -133,7 +133,7 @@ fn should_support_shutdown_during_indefinite_host_formatting() {
       kprint_async_runtime::spawn(async move {
         scope
           .format(HostFormatRequest {
-            file_path: PathBuf::from("file.txt_ps"),
+            target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("file.txt_ps")),
             // This should cause the process plugin to format with the
             // Wasm plugin which will then try to format with the process plugin
             // and then will hang forever
@@ -170,7 +170,7 @@ fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
     let real = PathBuf::from("/build");
     let synthetic = PathBuf::from("/build.dprint-ext-added.txt");
     let request = || HostFormatRequest {
-      file_path: synthetic.clone(),
+      target: kprint_plugin_types::HostFormatTarget::Path(synthetic.clone()),
       file_bytes: b"text".to_vec(),
       range: None,
       override_config: Default::default(),
@@ -197,5 +197,167 @@ fn synthetic_paths_are_only_decoded_in_the_callback_that_created_them() {
     );
     assert_eq!(format_messages, [&without_id, &without_id, &with_id]);
     environment.clear_logs();
+  });
+}
+
+#[test]
+fn markdown_fences_use_the_enclosing_scope_and_child_path() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_plugin("npm:@dprint/markdown@0.29.0")
+        .add_remote_wasm_plugin()
+        .add_config_section("markdown", r#"{"overrides":{"files":"**/skip.md","embedded":{"cs":[],"md":[]}}}"#)
+        .add_config_section(
+          "test-plugin",
+          r#"{"associations":["**/*.cs"],"overrides":{"files":"**/guide.md.embedded.cs","ending":"child"}}"#,
+        );
+    })
+    .build();
+  environment.set_max_threads(1);
+  environment.set_log_level(kprint_host_api::ui::LogLevel::Debug);
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment.clone(), resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let source = b"```csharp\nexample\n```\n\n````md\n#  Example\n\n```csharp\ndeeper\n```\n\n```csharp\nsibling\n```\n````\n";
+    let format = |path| {
+      scope.format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
+        file_bytes: source.to_vec(),
+        override_config: Default::default(),
+        range: None,
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    assert_eq!(
+      tokio::time::timeout(Duration::from_secs(5), format("/guide.md"))
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap(),
+      b"```csharp\nexample_child\n```\n\n````md\n# Example\n\n```csharp\ndeeper_formatted\n```\n\n```csharp\nsibling_formatted\n```\n````\n"
+    );
+    assert_eq!(format("/skip.md").await.unwrap(), None);
+    session.shutdown().await;
+    let log = environment.take_stderr_messages();
+    assert_eq!(
+      log.iter().filter(|line| line.starts_with("[DEBUG] Creating instance of test-plugin (")).count(),
+      1
+    );
+    environment.clear_logs();
+  });
+}
+
+#[test]
+fn wasm_and_process_plugins_delegate_by_language() {
+  let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+    .add_remote_process_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_remote_wasm_plugin()
+        .add_remote_process_plugin()
+        .add_config_section("test-plugin", r#"{"associations":["**/*.cs"],"ending":"wasm"}"#)
+        .add_config_section("testProcessPlugin", r#"{"associations":["**/*.py"],"ending":"process"}"#);
+    })
+    .initialize()
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let format = |path, text: &str| {
+      scope.format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
+        file_bytes: text.as_bytes().to_vec(),
+        override_config: Default::default(),
+        range: None,
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    assert_eq!(
+      format("/outer.txt", "plugin-language: python example").await.unwrap().unwrap(),
+      b"plugin-language: python example_process_wasm"
+    );
+    assert_eq!(
+      format("/outer.txt_ps", "plugin-language: csharp example").await.unwrap().unwrap(),
+      b"plugin-language: csharp example_wasm_process"
+    );
+    session.shutdown().await;
+  });
+}
+
+#[test]
+fn language_dispatch_prefers_a_claiming_formatter_and_retains_an_additive_fallback() {
+  let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+    .add_remote_process_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_plugin("npm:@dprint/markdown@0.29.0")
+        .add_remote_wasm_plugin()
+        .add_remote_process_plugin()
+        .add_config_section("test-plugin", r#"{"associations":["**/*.ts"],"additive":true,"ending":"additive"}"#)
+        .add_config_section("testProcessPlugin", r#"{"associations":["**/guide.md.embedded.cts"],"ending":"claiming"}"#);
+    })
+    .initialize()
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let format = |path| {
+      scope.format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
+        file_bytes: b"```ts\nexample\n```\n".to_vec(),
+        override_config: Default::default(),
+        range: None,
+        token: Arc::new(kprint_plugin_types::NullCancellationToken),
+      })
+    };
+    assert_eq!(format("/guide.md").await.unwrap().unwrap(), b"```ts\nexample_claiming\n```\n");
+    assert_eq!(format("/fallback.md").await.unwrap().unwrap(), b"```ts\nexample_additive\n```\n");
+    session.shutdown().await;
+  });
+}
+
+#[test]
+fn language_dispatch_falls_back_to_shared_extensions_and_keeps_legacy_bash_editor_routing() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+    .with_local_config("/dprint.json", |config| {
+      config
+        .add_plugin("npm:@dprint/markdown@0.29.0")
+        .add_remote_wasm_plugin()
+        .add_config_section("test-plugin", r#"{"file_extensions":["rs","sh"]}"#);
+    })
+    .build();
+  environment.clone().run_in_runtime(async move {
+    let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+    let session = crate::HostSession::new(environment, resolver, None);
+    let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
+    let source = b"```rust\nexample\n```\n\n```bash\nexample\n```\n";
+    let token = Arc::new(kprint_plugin_types::NullCancellationToken);
+    let result = scope
+      .format(HostFormatRequest {
+        target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from("/guide.md")),
+        file_bytes: source.to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: token.clone(),
+      })
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(result, b"```rust\nexample_formatted\n```\n\n```bash\nexample\n```\n");
+    for language in ["rust", "bash"] {
+      let selection = scope
+        .select_editor_formatter(std::path::Path::new("/untitled"), Some(language), None, b"example")
+        .unwrap();
+      let formatted = scope
+        .format_editor(selection, b"example".to_vec(), None, token.clone(), Some(language))
+        .await
+        .unwrap();
+      assert_eq!(formatted.as_deref(), Some(b"example_formatted".as_slice()));
+    }
+    session.shutdown().await;
   });
 }
