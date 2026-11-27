@@ -10,7 +10,7 @@ use super::*;
 /// # Example
 ///
 /// ```
-/// use kprint_markdown::configuration::*;
+/// use kprint_formatter_markdown::configuration::*;
 ///
 /// let config = ConfigurationBuilder::new()
 ///     .line_width(80)

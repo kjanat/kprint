@@ -4,8 +4,8 @@ use std::sync::OnceLock;
 use kprint_async_runtime::async_trait;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::GlobalConfiguration;
-use kprint_markdown::EmbeddedCode;
-use kprint_markdown::configuration::Configuration;
+use kprint_formatter_markdown::EmbeddedCode;
+use kprint_formatter_markdown::configuration::Configuration;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatRequest;
@@ -88,11 +88,11 @@ struct MarkdownConfigSchema {
   settings: Configuration,
   deno: Option<bool>,
   #[serde(rename = "headingKind")]
-  heading_kind: Option<kprint_markdown::configuration::HeadingKind>,
+  heading_kind: Option<kprint_formatter_markdown::configuration::HeadingKind>,
   #[serde(rename = "unorderedListKind")]
-  unordered_list_kind: Option<kprint_markdown::configuration::ListUnorderedMarker>,
+  unordered_list_kind: Option<kprint_formatter_markdown::configuration::ListUnorderedMarker>,
   #[serde(rename = "listIndentKind")]
-  list_indent_kind: Option<kprint_markdown::configuration::ListIndentKind>,
+  list_indent_kind: Option<kprint_formatter_markdown::configuration::ListIndentKind>,
 }
 
 fn config_schema() -> &'static str {
@@ -126,7 +126,7 @@ impl<E: PluginEnvironment> InProcessHandler for MarkdownHandler<E> {
   }
 
   fn license_text(&self) -> String {
-    kprint_markdown::LICENSE.to_string()
+    kprint_formatter_markdown::LICENSE.to_string()
   }
 
   async fn resolve_config(
@@ -135,7 +135,7 @@ impl<E: PluginEnvironment> InProcessHandler for MarkdownHandler<E> {
     global: GlobalConfiguration,
     _base_dir: &CanonicalizedPathBuf,
   ) -> PluginResolveConfigurationResult<Configuration> {
-    let resolved = kprint_markdown::configuration::resolve_config(config, &global);
+    let resolved = kprint_formatter_markdown::configuration::resolve_config(config, &global);
     PluginResolveConfigurationResult {
       config: resolved.config,
       diagnostics: resolved.diagnostics,
@@ -174,8 +174,8 @@ impl<E: PluginEnvironment> InProcessHandler for MarkdownHandler<E> {
         })
       };
       match &request.range {
-        Some(range) => kprint_markdown::format_text_range(&source, range.clone(), &request.config, &mut embedded),
-        None => kprint_markdown::format_text(&source, &request.config, &mut embedded),
+        Some(range) => kprint_formatter_markdown::format_text_range(&source, range.clone(), &request.config, &mut embedded),
+        None => kprint_formatter_markdown::format_text(&source, &request.config, &mut embedded),
       }
       .map_err(FormatError::new)
     })

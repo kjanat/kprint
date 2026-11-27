@@ -9,19 +9,19 @@ license.workspace    = true
 test-support = []
 
 [dependencies]
-kprint-async-runtime  = { workspace = true }
-kprint-communication  = { workspace = true }
-kprint-config         = { workspace = true }
-kprint-configuration  = { workspace = true }
-kprint-discovery      = { workspace = true }
-kprint-markdown       = { path = "../kprint-markdown", version = "=0.1.0" }
-kprint-owned-child    = { workspace = true }
-kprint-platform       = { workspace = true }
-kprint-plugin-types   = { workspace = true }
-kprint-process-plugin = { workspace = true }
-kprint-wasm-plugin    = { workspace = true }
-rand.workspace        = true
-schemars.workspace    = true
+kprint-async-runtime      = { workspace = true }
+kprint-communication      = { workspace = true }
+kprint-config             = { workspace = true }
+kprint-configuration      = { workspace = true }
+kprint-discovery          = { workspace = true }
+kprint-formatter-markdown = { path = "../kprint-formatter-markdown", version = "=0.1.0" }
+kprint-owned-child        = { workspace = true }
+kprint-platform           = { workspace = true }
+kprint-plugin-types       = { workspace = true }
+kprint-process-plugin     = { workspace = true }
+kprint-wasm-plugin        = { workspace = true }
+rand.workspace            = true
+schemars.workspace        = true
 
 anyhow       = { workspace = true }
 deno_semver  = { workspace = true }

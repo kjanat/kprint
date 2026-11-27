@@ -1728,6 +1728,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kprint-formatter-markdown"
+version = "0.1.0"
+dependencies = [
+ "kprint-configuration",
+ "kprint-core",
+ "kprint-core-macros",
+ "kprint-formatting",
+ "schemars",
+ "serde",
+ "thiserror",
+ "unicase",
+ "unicode-width 0.2.3",
+]
+
+[[package]]
 name = "kprint-formatting"
 version = "0.1.0"
 dependencies = [
@@ -1817,21 +1832,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kprint-markdown"
-version = "0.1.0"
-dependencies = [
- "kprint-configuration",
- "kprint-core",
- "kprint-core-macros",
- "kprint-formatting",
- "schemars",
- "serde",
- "thiserror",
- "unicase",
- "unicode-width 0.2.3",
-]
-
-[[package]]
 name = "kprint-owned-child"
 version = "0.1.0"
 dependencies = [
@@ -1897,7 +1897,7 @@ dependencies = [
  "kprint-config",
  "kprint-configuration",
  "kprint-discovery",
- "kprint-markdown",
+ "kprint-formatter-markdown",
  "kprint-owned-child",
  "kprint-platform",
  "kprint-plugin-types",

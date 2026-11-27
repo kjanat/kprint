@@ -12,7 +12,7 @@ use kprint_configuration::*;
 /// ```
 /// use kprint_configuration::ConfigKeyMap;
 /// use kprint_configuration::resolve_global_config;
-/// use kprint_markdown::configuration::resolve_config;
+/// use kprint_formatter_markdown::configuration::resolve_config;
 ///
 /// let mut config_map = ConfigKeyMap::new(); // get a collection of key value pairs from somewhere
 /// let global_config_result = resolve_global_config(&mut config_map);
