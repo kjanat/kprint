@@ -1,8 +1,6 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use futures::StreamExt;
 use kprint_async_runtime::async_trait;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::GlobalConfiguration;
@@ -13,7 +11,6 @@ use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatRequest;
 use kprint_plugin_types::FormatResult;
 use kprint_plugin_types::HostFormatCallback;
-use kprint_plugin_types::HostFormatRequest;
 use kprint_plugin_types::HostFormatTarget;
 use kprint_plugin_types::PluginInfo;
 use kprint_plugin_types::PluginResolveConfigurationResult;
@@ -25,13 +22,13 @@ use crate::environment::PluginEnvironment;
 use crate::plugins::BuiltInFormatter;
 use crate::plugins::Plugin;
 use crate::plugins::PluginSourceReference;
+use crate::plugins::embedded_format::format_embedded_text;
 use crate::utils::PathSource;
 
 const VERSION: &str = "0.29.0";
 const PLUGIN_NAME: &str = "dprint-plugin-markdown";
 const WASM_SHA256: &str = "714aea7555dd9831861be466da8b26b2d92316d3cde550ef3e1f63b31f4ea302";
 const NPM_SHA256: &str = "d67ef8fb344b3e50ccc12c246f577303cad49eb0f7a7210731d59684504d72db";
-const SIMULTANEOUS_BLOCKS: usize = 8;
 
 static BUILT_IN: BuiltInFormatter = BuiltInFormatter {
   name: "markdown",
@@ -153,88 +150,49 @@ impl<E: PluginEnvironment> InProcessHandler for MarkdownHandler<E> {
 
   async fn format(&self, request: FormatRequest<Configuration>, real_file_path: PathBuf, host: HostFormatCallback) -> FormatResult {
     let source = String::from_utf8(request.file_bytes)?;
-    let mut resolved = BTreeMap::<BlockPosition, Result<Option<String>, FormatError>>::new();
-    loop {
-      if request.token.is_cancelled() {
-        return Ok(None);
-      }
-      let mut pending = BTreeMap::new();
-      let mut errors = BTreeMap::new();
+    let output = format_embedded_text(host, &request.token, |formatter| {
       let mut embedded = |block: EmbeddedCode<'_>| {
+        // Range formatting can widen and revisit a fence at a different width.
         let key = BlockPosition {
           offset: block.offset,
           line_width: block.line_width,
         };
-        match resolved.get(&key) {
-          Some(Ok(text)) => text.clone(),
-          Some(Err(error)) => {
-            errors.insert(key, error);
-            None
-          }
-          None => {
-            pending
-              .entry(key)
-              .or_insert_with(|| (block.language.to_string(), block.text.as_bytes().to_vec()));
-            None
-          }
-        }
-      };
-      let formatted = match &request.range {
-        Some(range) => kprint_markdown::format_text_range(&source, range.clone(), &request.config, &mut embedded),
-        None => kprint_markdown::format_text(&source, &request.config, &mut embedded),
-      }
-      .map_err(FormatError::new)?;
-
-      if pending.is_empty() {
-        for (key, error) in errors {
-          let line = source_lines_before(&source, key.offset) + 1;
-          let error = format!("{}:{line}: Could not format embedded content: {error}", real_file_path.display());
-          if request.config.code_block_raise_syntax_errors {
-            return Err(FormatError::new(error));
-          }
-          log_warn!(self.0, &error);
-        }
-        return Ok(formatted.map(String::into_bytes));
-      }
-
-      // Range formatting may widen when a replacement changes the surrounding
-      // Markdown structure. Keep outcomes by source position across replays.
-      let block_results = futures::stream::iter(pending)
-        .map(|(key, (language, bytes))| {
-          let target = match request.config.tags.get(&language.to_lowercase()) {
+        formatter.format(key, block.text, || {
+          let target = match request.config.tags.get(&block.language.to_lowercase()) {
             Some(extension) => HostFormatTarget::Extension(extension.clone()),
-            None => HostFormatTarget::Language(language),
+            None => HostFormatTarget::Language(block.language.to_string()),
           };
           let mut override_config = ConfigKeyMap::new();
-          override_config.insert(
-            "lineWidth".to_string(),
-            kprint_configuration::ConfigKeyValue::Number(i32::try_from(key.line_width).unwrap_or(i32::MAX)),
-          );
+          override_config.insert("lineWidth".to_string(), i32::try_from(block.line_width).unwrap_or(i32::MAX).into());
           if let Some(use_tabs) = request.config.code_block_use_tabs {
             override_config.insert("useTabs".to_string(), use_tabs.into());
           }
           if let Some(indent_width) = request.config.code_block_indent_width {
             override_config.insert("indentWidth".to_string(), i32::from(indent_width).into());
           }
-          let format = host(HostFormatRequest {
-            target,
-            override_config,
-            file_bytes: bytes,
-            range: None,
-            token: request.token.clone(),
-          });
-          async move {
-            let result = format.await.and_then(|text| text.map(String::from_utf8).transpose().map_err(FormatError::from));
-            (key, result)
-          }
+          (target, override_config)
         })
-        .buffer_unordered(SIMULTANEOUS_BLOCKS)
-        .collect::<Vec<_>>();
-      tokio::select! {
-        _ = request.token.wait_cancellation() => return Ok(None),
-        results = block_results => resolved.extend(results),
+      };
+      match &request.range {
+        Some(range) => kprint_markdown::format_text_range(&source, range.clone(), &request.config, &mut embedded),
+        None => kprint_markdown::format_text(&source, &request.config, &mut embedded),
       }
+      .map_err(FormatError::new)
+    })
+    .await?;
+    let Some(output) = output else {
+      return Ok(None);
+    };
+
+    for (key, error) in output.errors {
+      let line = source_lines_before(&source, key.offset) + 1;
+      let error = format!("{}:{line}: Could not format embedded content: {error}", real_file_path.display());
+      if request.config.code_block_raise_syntax_errors {
+        return Err(FormatError::new(error));
+      }
+      log_warn!(self.0, &error);
     }
+    Ok(output.text.map(String::into_bytes))
   }
 }
 
