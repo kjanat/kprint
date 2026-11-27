@@ -800,25 +800,7 @@ impl<'a, 'c> BlockParser<'a, 'c> {
   /// paragraph, ending it.
   fn interrupts_paragraph(&self, lines: &[ContentLine<'a>], index: usize) -> bool {
     let line = lines[index];
-    if line.indent_columns() >= CODE_INDENT {
-      return false; // indented code can't interrupt a paragraph
-    }
-    let rest = line.rest();
-    match rest.as_bytes().first() {
-      None => true,
-      Some(b'>') => true,
-      Some(b'#') => atx_heading_level(rest).is_some(),
-      Some(b'`') | Some(b'~') => code_fence(rest).is_some(),
-      Some(b'<') => html_block_kind(rest, true).is_some(),
-      Some(b'[') => footnote_definition_name(rest).is_some(),
-      Some(_) if is_thematic_break(rest) => true,
-      // a list item only interrupts a paragraph when it isn't empty, and an
-      // ordered one has to start at 1
-      Some(_) => match list_marker(rest) {
-        Some(marker) => !rest[marker.len..].trim_matches(SPACES).is_empty() && (!marker.is_ordered || marker.start_index == 1),
-        None => false,
-      },
-    }
+    line.indent_columns() < CODE_INDENT && rest_interrupts_paragraph(line.rest())
   }
 
   /// Whether the line continues the paragraph the container's content ends
@@ -844,6 +826,20 @@ impl<'a, 'c> BlockParser<'a, 'c> {
       Some(_) if list_marker(rest).is_some() => true,
       _ => self.interrupts_paragraph(lines, index),
     }
+  }
+}
+
+fn rest_interrupts_paragraph(rest: &str) -> bool {
+  match rest.as_bytes().first() {
+    None | Some(b'>') => true,
+    Some(b'#') => atx_heading_level(rest).is_some(),
+    Some(b'`') | Some(b'~') => code_fence(rest).is_some(),
+    Some(b'<') => html_block_kind(rest, true).is_some(),
+    Some(b'[') => footnote_definition_name(rest).is_some(),
+    Some(_) if is_thematic_break(rest) => true,
+    // A list item only interrupts a paragraph when it isn't empty, and an
+    // ordered one has to start at 1.
+    Some(_) => list_marker(rest).is_some_and(|marker| !rest[marker.len..].trim_matches(SPACES).is_empty() && (!marker.is_ordered || marker.start_index == 1)),
   }
 }
 
@@ -1082,7 +1078,7 @@ impl<'a> OpenParagraph<'a> {
     }
 
     if self.table {
-      if line.indent_columns() < CODE_INDENT && !starts_block_in_paragraph(line.rest()) {
+      if line.indent_columns() < CODE_INDENT && !rest_interrupts_paragraph(line.rest()) {
         return;
       }
       self.table = false;

@@ -46,7 +46,7 @@ impl ConfigurationBuilder {
   /// The width of a line the printer will try to stay under. Note that the printer may exceed this width in certain cases.
   /// Default: 80
   pub fn line_width(&mut self, value: u32) -> &mut Self {
-    self.insert("lineWidth", i32::try_from(value).unwrap_or(i32::MAX).into())
+    self.insert("lineWidth", value.to_string().into())
   }
 
   /// The kind of newline to use.
@@ -98,7 +98,7 @@ impl ConfigurationBuilder {
   /// The maximum number of consecutive blank lines to keep between blocks.
   /// Default: 1
   pub fn max_blank_lines(&mut self, value: u32) -> &mut Self {
-    self.insert("maxBlankLines", (value.min(u32::from(u8::MAX)) as i32).into())
+    self.insert("maxBlankLines", value.to_string().into())
   }
 
   /// The type of heading to use.
@@ -112,7 +112,7 @@ impl ConfigurationBuilder {
   /// block above it within a list is left there, which keeps the list tight.
   /// Default: the blank lines that were written are kept, up to `maxBlankLines`
   pub fn heading_blank_lines_above(&mut self, value: u32) -> &mut Self {
-    self.insert("heading.blankLinesAbove", (value.min(u32::from(u8::MAX)) as i32).into())
+    self.insert("heading.blankLinesAbove", value.to_string().into())
   }
 
   /// The character to write the marker of an unordered list's items with.

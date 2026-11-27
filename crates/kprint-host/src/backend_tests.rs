@@ -215,11 +215,12 @@ fn markdown_fences_use_the_enclosing_scope_and_child_path() {
     })
     .build();
   environment.set_max_threads(1);
+  environment.set_log_level(kprint_host_api::ui::LogLevel::Debug);
   environment.clone().run_in_runtime(async move {
     let resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
-    let session = crate::HostSession::new(environment, resolver, None);
+    let session = crate::HostSession::new(environment.clone(), resolver, None);
     let scope = session.resolve_from_options(&SessionOptions::default(), || {}).await.unwrap();
-    let source = b"```csharp\nexample\n```\n\n````md\n#  Example\n\n```csharp\ndeeper\n```\n````\n";
+    let source = b"```csharp\nexample\n```\n\n````md\n#  Example\n\n```csharp\ndeeper\n```\n\n```csharp\nsibling\n```\n````\n";
     let format = |path| {
       scope.format(HostFormatRequest {
         target: kprint_plugin_types::HostFormatTarget::Path(PathBuf::from(path)),
@@ -235,10 +236,16 @@ fn markdown_fences_use_the_enclosing_scope_and_child_path() {
         .unwrap()
         .unwrap()
         .unwrap(),
-      b"```csharp\nexample_child\n```\n\n````md\n# Example\n\n```csharp\ndeeper_formatted\n```\n````\n"
+      b"```csharp\nexample_child\n```\n\n````md\n# Example\n\n```csharp\ndeeper_formatted\n```\n\n```csharp\nsibling_formatted\n```\n````\n"
     );
     assert_eq!(format("/skip.md").await.unwrap(), None);
     session.shutdown().await;
+    let log = environment.take_stderr_messages();
+    assert_eq!(
+      log.iter().filter(|line| line.starts_with("[DEBUG] Creating instance of test-plugin (")).count(),
+      1
+    );
+    environment.clear_logs();
   });
 }
 

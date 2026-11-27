@@ -434,7 +434,7 @@ impl InitializedPluginWithConfig {
 pub struct PluginsScope<TEnvironment: Environment> {
   environment: TEnvironment,
   editor_policy: Option<EditorPolicy>,
-  embedded_formats: tokio::sync::Semaphore,
+  embedded_formats: Rc<tokio::sync::Semaphore>,
   pub config: Option<Rc<ResolvedConfig>>,
   pub plugins: IndexMap<String, Rc<PluginWithConfig>>,
   pub plugin_name_maps: PluginNameResolutionMaps,
@@ -456,7 +456,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       PluginNameResolutionMaps::from_plugins(plugins.iter().map(|p| p.as_ref()), &config.origin.base_path, config.routing.shebangs.as_ref())?;
 
     Ok(PluginsScope {
-      embedded_formats: tokio::sync::Semaphore::new(environment.max_threads().max(1)),
+      embedded_formats: Rc::new(tokio::sync::Semaphore::new(environment.max_threads().max(1))),
       environment,
       editor_policy: EditorPolicy::current(),
       config: Some(config),
@@ -599,6 +599,14 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   ) -> HostFormatCallback {
     let scope = self.clone();
     let file_path_mapping = (real_path != plugin_path).then_some((plugin_path, real_path));
+    // A root request reserves one slot for its entire branch. Each parent in
+    // that branch runs one child at a time, using a fresh semaphore so a child
+    // can finish while its parent waits.
+    let slots = if depth == 1 {
+      self.embedded_formats.clone()
+    } else {
+      Rc::new(tokio::sync::Semaphore::new(1))
+    };
     Rc::new(move |host_request| {
       if depth > MAX_EMBEDDED_FORMAT_DEPTH {
         return std::future::ready(Err(FormatError::new("Embedded formatting exceeded its nesting limit."))).boxed_local();
@@ -609,16 +617,13 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         file_path_mapping: file_path_mapping.clone(),
         depth,
       };
-      if depth > 1 {
-        // A nested request may be needed to finish a request holding a permit.
-        return scope.format_from(host_request, Some(embedder), None);
-      }
       let scope = scope.clone();
+      let slots = slots.clone();
       async move {
         let _permit = tokio::select! {
           biased;
           _ = host_request.token.wait_cancellation() => return Ok(None),
-          permit = scope.embedded_formats.acquire() => permit.expect("embedded formatting semaphore is never closed"),
+          permit = slots.acquire() => permit.expect("embedded formatting semaphore is never closed"),
         };
         scope.format_from(host_request, Some(embedder), None).await
       }
@@ -1854,7 +1859,7 @@ pub async fn get_plugins_scope_from_args<TEnvironment: Environment>(
     Err(_) => Ok(PluginsScope {
       environment: environment.clone(),
       editor_policy: EditorPolicy::current(),
-      embedded_formats: tokio::sync::Semaphore::new(environment.max_threads().max(1)),
+      embedded_formats: Rc::new(tokio::sync::Semaphore::new(environment.max_threads().max(1))),
       config: None,
       plugin_name_maps: Default::default(),
       plugins: Default::default(),

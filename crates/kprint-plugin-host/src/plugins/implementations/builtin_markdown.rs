@@ -3,9 +3,16 @@ use std::sync::OnceLock;
 
 use kprint_async_runtime::async_trait;
 use kprint_configuration::ConfigKeyMap;
+use kprint_configuration::ConfigKeyValue;
 use kprint_configuration::GlobalConfiguration;
 use kprint_formatter_markdown::EmbeddedCode;
 use kprint_formatter_markdown::configuration::Configuration;
+use kprint_formatter_markdown::configuration::HeadingKind;
+use kprint_formatter_markdown::configuration::ListIndentKind;
+use kprint_formatter_markdown::configuration::ListUnorderedMarker;
+use kprint_plugin_types::CheckConfigUpdatesMessage;
+use kprint_plugin_types::ConfigChange;
+use kprint_plugin_types::ConfigChangeKind;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatRequest;
@@ -88,11 +95,11 @@ struct MarkdownConfigSchema {
   settings: Configuration,
   deno: Option<bool>,
   #[serde(rename = "headingKind")]
-  heading_kind: Option<kprint_formatter_markdown::configuration::HeadingKind>,
+  heading_kind: Option<HeadingKind>,
   #[serde(rename = "unorderedListKind")]
-  unordered_list_kind: Option<kprint_formatter_markdown::configuration::ListUnorderedMarker>,
+  unordered_list_kind: Option<ListUnorderedMarker>,
   #[serde(rename = "listIndentKind")]
-  list_indent_kind: Option<kprint_formatter_markdown::configuration::ListIndentKind>,
+  list_indent_kind: Option<ListIndentKind>,
 }
 
 fn config_schema() -> &'static str {
@@ -148,6 +155,14 @@ impl<E: PluginEnvironment> InProcessHandler for MarkdownHandler<E> {
     }
   }
 
+  fn check_config_updates(&self, message: CheckConfigUpdatesMessage) -> Vec<ConfigChange> {
+    let mut changes = Vec::new();
+    rename_config_key::<HeadingKind>(&message.config, "headingKind", "heading.kind", &mut changes);
+    rename_config_key::<ListUnorderedMarker>(&message.config, "unorderedListKind", "list.unorderedMarker", &mut changes);
+    rename_config_key::<ListIndentKind>(&message.config, "listIndentKind", "list.indentKind", &mut changes);
+    changes
+  }
+
   async fn format(&self, request: FormatRequest<Configuration>, real_file_path: PathBuf, host: HostFormatCallback) -> FormatResult {
     let source = String::from_utf8(request.file_bytes)?;
     let output = format_embedded_text(host, &request.token, |formatter| {
@@ -196,6 +211,29 @@ impl<E: PluginEnvironment> InProcessHandler for MarkdownHandler<E> {
   }
 }
 
+fn rename_config_key<T: std::str::FromStr>(config: &ConfigKeyMap, old: &str, new: &str, changes: &mut Vec<ConfigChange>) {
+  let valid = |value: &ConfigKeyValue| matches!(value, ConfigKeyValue::String(text) if text.parse::<T>().is_ok());
+  let Some(value) = config.get(old).filter(|value| valid(value)) else {
+    return;
+  };
+  // Resolution prefers a valid new value and otherwise falls back to the old one.
+  let replacement = match config.get(new) {
+    Some(current) if valid(current) => None,
+    Some(_) => Some(ConfigChangeKind::Set(value.clone())),
+    None => Some(ConfigChangeKind::Add(value.clone())),
+  };
+  if let Some(kind) = replacement {
+    changes.push(ConfigChange {
+      path: vec![new.to_string().into()],
+      kind,
+    });
+  }
+  changes.push(ConfigChange {
+    path: vec![old.to_string().into()],
+    kind: ConfigChangeKind::Remove,
+  });
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BlockPosition {
   offset: usize,
@@ -234,6 +272,36 @@ mod tests {
     assert!(serves(&format!("https://plugins.dprint.dev/markdown-0.29.0.wasm@{WASM_SHA256}")));
     assert!(!serves("https://plugins.dprint.dev/markdown-0.29.0.wasm@bad"));
     assert!(!serves("https://example.com/markdown-0.29.0.wasm"));
+  }
+
+  #[test]
+  fn migrates_legacy_options_through_the_built_in_plugin() {
+    let environment = TestEnvironment::new();
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+      let reference = crate::plugins::parse_plugin_source_reference("npm:@dprint/markdown@0.29.0", &base, &environment).unwrap();
+      let plugin = create_builtin_markdown_plugin(&environment, &reference).unwrap().initialize().await.unwrap();
+      let config = serde_json::from_value(serde_json::json!({
+        "headingKind": "setext", "heading.kind": null,
+        "unorderedListKind": "asterisks", "list.unorderedMarker": "dashes",
+        "listIndentKind": "pythonMarkdown"
+      }))
+      .unwrap();
+      let changes = plugin
+        .check_config_updates(CheckConfigUpdatesMessage { old_version: None, config })
+        .await
+        .unwrap();
+      assert_eq!(
+        serde_json::to_value(changes).unwrap(),
+        serde_json::json!([
+          {"kind": "Set", "path": ["heading.kind"], "value": "setext"},
+          {"kind": "Remove", "path": ["headingKind"]},
+          {"kind": "Remove", "path": ["unorderedListKind"]},
+          {"kind": "Add", "path": ["list.indentKind"], "value": "pythonMarkdown"},
+          {"kind": "Remove", "path": ["listIndentKind"]}
+        ])
+      );
+    });
   }
 
   #[test]

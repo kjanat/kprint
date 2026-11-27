@@ -42,6 +42,9 @@ pub trait InProcessHandler: 'static {
     global_config: GlobalConfiguration,
     base_dir: &CanonicalizedPathBuf,
   ) -> PluginResolveConfigurationResult<Self::Configuration>;
+  fn check_config_updates(&self, _message: CheckConfigUpdatesMessage) -> Vec<ConfigChange> {
+    Vec::new()
+  }
   async fn format(&self, request: FormatRequest<Self::Configuration>, real_file_path: PathBuf, host: HostFormatCallback) -> FormatResult;
 }
 
@@ -148,8 +151,8 @@ impl<THandler: InProcessHandler> InitializedPlugin for InitializedInProcessPlugi
     Ok(self.resolve(&config).await.diagnostics.clone())
   }
 
-  async fn check_config_updates(&self, _message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>> {
-    Ok(Vec::new())
+  async fn check_config_updates(&self, message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>> {
+    Ok(self.handler.check_config_updates(message))
   }
 
   async fn format_text(&self, request: InitializedPluginFormatRequest) -> FormatResult {

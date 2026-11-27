@@ -191,10 +191,37 @@ mod test {
 
   #[test]
   fn does_not_absorb_outside_text_after_a_quoted_table_or_link_definition() {
-    for input in ["> a | b\n> - | -\n> c | d\noutside\n", "> [ref]: /url\noutside\n"] {
+    for input in [
+      "> a | b\n> - | -\n> c | d\noutside\n",
+      "> a | b\n> - | -\n> ===\noutside\n",
+      "> a | b\n> - | -\n> : x | y\noutside\n",
+      "> [ref]: /url\noutside\n",
+    ] {
       let formatted = format_text(input, &Configuration::default(), |_| None).unwrap();
       assert!(formatted.as_deref().unwrap_or(input).ends_with("\noutside\n"), "{formatted:?}");
     }
+  }
+
+  #[test]
+  fn keeps_ignored_task_list_text_at_its_existing_indent() {
+    let text = "- [ ] task\n      <!-- dprint-ignore -->\n      untouched    text\n";
+    let config = Configuration::default();
+    let once = format_text(text, &config, |_| None).unwrap();
+    let output = once.as_deref().unwrap_or(text);
+    assert!(output.contains("\n      untouched    text\n"), "{output:?}");
+    assert_eq!(format_text(output, &config, |_| None).unwrap(), None);
+  }
+
+  #[test]
+  fn keeps_unsigned_builder_values_through_validation() {
+    let config = ConfigurationBuilder::new()
+      .line_width(u32::MAX)
+      .max_blank_lines(u32::MAX)
+      .heading_blank_lines_above(u32::MAX)
+      .build();
+    assert_eq!(config.line_width, u32::MAX);
+    assert_eq!(config.max_blank_lines, 255);
+    assert_eq!(config.heading_blank_lines_above, Some(255));
   }
 
   #[test]

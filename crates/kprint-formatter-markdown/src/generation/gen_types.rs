@@ -183,7 +183,7 @@ pub struct Context<'a> {
   footnote_labels: Labels<'a>,
   /// The current indentation level of what's being printed out.
   pub indent_level: u32,
-  /// The current indentation level within the file being formatted.
+  /// Extra task-marker indentation inside the innermost quote.
   pub raw_indent_level: u32,
   is_in_list_count: u32,
   /// The indentation level each surrounding block quote started at, from outermost to innermost.
@@ -351,6 +351,7 @@ impl<'a> Context<'a> {
   /// outermost to innermost) to the provided function.
   pub fn mark_in_block_quotes<T>(&mut self, content_start: Option<usize>, func: impl FnOnce(&mut Context<'a>, &'a [u32]) -> T) -> T {
     let original_is_in_list_count = self.is_in_list_count;
+    let outer_raw_indent = std::mem::take(&mut self.raw_indent_level);
     self.is_in_list_count = 0;
     self.block_quote_base_indents.push(self.indent_level);
     self.block_quote_content_starts.push(content_start);
@@ -359,6 +360,7 @@ impl<'a> Context<'a> {
     self.block_quote_content_starts.pop();
     self.block_quote_base_indents.pop();
     self.is_in_list_count = original_is_in_list_count;
+    self.raw_indent_level = outer_raw_indent;
     items
   }
 
@@ -471,7 +473,7 @@ impl<'a> Context<'a> {
   /// The indentation of what's being generated beyond the block quote it is
   /// within, which is what the list items inside that quote write.
   pub fn indent_within_block_quote(&self) -> u32 {
-    self.indent_level - self.block_quote_base_indents.last().copied().unwrap_or(0)
+    self.indent_level - self.block_quote_base_indents.last().copied().unwrap_or(0) + self.raw_indent_level
   }
 
   /// Writes out the text decorations within with the characters they were
